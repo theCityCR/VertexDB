@@ -148,5 +148,59 @@ BENCHMARK(BM_ConcurrentPointLookups)
                                ? 4
                                : std::thread::hardware_concurrency()));
 
+void seedCteWinEmployees(QueryExecutor &executor, std::int64_t rowCount, bool indexId) {
+    Parser parser;
+    (void)executor.execute(parser.parse("CREATE DATABASE bench;"));
+    (void)executor.execute(
+        parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"));
+
+    auto table = executor.currentDatabase()->table("Employees");
+    table->insert({Value{static_cast<std::int64_t>(1)}, Value{std::string{"Alice"}}, Value{120000.0}});
+    for (std::int64_t id = 2; id <= rowCount; ++id) {
+        // Most rows match the CTE body filter; a materializing engine would build a large temp.
+        const double salary = (id % 20 == 0) ? 80000.0 : 110000.0;
+        table->insert({Value{id}, Value{std::string{"Emp"}}, Value{salary}});
+    }
+    if (indexId) {
+        (void)table->createIndex("idx_id", "id");
+    }
+}
+
+// Inlined CTE + outer equality: expected plan is hash index on id with salary residual.
+void BM_CteIndexedWinSelect(benchmark::State &state) {
+    QueryExecutor executor;
+    seedCteWinEmployees(executor, state.range(0), true);
+
+    Parser parser;
+    const auto query = parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;");
+
+    for (auto _ : state) {
+        auto result = executor.execute(query);
+        benchmark::DoNotOptimize(result);
+    }
+}
+
+BENCHMARK(BM_CteIndexedWinSelect)->Arg(1000)->Arg(100000);
+
+// Same CTE SQL without an id index: expected plan is a full table scan.
+void BM_CteNonIndexedSelect(benchmark::State &state) {
+    QueryExecutor executor;
+    seedCteWinEmployees(executor, state.range(0), false);
+
+    Parser parser;
+    const auto query = parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;");
+
+    for (auto _ : state) {
+        auto result = executor.execute(query);
+        benchmark::DoNotOptimize(result);
+    }
+}
+
+BENCHMARK(BM_CteNonIndexedSelect)->Arg(1000)->Arg(100000);
+
 } // namespace
 } // namespace VertexDB

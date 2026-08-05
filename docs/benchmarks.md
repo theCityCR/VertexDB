@@ -12,6 +12,9 @@ broad performance regressions and compare storage and access paths under control
 - Update throughput.
 - Delete throughput.
 - Concurrent indexed point lookup scaling.
+- CTE index-win `SELECT` (inlined `WITH` + outer equality) with an `id` hash index, at 1,000 and
+  100,000 rows.
+- Same CTE `SELECT` without an index (full-scan baseline) at 1,000 and 100,000 rows.
 
 Build the benchmark target with:
 
@@ -33,9 +36,25 @@ Benchmark output should be checked into documentation only as summarized tables 
 Suggested comparisons:
 
 - Indexed vs. non-indexed lookup.
+- CTE index-win path (`BM_CteIndexedWinSelect`) vs. CTE full-scan baseline
+  (`BM_CteNonIndexedSelect`) at the same row count — expected shape: indexed stays near point-lookup
+  cost; non-indexed grows with table size.
 - Single-thread read vs. multi-thread read.
 - Debug vs. release builds.
 - Sanitized vs. unsanitized builds.
+
+The CTE benchmarks use the wedge query:
+
+```sql
+WITH high AS (
+  SELECT id, name, salary FROM Employees WHERE salary > 100000.0
+)
+SELECT name FROM high WHERE id = 1;
+```
+
+With `idx_id`, the planner should choose hash index equality on `id` and keep `salary > …` as a
+residual after CTE inlining. Without an index, the same SQL is a full scan. See
+[cte_index_wedge.md](cte_index_wedge.md).
 
 ## Planned Benchmark Work
 

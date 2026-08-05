@@ -67,10 +67,11 @@ CTE + residual (not a full scan) and that the win query returns Alice through th
 `createIndex` at this scale relies on deferred B+ tree layout rebuild (layout rebuilt on read, not
 on every key insert). The CTE microbenchmark can push toward 100k rows.
 
-### 3. Microbenchmark
+### 3. Microbenchmark — done
 
-Extend `benchmarks/storage_benchmarks.cpp` with the CTE win query at 100k rows, plus a
-non-indexed / full-scan baseline. Document the expected shape in `docs/benchmarks.md`.
+`BM_CteIndexedWinSelect` and `BM_CteNonIndexedSelect` in `benchmarks/storage_benchmarks.cpp` run the
+win query at 1k and 100k rows (indexed hash path vs full-scan baseline). Expected shape is documented
+in `docs/benchmarks.md`.
 
 ### 4. Materialize-vs-inline comparison
 

@@ -112,8 +112,8 @@ Or feed an example script:
   (roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete behavior)
 - Coverage script enforces an 85% line coverage floor for the core library
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
-- Benchmarks cover inserts, indexed and non-indexed filtered selects, update/delete throughput, and
-  concurrent indexed point lookups
+- Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
+  baselines, update/delete throughput, and concurrent indexed point lookups
 
 ## Current Limitations
 
