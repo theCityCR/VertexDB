@@ -47,17 +47,16 @@ Do not rebuild these:
 
 Ordered by leverage. Engine work is not the bottleneck.
 
-### 1. Demo SQL
+### 1. Demo SQL — done
 
-Add `examples/cte_index_win.sql` (and mention it from `examples/README.md`):
+Shipped as [`examples/cte_index_win.sql`](../examples/cte_index_win.sql) (linked from
+`examples/README.md`):
 
 - create table + index on `id`
-- enough rows that a materializing CTE would be obviously wasteful (many high-salary rows, one
-  target `id`)
-- run `EXPLAIN` and `SELECT` for the win query
-- optionally show the equivalent flat `WHERE` for comparison
+- 101 high-salary rows (including target `id = 1`) plus 10 low-salary rows
+- `EXPLAIN` / `SELECT` for the win query and the equivalent flat `WHERE`
 
-Optional: add the same `EXPLAIN` block to `examples/company.sql`.
+Optional follow-up: add the same `EXPLAIN` block to `examples/company.sql`.
 
 ### 2. Scaled regression test
 
