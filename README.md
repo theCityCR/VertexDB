@@ -107,8 +107,9 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 61 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
-  persistence, WAL recovery, concurrency, transactions, and regressions
+- 80 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+  desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
+  (roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete behavior)
 - Coverage script enforces an 85% line coverage floor for the core library
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, update/delete throughput, and

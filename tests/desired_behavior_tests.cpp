@@ -1,0 +1,388 @@
+#include "VertexDB/execution/query_executor.hpp"
+#include "VertexDB/indexing/btree_index.hpp"
+#include "VertexDB/parser/parser.hpp"
+#include "VertexDB/planner/query_planner.hpp"
+#include "VertexDB/planner/rewriter.hpp"
+#include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/table.hpp"
+
+#include <gtest/gtest.h>
+
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+
+namespace VertexDB {
+namespace {
+
+QueryExecutor makeExecutor(std::string_view suffix) {
+    const auto root =
+        std::filesystem::temp_directory_path() / ("vertexdb-desired-" + std::string(suffix));
+    std::filesystem::remove_all(root);
+    return QueryExecutor{root};
+}
+
+void seedEmployees(QueryExecutor &executor, Parser &parser, bool indexId = true,
+                   bool indexSalary = false) {
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0), (3, \"Cara\", 110000.0);"))
+                    .success);
+    if (indexId) {
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    }
+    if (indexSalary) {
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE INDEX idx_salary ON Employees(salary);")).success);
+    }
+}
+
+} // namespace
+
+// --- P0 -----------------------------------------------------------------
+
+TEST(DesiredBehaviorTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConjuncts) {
+    Parser parser;
+    auto executor = makeExecutor("residual-reject");
+    seedEmployees(executor, parser, true, false);
+
+    // id=2 hits the hash index, but salary residual must reject Bob (90000).
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE id = 2 AND salary > 100000.0;"));
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.rows.empty());
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 2 AND salary > 100000.0;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, ExplainReportsJoinBypassesPlanner) {
+    Parser parser;
+    auto executor = makeExecutor("explain-join");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");"))
+                    .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT * FROM Employees JOIN Departments ON dept_id = id;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    EXPECT_NE(explain.rows.front().front().toString().find("hash join (planner bypassed for JOIN)"),
+              std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, NestedSqlDocumentedRefusalsAreRejected) {
+    Parser parser;
+
+    EXPECT_THROW(
+        (void)parser.parse("WITH cte AS (SELECT id FROM Employees JOIN Departments ON dept_id = id) "
+                           "SELECT id FROM cte;"),
+        std::runtime_error);
+
+    EXPECT_THROW((void)parser.parse("WITH outer_cte AS (WITH inner_cte AS (SELECT id FROM Employees) "
+                                    "SELECT id FROM inner_cte) SELECT id FROM outer_cte;"),
+                 std::runtime_error);
+
+    auto query = parser.parse(
+        "WITH high AS (SELECT id, name FROM Employees WHERE id = 1) "
+        "SELECT * FROM high JOIN Departments ON id = id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(query));
+    EXPECT_THROW((void)rewriteSelect(std::get<Select>(query)), std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, CommitPersistsTransactionMutations) {
+    Parser parser;
+    auto executor = makeExecutor("commit");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET salary = 999999.0 WHERE id = 1;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+
+    auto result =
+        executor.execute(parser.parse("SELECT salary FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{999999.0});
+
+    auto doubleCommit = executor.execute(parser.parse("COMMIT;"));
+    EXPECT_FALSE(doubleCommit.success);
+}
+
+// --- P1 -----------------------------------------------------------------
+
+TEST(DesiredBehaviorTests, PageRowStoreMirrorsSerializedPagesIntoBufferPool) {
+    PageRowStore store{2, 4};
+
+    const auto first = store.append({Value{1}, Value{std::string{"Alice"}}});
+    const auto pageId = store.pageIdFor(first);
+    EXPECT_TRUE(store.bufferContains(pageId));
+    EXPECT_GE(store.bufferSize(), 1U);
+
+    ASSERT_TRUE(store.update(first, {Value{11}, Value{std::string{"Alicia"}}}));
+    EXPECT_TRUE(store.bufferContains(pageId));
+
+    const auto second = store.append({Value{2}, Value{std::string{"Bob"}}});
+    const auto third = store.append({Value{3}, Value{std::string{"Cara"}}});
+    EXPECT_EQ(store.pageIdFor(second), pageId);
+    EXPECT_NE(store.pageIdFor(third), pageId);
+    EXPECT_TRUE(store.bufferContains(store.pageIdFor(third)));
+
+    ASSERT_TRUE(store.erase(first));
+    EXPECT_TRUE(store.bufferContains(pageId));
+}
+
+TEST(DesiredBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"salary", ColumnType::Double}}};
+    table.insert({Value{1}, Value{120000.0}});
+    table.insert({Value{2}, Value{90000.0}});
+    ASSERT_TRUE(table.createIndex("idx_salary", "salary"));
+
+    QueryPlanner planner;
+    Select less{"Employees", std::nullopt,
+                {"*"},       Predicate{"salary", ComparisonOperator::Less, Value{100000.0}},
+                {},          {}};
+    const auto plan = planner.planSelect(less, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::OrderedIndexRange);
+    EXPECT_EQ(plan.indexOp, ComparisonOperator::Less);
+    EXPECT_FALSE(plan.residual.has_value());
+
+    Parser parser;
+    auto executor = makeExecutor("less-than");
+    seedEmployees(executor, parser, false, true);
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE salary < 100000.0;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("ordered index range lookup"),
+              std::string::npos);
+
+    auto result =
+        executor.execute(parser.parse("SELECT name FROM Employees WHERE salary < 100000.0;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Bob"});
+}
+
+TEST(DesiredBehaviorTests, OrPredicateFullScanIsDocumentedLimitation) {
+    // Intentional v1 limitation (docs/sql.md): OR is not split for indexing.
+    Table table{"Employees", {{"id", ColumnType::Int}}};
+    table.insert({Value{1}});
+    table.insert({Value{2}});
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    Predicate orPredicate{
+        Predicate::Kind::Or,
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{1}}),
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{2}})};
+    Select query{"Employees", std::nullopt, {"*"}, orPredicate, {}, {}};
+    QueryPlanner planner;
+    const auto plan = planner.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::FullScan);
+    EXPECT_NE(plan.explanation.find("OR predicate"), std::string::npos);
+
+    Parser parser;
+    auto executor = makeExecutor("or-explain");
+    seedEmployees(executor, parser, true, false);
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1 OR id = 2;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("full table scan (OR predicate)"),
+              std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, InSubqueryFallsBackToScanWhenOuterColumnUnindexed) {
+    Parser parser;
+    auto executor = makeExecutor("in-unindexed");
+    seedEmployees(executor, parser, false, true);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > "
+        "100000.0);"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("full table scan"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > "
+        "100000.0) ORDER BY name ASC;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[1][0], Value{"Cara"});
+}
+
+TEST(DesiredBehaviorTests, CteInliningLeavesBodyFilterAsResidualWhenOuterUsesIndex) {
+    Parser parser;
+    auto executor = makeExecutor("cte-residual");
+    seedEmployees(executor, parser, true, false);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+}
+
+// --- P2 -----------------------------------------------------------------
+
+TEST(DesiredBehaviorTests, ParsesCreateDatabaseIndexSaveLoadAndExit) {
+    Parser parser;
+
+    auto createDb = parser.parse("CREATE DATABASE company;");
+    ASSERT_TRUE(std::holds_alternative<CreateDatabase>(createDb));
+    EXPECT_EQ(std::get<CreateDatabase>(createDb).name, "company");
+
+    auto createIndex = parser.parse("CREATE INDEX idx_id ON Employees(id);");
+    ASSERT_TRUE(std::holds_alternative<CreateIndex>(createIndex));
+    EXPECT_EQ(std::get<CreateIndex>(createIndex).name, "idx_id");
+    EXPECT_EQ(std::get<CreateIndex>(createIndex).table, "Employees");
+    EXPECT_EQ(std::get<CreateIndex>(createIndex).column, "id");
+
+    EXPECT_TRUE(std::holds_alternative<SaveDatabase>(parser.parse("SAVE DATABASE;")));
+    auto loadNamed = parser.parse("LOAD DATABASE company;");
+    ASSERT_TRUE(std::holds_alternative<LoadDatabase>(loadNamed));
+    ASSERT_TRUE(std::get<LoadDatabase>(loadNamed).name.has_value());
+    EXPECT_EQ(*std::get<LoadDatabase>(loadNamed).name, "company");
+    auto loadActive = parser.parse("LOAD DATABASE;");
+    ASSERT_TRUE(std::holds_alternative<LoadDatabase>(loadActive));
+    EXPECT_FALSE(std::get<LoadDatabase>(loadActive).name.has_value());
+    EXPECT_TRUE(std::holds_alternative<Exit>(parser.parse("EXIT;")));
+}
+
+TEST(DesiredBehaviorTests, MultiCteInliningAndUnusedCteNote) {
+    Parser parser;
+
+    auto chained = parser.parse(
+        "WITH base AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0), "
+        "high AS (SELECT id, name, salary FROM base WHERE id = 1) "
+        "SELECT name FROM high;");
+    const auto rewritten = rewriteSelect(std::get<Select>(chained));
+    EXPECT_EQ(rewritten.query.table, "Employees");
+    ASSERT_GE(rewritten.notes.size(), 1U);
+    EXPECT_NE(rewritten.notes.front().find("inlined CTE"), std::string::npos);
+
+    auto unused = parser.parse(
+        "WITH unused AS (SELECT id FROM Employees WHERE id = 1) "
+        "SELECT name FROM Employees WHERE id = 2;");
+    const auto unusedRewrite = rewriteSelect(std::get<Select>(unused));
+    EXPECT_EQ(unusedRewrite.query.table, "Employees");
+    ASSERT_FALSE(unusedRewrite.notes.empty());
+    EXPECT_NE(unusedRewrite.notes.front().find("FROM references a base table"), std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, IndexPreferredOverFullScanWhenCostsAreTied) {
+    Table table{"Employees", {{"id", ColumnType::Int}}};
+    table.insert({Value{1}});
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    Select query{"Employees", std::nullopt,
+                 {"*"},       Predicate{"id", ComparisonOperator::Equal, Value{1}},
+                 {},          {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
+}
+
+TEST(DesiredBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidualTree) {
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"salary", ColumnType::Double}}};
+    table.insert({Value{1}, Value{10}, Value{120000.0}});
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_salary", "salary"));
+
+    Predicate leafId{"id", ComparisonOperator::Equal, Value{1}};
+    Predicate leafDept{"dept", ComparisonOperator::Equal, Value{10}};
+    Predicate leafSalary{"salary", ComparisonOperator::Greater, Value{100000.0}};
+    Predicate mid{Predicate::Kind::And, std::make_shared<Predicate>(leafId),
+                  std::make_shared<Predicate>(leafDept)};
+    Predicate where{Predicate::Kind::And, std::make_shared<Predicate>(mid),
+                    std::make_shared<Predicate>(leafSalary)};
+
+    Select query{"Employees", std::nullopt, {"*"}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.indexColumn, "id");
+    ASSERT_TRUE(plan.residual.has_value());
+    EXPECT_EQ(plan.residual->kind, Predicate::Kind::And);
+}
+
+TEST(DesiredBehaviorTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
+    Parser parser;
+    auto executor = makeExecutor("residual-no");
+    seedEmployees(executor, parser, true, false);
+
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("residual: no"), std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, UpdateAndDeleteUseFullScanEvenWhenPredicateColumnIndexed) {
+    // Intentional v1 limitation (docs/sql.md): UPDATE/DELETE do not use planner index paths.
+    Parser parser;
+    auto executor = makeExecutor("dml-scan");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET name = \"Alicia\" WHERE id = 1;"))
+            .success);
+    auto updated = executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(updated.success);
+    ASSERT_EQ(updated.rows.size(), 1U);
+    EXPECT_EQ(updated.rows[0][0], Value{"Alicia"});
+
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 2;")).success);
+    auto remaining =
+        executor.execute(parser.parse("SELECT id FROM Employees ORDER BY id ASC;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 2U);
+    EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
+}
+
+// --- P3 roadmap placeholders (desired, not yet implemented) -------------
+
+TEST(DesiredBehaviorTests, RoadmapPhysicalWalRedoNotImplemented) {
+    GTEST_SKIP() << "Desired: physical redo records and crash/partial-write recovery tests; "
+                    "current WAL is logical SQL replay only.";
+}
+
+TEST(DesiredBehaviorTests, RoadmapIncrementalBTreeSplitMergeNotImplemented) {
+    GTEST_SKIP() << "Desired: incremental B+ tree split/merge with structural invariants; "
+                    "current BTreeIndex rebuilds shallow layout on write.";
+}
+
+TEST(DesiredBehaviorTests, RoadmapPageBytesAsSourceOfTruthNotImplemented) {
+    GTEST_SKIP() << "Desired: deserialize live rows from buffer-pool page payloads as source of "
+                    "truth; typed rows in PageRowStore remain operational SoT today.";
+}
+
+TEST(DesiredBehaviorTests, RoadmapCostBasedJoinPlanningNotImplemented) {
+    GTEST_SKIP() << "Desired: statistics-driven join algorithm selection; joins currently bypass "
+                    "the planner with a fixed hash join.";
+}
+
+} // namespace VertexDB

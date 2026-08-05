@@ -85,20 +85,31 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     AccessPath bestPath = AccessPath::FullScan;
     double bestCost = plan.estimatedCost;
 
-    for (std::size_t i = 0; i < conjuncts.size(); ++i) {
-        AccessPath path = AccessPath::FullScan;
-        double cost = bestCost;
-        if (isIndexableComparison(*conjuncts[i], table, path, cost, plan.estimatedRows) &&
-            cost < bestCost) {
+    auto consider = [&](std::size_t i, AccessPath path, double cost) {
+        // Prefer any index path that is no worse than a full scan; prefer lower cost, then
+        // equality over range/IN when tied (more selective by design).
+        const bool betterCost = cost < bestCost;
+        const bool firstIndexAtParity =
+            cost == bestCost && bestPath == AccessPath::FullScan && path != AccessPath::FullScan;
+        const bool preferEquality =
+            cost == bestCost && path == AccessPath::HashIndexLookup &&
+            bestPath != AccessPath::HashIndexLookup && bestPath != AccessPath::FullScan;
+        if (betterCost || firstIndexAtParity || preferEquality) {
             bestIndex = i;
             bestPath = path;
             bestCost = cost;
-            continue;
         }
-        if (isIndexableInList(*conjuncts[i], table, cost) && cost < bestCost) {
-            bestIndex = i;
-            bestPath = AccessPath::HashIndexInLookup;
-            bestCost = cost;
+    };
+
+    for (std::size_t i = 0; i < conjuncts.size(); ++i) {
+        AccessPath path = AccessPath::FullScan;
+        double comparisonCost = bestCost;
+        if (isIndexableComparison(*conjuncts[i], table, path, comparisonCost, plan.estimatedRows)) {
+            consider(i, path, comparisonCost);
+        }
+        double inCost = bestCost;
+        if (isIndexableInList(*conjuncts[i], table, inCost)) {
+            consider(i, AccessPath::HashIndexInLookup, inCost);
         }
     }
 

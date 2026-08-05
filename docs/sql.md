@@ -60,7 +60,12 @@ the access path, CTE inlining notes, and whether a residual filter remains.
 
 `JOIN` supports a single equi-join. Joined result columns are qualified as `LeftTable.column` and
 `RightTable.column`. Projection, `WHERE`, `ORDER BY`, and `LIMIT` can reference qualified columns;
-unqualified references are allowed when the column name is not ambiguous.
+unqualified references are allowed when the column name is not ambiguous. Join execution uses a
+fixed in-memory hash join and does not go through the index access-path planner; `EXPLAIN` reports
+that bypass.
+
+`UPDATE` and `DELETE` evaluate their `WHERE` clause with a full scan of live rows. They do not yet
+use the planner's index access paths (intentional v1 limitation).
 
 Prepared statements store a SQL string containing `?` placeholders. `EXECUTE name VALUES (...)`
 binds values positionally, reparses the bound statement, and executes it through the normal engine.

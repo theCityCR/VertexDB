@@ -68,6 +68,10 @@ class PageRowStore final : public RowStore {
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const override;
     [[nodiscard]] std::size_t size() const noexcept override;
     [[nodiscard]] std::size_t capacity() const noexcept override;
+    // Observability for the designed page↔buffer-pool mirror (typed rows remain source of truth).
+    [[nodiscard]] bool bufferContains(PageId pageId) const;
+    [[nodiscard]] std::size_t bufferSize() const noexcept;
+    [[nodiscard]] PageId pageIdFor(RowId rowId) const;
     void replaceRows(std::vector<Row> rows) override;
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries) override;

@@ -99,6 +99,7 @@ if(VERTEXDB_BUILD_TESTS)
         tests/execution_tests.cpp
         tests/deep_feature_tests.cpp
         tests/nested_sql_tests.cpp
+        tests/desired_behavior_tests.cpp
         tests/regression_tests.cpp
     )
     target_link_libraries(VertexDB_tests PRIVATE VertexDB::VertexDB GTest::gtest_main)

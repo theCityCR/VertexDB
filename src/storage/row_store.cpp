@@ -278,6 +278,17 @@ std::size_t PageRowStore::size() const noexcept { return liveCount_; }
 
 std::size_t PageRowStore::capacity() const noexcept { return slots_.size(); }
 
+bool PageRowStore::bufferContains(PageId pageId) const { return bufferPool_.contains(pageId); }
+
+std::size_t PageRowStore::bufferSize() const noexcept { return bufferPool_.size(); }
+
+PageId PageRowStore::pageIdFor(RowId rowId) const {
+    if (rowId >= slots_.size()) {
+        throw std::out_of_range("row id out of range");
+    }
+    return slots_[rowId].pageId;
+}
+
 void PageRowStore::replaceRows(std::vector<Row> rows) {
     pages_.clear();
     slots_.clear();
