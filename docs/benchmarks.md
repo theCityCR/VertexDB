@@ -52,9 +52,19 @@ WITH high AS (
 SELECT name FROM high WHERE id = 1;
 ```
 
+The CTE benchmarks use the wedge query:
+
+```sql
+WITH high AS (
+  SELECT id, name, salary FROM Employees WHERE salary > 100000.0
+)
+SELECT name FROM high WHERE id = 1;
+```
+
 With `idx_id`, the planner should choose hash index equality on `id` and keep `salary > …` as a
 residual after CTE inlining. Without an index, the same SQL is a full scan. See
-[cte_index_wedge.md](cte_index_wedge.md).
+[cte_index_wedge.md](cte_index_wedge.md) and the external Postgres comparison in
+[cte_materialize_comparison.md](cte_materialize_comparison.md).
 
 ## Planned Benchmark Work
 

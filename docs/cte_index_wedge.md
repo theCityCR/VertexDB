@@ -73,15 +73,18 @@ on every key insert). The CTE microbenchmark can push toward 100k rows.
 win query at 1k and 100k rows (indexed hash path vs full-scan baseline). Expected shape is documented
 in `docs/benchmarks.md`.
 
-### 4. Materialize-vs-inline comparison
+### 4. Materialize-vs-inline comparison — done
 
-Pick one (prefer external for narrative; add internal if CI needs a stable A/B):
+External comparison (preferred narrative path):
 
-- **External:** script that runs the same query shape in Postgres with
-  `WITH … AS MATERIALIZED` vs VertexDB; capture `EXPLAIN` / timings into a short comparison note
-  under `docs/`.
-- **Internal:** test-only fence path that materializes the CTE then filters (not user-facing
-  `AS MATERIALIZED` SQL) for A/B timing that cannot drift with Postgres versions.
+- Script: [`scripts/compare_cte_materialize.sh`](../scripts/compare_cte_materialize.sh) — VertexDB
+  `EXPLAIN` always; Postgres `AS MATERIALIZED` / `AS NOT MATERIALIZED` when Docker or local `psql`
+  is available.
+- Note: [`docs/cte_materialize_comparison.md`](cte_materialize_comparison.md) — captured VertexDB
+  plan, illustrative Postgres plan shapes, microbenchmark cost proxy, and honest limitations.
+
+Skipped for now: internal test-only materialize fence (CI A/B). The indexed vs non-indexed CTE
+microbenchmarks already provide an in-repo cost baseline.
 
 ### 5. Wedge write-up
 

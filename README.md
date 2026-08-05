@@ -150,6 +150,7 @@ Parallel product wedge (engine behavior already present; packaging evidence): se
 - [Benchmarks](docs/benchmarks.md)
 - [Deep features](docs/deep_features.md)
 - [CTE index wedge plan](docs/cte_index_wedge.md)
+- [CTE materialize vs inline comparison](docs/cte_materialize_comparison.md)
 
 ## License
 

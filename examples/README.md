@@ -49,4 +49,10 @@ filtering by `id`. The script also shows the equivalent flat `WHERE` for compari
 ./build/VertexDB_cli < examples/cte_index_win.sql
 ```
 
-See [docs/cte_index_wedge.md](../docs/cte_index_wedge.md) for the full wedge plan.
+See [docs/cte_index_wedge.md](../docs/cte_index_wedge.md) for the full wedge plan and
+[docs/cte_materialize_comparison.md](../docs/cte_materialize_comparison.md) for the Postgres
+materialize vs inline comparison. Regenerate live plans with:
+
+```sh
+scripts/compare_cte_materialize.sh
+```
