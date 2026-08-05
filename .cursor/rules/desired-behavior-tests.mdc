@@ -1,0 +1,29 @@
+---
+description: Require tests for every designed behavior; assert desired outcomes
+alwaysApply: true
+---
+
+# Desired-Behavior Testing
+
+Every feature and every small designed behavior must ship with tests. Do not merge behavior that is only exercised manually or only covered accidentally by a broader test.
+
+## Desired vs expected
+
+- Write tests for **desired** behavior: what the system should do by design.
+- Do **not** write tests that merely lock in **expected** (current) behavior when that behavior is incomplete, buggy, or a temporary limitation you plan to change.
+- If current code does not yet match the desired design, either implement the design and test it, or leave an explicit failing/skip with a clear reason — do not encode the wrong answer as the golden result.
+
+## Coverage expectations
+
+- New parser constructs, planner choices, rewrites, executor paths, and edge cases each need focused assertions.
+- Prefer tests that name the intent (e.g. `CteInliningUsesBaseTableIndex`) over tests that only check “does not crash.”
+- When fixing a bug, add a regression test that would have failed before the fix.
+
+## Anti-patterns
+
+```text
+BAD:  ASSERT(plan.accessPath == FullScan);  // because today’s planner is weak
+GOOD: ASSERT(plan.accessPath == HashIndexLookup);  // because AND+index should use the index
+```
+
+If a limitation is intentional and documented, a test may assert that documented limitation — label it as such, and do not treat accidental gaps as requirements.
