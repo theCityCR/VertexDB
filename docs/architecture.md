@@ -44,13 +44,13 @@ CLI
 ## Architectural Boundaries
 
 `Table` owns schema validation and index maintenance, but delegates physical row storage to the
-`RowStore` interface. `PageRowStore` is the default implementation and stores rows in compact
-buffer-pool-backed pages. Both row-store implementations assign stable row IDs: deletes leave
-tombstones and push IDs onto a free list, and inserts reuse freed IDs before growing capacity.
-Snapshots persist capacity, free-list order, and live `(rowId, row)` entries so IDs survive
-save/load. Typed rows are still retained as the operational source of truth inside the row store;
-a planned storage milestone is to deserialize rows directly from page payloads. `VectorRowStore`
-remains available as a simple in-memory implementation for focused tests or future comparisons.
+`RowStore` interface. `PageRowStore` is the default implementation: serialized page payloads in an
+in-memory page directory are the source of truth, and the LRU `BufferPool` is the access cache
+(fill-on-miss). Reads deserialize live row slots from those page bytes. Both row-store
+implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
+inserts reuse freed IDs before growing capacity. Snapshots persist capacity, free-list order, and
+live `(rowId, row)` entries so IDs survive save/load. `VectorRowStore` remains available as a simple
+in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata
 with page ids, leaf links, root children, separator keys, and row-id payloads in leaves. Lookup and
@@ -63,8 +63,7 @@ APIs while retaining snapshot-copy rollback semantics for transaction undo.
 
 ## Current Limitations
 
-- `PageRowStore` mirrors page bytes through `BufferPool`, but page bytes are not yet the only row
-  source of truth.
+- Database snapshots persist typed sparse rows rather than raw page files on disk.
 - `BTreeIndex` uses leaf payloads for reads but rebuilds a shallow layout lazily on read rather than
   splitting and merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.

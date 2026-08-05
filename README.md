@@ -15,8 +15,9 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 - SQL tokenization, parsing, AST construction, query planning, and execution for a focused SQL subset
 - `WITH` CTE inlining, `WHERE col IN (SELECT …)`, sargable `AND` extraction with residual filters,
   and `EXPLAIN`
-- Typed table storage with schema validation, nullable columns, page-backed row storage, an LRU
-  buffer pool, and stable row IDs via tombstones with free-list reuse (persisted across save/load)
+- Typed table storage with schema validation, nullable columns, page-backed row storage (page-byte
+  directory as source of truth with an LRU buffer-pool access cache), and stable row IDs via
+  tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree-style range lookup APIs
 - Versioned binary persistence, logical WAL records, save checkpoints, and startup recovery
 - Transaction state tracking, MVCC row-version storage, and snapshot rollback semantics
@@ -109,7 +110,8 @@ Or feed an example script:
 
 - 81 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
-  (roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete behavior)
+  (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
+  behavior)
 - Coverage script enforces an 85% line coverage floor for the core library
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
@@ -117,8 +119,7 @@ Or feed an example script:
 
 ## Current Limitations
 
-- `PageRowStore` mirrors typed rows into buffer-pool pages, but typed row storage is still the
-  operational source of truth
+- Database snapshots still persist typed sparse `(rowId, row)` entries rather than raw page files
 - B+ tree layout is rebuilt lazily on read from ordered entries instead of performing incremental
   split/merge operations
 - Transactions expose MVCC read boundaries, but rollback still restores a database snapshot copy
@@ -130,13 +131,12 @@ Or feed an example script:
 
 ## Roadmap
 
-1. Make page storage the source of truth by deserializing rows from buffer-pool pages
-2. Replace snapshot-copy rollback with undo records or commit-aware MVCC visibility
-3. Implement incremental B+ tree split/merge with structural invariant tests
-4. Add physical WAL redo/recovery tests, including simulated partial writes
-5. Add table/index statistics and cost-based planning
-6. Extend nested SQL (derived tables, correlation) and expression indexes
-7. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
+1. Replace snapshot-copy rollback with undo records or commit-aware MVCC visibility
+2. Implement incremental B+ tree split/merge with structural invariant tests
+3. Add physical WAL redo/recovery tests, including simulated partial writes
+4. Add table/index statistics and cost-based planning
+5. Extend nested SQL (derived tables, correlation) and expression indexes
+6. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
 
 Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)
 and [materialize vs inline comparison](docs/cte_materialize_comparison.md).

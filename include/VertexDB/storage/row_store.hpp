@@ -68,10 +68,12 @@ class PageRowStore final : public RowStore {
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const override;
     [[nodiscard]] std::size_t size() const noexcept override;
     [[nodiscard]] std::size_t capacity() const noexcept override;
-    // Observability for the designed page↔buffer-pool mirror (typed rows remain source of truth).
+    // Observability: page-byte directory is SoT; buffer pool is the LRU access cache.
     [[nodiscard]] bool bufferContains(PageId pageId) const;
     [[nodiscard]] std::size_t bufferSize() const noexcept;
     [[nodiscard]] PageId pageIdFor(RowId rowId) const;
+    [[nodiscard]] std::optional<std::vector<std::byte>> directoryBytes(PageId pageId) const;
+    [[nodiscard]] static std::vector<Row> decodePage(std::span<const std::byte> bytes);
     void replaceRows(std::vector<Row> rows) override;
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries) override;
@@ -84,12 +86,17 @@ class PageRowStore final : public RowStore {
     };
 
     [[nodiscard]] Page serializePage(PageId pageId, const std::vector<Row> &rows) const;
+    [[nodiscard]] std::vector<Row> loadPageRows(PageId pageId) const;
+    void storePage(PageId pageId, const std::vector<Row> &rows);
+    void ensureBuffered(PageId pageId) const;
+    void invalidateDecoded(PageId pageId);
 
     std::size_t rowsPerPage_;
-    BufferPool bufferPool_;
+    mutable BufferPool bufferPool_;
     std::vector<Slot> slots_;
     std::vector<RowId> freeList_;
-    std::unordered_map<PageId, std::vector<Row>> pages_;
+    std::unordered_map<PageId, std::vector<std::byte>> pageDirectory_;
+    mutable std::unordered_map<RowId, Row> decodedRows_;
     std::size_t liveCount_{0};
 };
 

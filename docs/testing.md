@@ -13,7 +13,7 @@ transactions, indexing, recovery, or concurrency, prefer branch-oriented tests o
 line coverage.
 
 The current suite contains 81 discovered GoogleTest cases across parser, storage, index, execution,
-nested SQL rewrite/`EXPLAIN`, desired-behavior coverage, deep-feature, and regression tests (four
+nested SQL rewrite/`EXPLAIN`, desired-behavior coverage, deep-feature, and regression tests (three
 roadmap placeholders are intentionally `GTEST_SKIP`'d with reasons). The latest local coverage run
 reported 85.77% line coverage.
 
