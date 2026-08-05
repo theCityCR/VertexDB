@@ -66,8 +66,9 @@ Next step: replace snapshot-copy rollback with undo records or commit-aware MVCC
 
 The buffer pool is an LRU cache for fixed-size page payloads. `Table` delegates physical row storage
 through a `RowStore` interface and defaults to `PageRowStore`, which groups rows into compact pages
-and mirrors page bytes through the LRU buffer pool. `VectorRowStore` remains available for simple
-in-memory storage tests.
+and mirrors page bytes through the LRU buffer pool. Both `PageRowStore` and `VectorRowStore` keep
+stable row IDs with tombstones and LIFO free-list reuse: deletes leave holes, and inserts reuse
+freed IDs before allocating new capacity.
 
 Next step: make page payloads the source of truth by deserializing rows from buffer-pool pages.
 

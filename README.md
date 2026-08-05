@@ -12,7 +12,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 ## Features
 
 - SQL tokenization, parsing, AST construction, query planning, and execution for a focused SQL subset
-- Typed table storage with schema validation, nullable columns, page-backed row storage, and an LRU buffer pool
+- Typed table storage with schema validation, nullable columns, page-backed row storage, an LRU
+  buffer pool, and stable row IDs via tombstones with free-list reuse
 - Maintained hash indexes and ordered B+ tree-style range lookup APIs
 - Versioned binary persistence, logical WAL records, save checkpoints, and startup recovery
 - Transaction state tracking, MVCC row-version storage, and snapshot rollback semantics
@@ -102,7 +103,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 50 GoogleTest cases covering parser, storage, indexes, execution, persistence, WAL recovery,
+- 52 GoogleTest cases covering parser, storage, indexes, execution, persistence, WAL recovery,
   concurrency, transactions, and regressions
 - Coverage script enforces an 85% line coverage floor for the core library
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -111,7 +112,6 @@ Or feed an example script:
 
 ## Current Limitations
 
-- Row IDs are positional; deletes compact storage and can shift later row IDs
 - `PageRowStore` mirrors typed rows into buffer-pool pages, but typed row storage is still the
   operational source of truth
 - B+ tree writes rebuild a deterministic shallow layout instead of performing incremental
@@ -120,16 +120,17 @@ Or feed an example script:
 - WAL recovery replays logical SQL operations rather than physical page redo records
 - The planner is rule-based and does not yet collect table/index statistics for costing
 - SQL support is intentionally focused: no aggregates, grouping, subqueries, or general DDL
+- Save/load densifies live rows, so row IDs are stable within a session but not across checkpoints
 
 ## Roadmap
 
-1. Stabilize row IDs with tombstones and free-list reuse
-2. Make page storage the source of truth by deserializing rows from buffer-pool pages
-3. Replace snapshot-copy rollback with undo records or commit-aware MVCC visibility
-4. Implement incremental B+ tree split/merge with structural invariant tests
-5. Add physical WAL redo/recovery tests, including simulated partial writes
-6. Add table/index statistics and cost-based planning
-7. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
+1. Make page storage the source of truth by deserializing rows from buffer-pool pages
+2. Replace snapshot-copy rollback with undo records or commit-aware MVCC visibility
+3. Implement incremental B+ tree split/merge with structural invariant tests
+4. Add physical WAL redo/recovery tests, including simulated partial writes
+5. Add table/index statistics and cost-based planning
+6. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
+7. Persist sparse row IDs (and free-list state) across save/load instead of densifying
 
 ## Documentation
 

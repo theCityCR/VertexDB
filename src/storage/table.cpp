@@ -40,6 +40,11 @@ std::vector<Row> Table::rowsSnapshot(TransactionId readerId) const {
     return versions_.visibleRows(readerId);
 }
 
+std::vector<std::pair<RowId, Row>> Table::liveEntries() const {
+    std::shared_lock lock{mutex_};
+    return rowStore_->liveEntries();
+}
+
 std::vector<Row> Table::rowsById(std::span<const RowId> rowIds) const {
     std::shared_lock lock{mutex_};
     return rowStore_->rowsById(rowIds);
@@ -53,6 +58,11 @@ std::vector<Row> Table::rowsById(std::span<const RowId> rowIds, TransactionId re
 std::size_t Table::rowCount() const {
     std::shared_lock lock{mutex_};
     return rowStore_->size();
+}
+
+std::size_t Table::capacity() const {
+    std::shared_lock lock{mutex_};
+    return rowStore_->capacity();
 }
 
 std::vector<RowId> Table::findIndexed(std::string_view column, const Value &value) const {
@@ -138,7 +148,7 @@ RowId Table::insert(Row row) {
 
 bool Table::erase(RowId rowId) {
     std::unique_lock lock{mutex_};
-    if (rowId >= rowStore_->size()) {
+    if (rowStore_->get(rowId) == nullptr) {
         return false;
     }
     versions_.erase(rowId, nextVersionTransactionId_++);
@@ -152,7 +162,7 @@ bool Table::erase(RowId rowId) {
 
 bool Table::update(RowId rowId, std::size_t index, Value value) {
     std::unique_lock lock{mutex_};
-    if (rowId >= rowStore_->size() || index >= schema_.size()) {
+    if (rowStore_->get(rowId) == nullptr || index >= schema_.size()) {
         return false;
     }
     if (value.isNull()) {
@@ -186,8 +196,11 @@ bool Table::createIndex(std::string name, std::string column) {
     indexColumns_.emplace(name, *indexColumn);
     indexes_.try_emplace(name);
     orderedIndexes_.try_emplace(name);
-    for (RowId rowId = 0; rowId < rowStore_->size(); ++rowId) {
+    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
         const auto *row = rowStore_->get(rowId);
+        if (row == nullptr) {
+            continue;
+        }
         indexes_.at(name).insert((*row)[*indexColumn], rowId);
         orderedIndexes_.at(name).insert((*row)[*indexColumn], rowId);
     }
@@ -202,8 +215,12 @@ void Table::replaceRows(std::vector<Row> rows) {
     rowStore_->replaceRows(std::move(rows));
     versions_.clear();
     nextVersionTransactionId_ = 1;
-    for (RowId rowId = 0; rowId < rowStore_->size(); ++rowId) {
-        versions_.write(rowId, *rowStore_->get(rowId), nextVersionTransactionId_++);
+    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
+        const auto *row = rowStore_->get(rowId);
+        if (row == nullptr) {
+            continue;
+        }
+        versions_.write(rowId, *row, nextVersionTransactionId_++);
     }
     rebuildIndexes();
 }
@@ -245,7 +262,7 @@ void Table::rebuildIndexes() {
     for (auto &[_, index] : orderedIndexes_) {
         index.clear();
     }
-    for (RowId rowId = 0; rowId < rowStore_->size(); ++rowId) {
+    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
         addRowToIndexes(rowId);
     }
 }

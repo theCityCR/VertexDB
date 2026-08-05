@@ -101,7 +101,65 @@ TEST(StorageTests, PageRowStoreStoresRowsAcrossBufferPages) {
 
     ASSERT_TRUE(store.erase(first));
     ASSERT_EQ(store.size(), 2U);
-    EXPECT_EQ((*store.get(0))[0], Value{20});
+    ASSERT_EQ(store.capacity(), 3U);
+    EXPECT_EQ(store.get(first), nullptr);
+    ASSERT_NE(store.get(second), nullptr);
+    EXPECT_EQ((*store.get(second))[0], Value{20});
+    ASSERT_NE(store.get(third), nullptr);
+    EXPECT_EQ((*store.get(third))[0], Value{3});
+}
+
+TEST(StorageTests, StableRowIdsSurviveMiddleDeleteAndReuseFreeList) {
+    VectorRowStore vectorStore;
+    PageRowStore pageStore{2, 4};
+
+    for (auto *store : std::initializer_list<RowStore *>{&vectorStore, &pageStore}) {
+        const auto first = store->append({Value{1}});
+        const auto second = store->append({Value{2}});
+        const auto third = store->append({Value{3}});
+
+        ASSERT_TRUE(store->erase(second));
+        EXPECT_EQ(store->size(), 2U);
+        EXPECT_EQ(store->capacity(), 3U);
+        EXPECT_EQ(store->get(second), nullptr);
+        ASSERT_NE(store->get(first), nullptr);
+        ASSERT_NE(store->get(third), nullptr);
+        EXPECT_EQ((*store->get(first))[0], Value{1});
+        EXPECT_EQ((*store->get(third))[0], Value{3});
+
+        const auto reused = store->append({Value{4}});
+        EXPECT_EQ(reused, second);
+        EXPECT_EQ(store->size(), 3U);
+        EXPECT_EQ(store->capacity(), 3U);
+        ASSERT_NE(store->get(reused), nullptr);
+        EXPECT_EQ((*store->get(reused))[0], Value{4});
+
+        const auto entries = store->liveEntries();
+        ASSERT_EQ(entries.size(), 3U);
+        EXPECT_EQ(entries[0].first, first);
+        EXPECT_EQ(entries[1].first, reused);
+        EXPECT_EQ(entries[2].first, third);
+    }
+}
+
+TEST(StorageTests, TableIndexesTrackStableRowIdsAfterMiddleDelete) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    const auto first = table.insert({Value{1}, Value{std::string{"Alice"}}});
+    const auto second = table.insert({Value{2}, Value{std::string{"Bob"}}});
+    const auto third = table.insert({Value{3}, Value{std::string{"Cara"}}});
+
+    ASSERT_TRUE(table.erase(second));
+    EXPECT_EQ(table.rowCount(), 2U);
+    EXPECT_EQ(table.capacity(), 3U);
+    EXPECT_TRUE(table.findIndexed("id", Value{2}).empty());
+    EXPECT_EQ(table.findIndexed("id", Value{1}), std::vector<RowId>{first});
+    EXPECT_EQ(table.findIndexed("id", Value{3}), std::vector<RowId>{third});
+
+    const auto reused = table.insert({Value{4}, Value{std::string{"Dana"}}});
+    EXPECT_EQ(reused, second);
+    EXPECT_EQ(table.findIndexed("id", Value{4}), std::vector<RowId>{reused});
 }
 
 TEST(StorageTests, SupportsConcurrentInserts) {

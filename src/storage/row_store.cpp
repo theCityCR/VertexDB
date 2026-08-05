@@ -39,20 +39,31 @@ void appendValue(std::vector<std::byte> &bytes, const Value &value) {
 } // namespace
 
 RowId VectorRowStore::append(Row row) {
-    rows_.push_back(std::move(row));
-    return rows_.size() - 1;
+    RowId rowId = 0;
+    if (!freeList_.empty()) {
+        rowId = freeList_.back();
+        freeList_.pop_back();
+        rows_[rowId] = std::move(row);
+    } else {
+        rowId = rows_.size();
+        rows_.push_back(std::move(row));
+    }
+    ++liveCount_;
+    return rowId;
 }
 
 bool VectorRowStore::erase(RowId rowId) {
-    if (rowId >= rows_.size()) {
+    if (rowId >= rows_.size() || !rows_[rowId].has_value()) {
         return false;
     }
-    rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(rowId));
+    rows_[rowId].reset();
+    freeList_.push_back(rowId);
+    --liveCount_;
     return true;
 }
 
 bool VectorRowStore::update(RowId rowId, Row row) {
-    if (rowId >= rows_.size()) {
+    if (rowId >= rows_.size() || !rows_[rowId].has_value()) {
         return false;
     }
     rows_[rowId] = std::move(row);
@@ -60,13 +71,33 @@ bool VectorRowStore::update(RowId rowId, Row row) {
 }
 
 const Row *VectorRowStore::get(RowId rowId) const {
-    if (rowId >= rows_.size()) {
+    if (rowId >= rows_.size() || !rows_[rowId].has_value()) {
         return nullptr;
     }
-    return &rows_[rowId];
+    return &*rows_[rowId];
 }
 
-std::vector<Row> VectorRowStore::snapshot() const { return rows_; }
+std::vector<Row> VectorRowStore::snapshot() const {
+    std::vector<Row> rows;
+    rows.reserve(liveCount_);
+    for (const auto &row : rows_) {
+        if (row.has_value()) {
+            rows.push_back(*row);
+        }
+    }
+    return rows;
+}
+
+std::vector<std::pair<RowId, Row>> VectorRowStore::liveEntries() const {
+    std::vector<std::pair<RowId, Row>> entries;
+    entries.reserve(liveCount_);
+    for (RowId rowId = 0; rowId < rows_.size(); ++rowId) {
+        if (rows_[rowId].has_value()) {
+            entries.emplace_back(rowId, *rows_[rowId]);
+        }
+    }
+    return entries;
+}
 
 std::vector<Row> VectorRowStore::rowsById(std::span<const RowId> rowIds) const {
     std::vector<Row> rows;
@@ -79,9 +110,19 @@ std::vector<Row> VectorRowStore::rowsById(std::span<const RowId> rowIds) const {
     return rows;
 }
 
-std::size_t VectorRowStore::size() const noexcept { return rows_.size(); }
+std::size_t VectorRowStore::size() const noexcept { return liveCount_; }
 
-void VectorRowStore::replaceRows(std::vector<Row> rows) { rows_ = std::move(rows); }
+std::size_t VectorRowStore::capacity() const noexcept { return rows_.size(); }
+
+void VectorRowStore::replaceRows(std::vector<Row> rows) {
+    rows_.clear();
+    freeList_.clear();
+    liveCount_ = 0;
+    rows_.reserve(rows.size());
+    for (auto &row : rows) {
+        (void)append(std::move(row));
+    }
+}
 
 std::unique_ptr<RowStore> makeVectorRowStore() { return std::make_unique<VectorRowStore>(); }
 
@@ -93,27 +134,41 @@ PageRowStore::PageRowStore(std::size_t rowsPerPage, std::size_t bufferPageCapaci
 }
 
 RowId PageRowStore::append(Row row) {
-    const RowId rowId = slots_.size();
-    const PageId pageId = rowId / rowsPerPage_ + 1;
-    auto &pageRows = pages_[pageId];
-    pageRows.push_back(std::move(row));
-    slots_.push_back(Slot{pageId, pageRows.size() - 1});
-    bufferPool_.put(serializePage(pageId, pageRows));
+    RowId rowId = 0;
+    if (!freeList_.empty()) {
+        rowId = freeList_.back();
+        freeList_.pop_back();
+        auto &slot = slots_[rowId];
+        slot.live = true;
+        pages_.at(slot.pageId)[slot.offset] = std::move(row);
+        bufferPool_.put(serializePage(slot.pageId, pages_.at(slot.pageId)));
+    } else {
+        rowId = slots_.size();
+        const PageId pageId = rowId / rowsPerPage_ + 1;
+        auto &pageRows = pages_[pageId];
+        pageRows.push_back(std::move(row));
+        slots_.push_back(Slot{pageId, pageRows.size() - 1, true});
+        bufferPool_.put(serializePage(pageId, pageRows));
+    }
+    ++liveCount_;
     return rowId;
 }
 
 bool PageRowStore::erase(RowId rowId) {
-    if (rowId >= slots_.size()) {
+    if (rowId >= slots_.size() || !slots_[rowId].live) {
         return false;
     }
-    auto rows = snapshot();
-    rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(rowId));
-    replaceRows(std::move(rows));
+    auto &slot = slots_[rowId];
+    slot.live = false;
+    pages_.at(slot.pageId)[slot.offset] = Row{};
+    bufferPool_.put(serializePage(slot.pageId, pages_.at(slot.pageId)));
+    freeList_.push_back(rowId);
+    --liveCount_;
     return true;
 }
 
 bool PageRowStore::update(RowId rowId, Row row) {
-    if (rowId >= slots_.size()) {
+    if (rowId >= slots_.size() || !slots_[rowId].live) {
         return false;
     }
     auto &slot = slots_[rowId];
@@ -123,7 +178,7 @@ bool PageRowStore::update(RowId rowId, Row row) {
 }
 
 const Row *PageRowStore::get(RowId rowId) const {
-    if (rowId >= slots_.size()) {
+    if (rowId >= slots_.size() || !slots_[rowId].live) {
         return nullptr;
     }
     const auto &slot = slots_[rowId];
@@ -136,14 +191,28 @@ const Row *PageRowStore::get(RowId rowId) const {
 
 std::vector<Row> PageRowStore::snapshot() const {
     std::vector<Row> rows;
-    rows.reserve(slots_.size());
+    rows.reserve(liveCount_);
     for (const auto &slot : slots_) {
+        if (!slot.live) {
+            continue;
+        }
         const auto page = pages_.find(slot.pageId);
         if (page != pages_.end() && slot.offset < page->second.size()) {
             rows.push_back(page->second[slot.offset]);
         }
     }
     return rows;
+}
+
+std::vector<std::pair<RowId, Row>> PageRowStore::liveEntries() const {
+    std::vector<std::pair<RowId, Row>> entries;
+    entries.reserve(liveCount_);
+    for (RowId rowId = 0; rowId < slots_.size(); ++rowId) {
+        if (const auto *row = get(rowId); row != nullptr) {
+            entries.emplace_back(rowId, *row);
+        }
+    }
+    return entries;
 }
 
 std::vector<Row> PageRowStore::rowsById(std::span<const RowId> rowIds) const {
@@ -157,11 +226,15 @@ std::vector<Row> PageRowStore::rowsById(std::span<const RowId> rowIds) const {
     return rows;
 }
 
-std::size_t PageRowStore::size() const noexcept { return slots_.size(); }
+std::size_t PageRowStore::size() const noexcept { return liveCount_; }
+
+std::size_t PageRowStore::capacity() const noexcept { return slots_.size(); }
 
 void PageRowStore::replaceRows(std::vector<Row> rows) {
     pages_.clear();
     slots_.clear();
+    freeList_.clear();
+    liveCount_ = 0;
     for (auto &row : rows) {
         (void)append(std::move(row));
     }

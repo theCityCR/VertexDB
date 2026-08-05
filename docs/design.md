@@ -7,8 +7,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 - Repository foundation: CMake targets, CLI, library target, GitHub Actions CI, and documentation
 - Storage engine: typed columns, nullable values, schema validation, table/database ownership,
-  page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, and MVCC version
-  recording
+  page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
+  recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer, AST, grammar tests, table-management commands, predicates, ordering, limits,
   joins, transactions, prepared statements, save/load, and exit
 - Query execution: projection, filtering, ordering, limit, insert, update, delete, table
@@ -43,7 +43,6 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Known Limitations
 
-- Row IDs are positional. Deletes compact storage, which can shift later row IDs.
 - Page payloads are serialized into the buffer pool, but typed rows remain the operational source
   of truth inside `PageRowStore`.
 - B+ tree insert/delete operations rebuild node layout rather than incrementally splitting and
@@ -54,16 +53,17 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - The planner does not collect statistics or perform cost-based optimization.
 - SQL support is intentionally limited and does not include aggregation, grouping, subqueries, or
   general DDL.
+- Save/load densifies live rows, so row IDs are stable within a session but not across checkpoints.
 
 ## Next Engineering Plan
 
-1. Introduce stable row IDs with tombstones and free-list reuse.
-2. Make `PageRowStore` load rows from page bytes so page storage becomes the source of truth.
-3. Replace snapshot rollback with undo records or MVCC commit visibility.
-4. Implement incremental B+ tree page split/merge logic with invariants tests.
-5. Harden recovery with physical redo records and crash-simulation regression tests.
-6. Add statistics to tables and indexes, then evolve the planner toward a cost model.
-7. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
+1. Make `PageRowStore` load rows from page bytes so page storage becomes the source of truth.
+2. Replace snapshot rollback with undo records or MVCC commit visibility.
+3. Implement incremental B+ tree page split/merge logic with invariants tests.
+4. Harden recovery with physical redo records and crash-simulation regression tests.
+5. Add statistics to tables and indexes, then evolve the planner toward a cost model.
+6. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
+7. Persist sparse row IDs and free-list state across save/load instead of densifying.
 8. Turn benchmark output into documented reports and trend comparisons.
 
 ## Definition of Done

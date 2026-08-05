@@ -10,24 +10,44 @@
 
 namespace VertexDB {
 
-TEST(ExecutionTests, InsertsAndSelectsRows) {
+TEST(ExecutionTests, UpdatesAndDeletesByStableRowIds) {
     Parser parser;
     QueryExecutor executor;
 
-    EXPECT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
-    EXPECT_TRUE(
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
         executor
             .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
             .success);
-    EXPECT_TRUE(
-        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0), (3, \"Cara\", 110000.0);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 2;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET salary = 130000.0 WHERE id = 3;"))
             .success);
 
-    auto result = executor.execute(
-        parser.parse("SELECT name FROM Employees WHERE salary > 100000.0 LIMIT 1;"));
-    ASSERT_TRUE(result.success);
-    ASSERT_EQ(result.rows.size(), 1U);
-    EXPECT_EQ(result.rows.front().front(), Value{std::string{"Alice"}});
+    auto remaining =
+        executor.execute(parser.parse("SELECT id, salary FROM Employees ORDER BY id ASC;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 2U);
+    EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(remaining.rows[0][1], Value{120000.0});
+    EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
+    EXPECT_EQ(remaining.rows[1][1], Value{130000.0});
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (4, \"Dana\", 95000.0);"))
+            .success);
+    auto afterInsert =
+        executor.execute(parser.parse("SELECT id FROM Employees WHERE id = 4;"));
+    ASSERT_TRUE(afterInsert.success);
+    ASSERT_EQ(afterInsert.rows.size(), 1U);
+    EXPECT_EQ(afterInsert.rows.front().front(), Value{static_cast<std::int64_t>(4)});
 }
 
 TEST(ExecutionTests, OrdersLimitsAndManagesTables) {

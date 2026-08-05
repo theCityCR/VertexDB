@@ -357,9 +357,8 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
     }
 
     std::size_t count = 0;
-    const auto snapshot = table->rowsSnapshot();
-    for (RowId rowId = 0; rowId < snapshot.size(); ++rowId) {
-        if (command.where && !matches(snapshot[rowId], *table, *command.where)) {
+    for (const auto &[rowId, row] : table->liveEntries()) {
+        if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
         if (table->update(rowId, *target, command.value)) {
@@ -375,13 +374,11 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
 QueryResult QueryExecutor::executeDelete(const Delete &command) {
     auto table = requireTable(command.table);
     std::size_t count = 0;
-    const auto snapshot = table->rowsSnapshot();
-    for (RowId rowId = snapshot.size(); rowId > 0; --rowId) {
-        const RowId actual = rowId - 1;
-        if (command.where && !matches(snapshot[actual], *table, *command.where)) {
+    for (const auto &[rowId, row] : table->liveEntries()) {
+        if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
-        if (table->erase(actual)) {
+        if (table->erase(rowId)) {
             ++count;
         }
     }

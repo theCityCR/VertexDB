@@ -28,10 +28,12 @@ class Table {
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
     [[nodiscard]] std::vector<Row> rowsSnapshot(TransactionId readerId) const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds,
                                             TransactionId readerId) const;
     [[nodiscard]] std::size_t rowCount() const;
+    [[nodiscard]] std::size_t capacity() const;
     [[nodiscard]] std::vector<RowId> findIndexed(std::string_view column, const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>> indexedLookup(std::string_view column,
                                                                   const Value &value) const;
