@@ -45,6 +45,11 @@ std::vector<std::pair<RowId, Row>> Table::liveEntries() const {
     return rowStore_->liveEntries();
 }
 
+std::vector<RowId> Table::freeList() const {
+    std::shared_lock lock{mutex_};
+    return rowStore_->freeList();
+}
+
 std::vector<Row> Table::rowsById(std::span<const RowId> rowIds) const {
     std::shared_lock lock{mutex_};
     return rowStore_->rowsById(rowIds);
@@ -213,6 +218,25 @@ void Table::replaceRows(std::vector<Row> rows) {
     }
     std::unique_lock lock{mutex_};
     rowStore_->replaceRows(std::move(rows));
+    versions_.clear();
+    nextVersionTransactionId_ = 1;
+    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
+        const auto *row = rowStore_->get(rowId);
+        if (row == nullptr) {
+            continue;
+        }
+        versions_.write(rowId, *row, nextVersionTransactionId_++);
+    }
+    rebuildIndexes();
+}
+
+void Table::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                          std::vector<std::pair<RowId, Row>> entries) {
+    for (const auto &[_, row] : entries) {
+        validateRow(row);
+    }
+    std::unique_lock lock{mutex_};
+    rowStore_->replaceSparse(capacity, std::move(freeList), std::move(entries));
     versions_.clear();
     nextVersionTransactionId_ = 1;
     for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {

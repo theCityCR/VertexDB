@@ -146,6 +146,60 @@ TEST(ExecutionTests, SavesAndLoadsDatabase) {
     std::filesystem::remove_all(root);
 }
 
+TEST(ExecutionTests, SaveLoadPreservesSparseRowIdsAndFreeListReuse) {
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_sparse_ids_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+
+    RowId keptId = 0;
+    RowId deletedId = 0;
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);"))
+                        .success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\"), (2, \"Bob\"), (3, "
+                            "\"Cara\");"))
+                        .success);
+
+        auto *table = executor.currentDatabase()->table("Employees").get();
+        ASSERT_NE(table, nullptr);
+        const auto beforeDelete = table->liveEntries();
+        ASSERT_EQ(beforeDelete.size(), 3U);
+        deletedId = beforeDelete[1].first;
+        keptId = beforeDelete[2].first;
+
+        ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 2;")).success);
+        ASSERT_EQ(table->capacity(), 3U);
+        ASSERT_EQ(table->rowCount(), 2U);
+        ASSERT_EQ(table->freeList(), std::vector<RowId>{deletedId});
+        ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    }
+
+    QueryExecutor loaded{root};
+    ASSERT_TRUE(loaded.execute(parser.parse("LOAD DATABASE company;")).success);
+    auto *table = loaded.currentDatabase()->table("Employees").get();
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->capacity(), 3U);
+    EXPECT_EQ(table->rowCount(), 2U);
+    EXPECT_EQ(table->freeList(), std::vector<RowId>{deletedId});
+    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(3)}),
+              std::vector<RowId>{keptId});
+
+    ASSERT_TRUE(
+        loaded.execute(parser.parse("INSERT INTO Employees VALUES (4, \"Dana\");")).success);
+    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(4)}),
+              std::vector<RowId>{deletedId});
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(ExecutionTests, FailedMetadataOperationsDoNotPolluteWal) {
     const auto root = std::filesystem::temp_directory_path() /
                       ("VertexDB_failed_wal_test_" +

@@ -41,9 +41,7 @@ bool Database::renameTable(std::string_view oldName, std::string newName) {
     tables_.erase(it);
     std::vector<Column> schema{oldTable->schema().begin(), oldTable->schema().end()};
     auto replacement = std::make_shared<Table>(newName, std::move(schema));
-    for (const auto &row : oldTable->rowsSnapshot()) {
-        replacement->insert(row);
-    }
+    replacement->replaceSparse(oldTable->capacity(), oldTable->freeList(), oldTable->liveEntries());
     for (const auto &[indexName, columnName] : oldTable->indexDefinitions()) {
         replacement->createIndex(indexName, columnName);
     }
@@ -89,7 +87,8 @@ std::shared_ptr<Database> Database::clone() const {
             throw std::runtime_error("failed to clone table");
         }
         auto destinationTable = copy->table(sourceTable->name());
-        destinationTable->replaceRows(sourceTable->rowsSnapshot());
+        destinationTable->replaceSparse(sourceTable->capacity(), sourceTable->freeList(),
+                                        sourceTable->liveEntries());
         for (const auto &[indexName, columnName] : sourceTable->indexDefinitions()) {
             destinationTable->createIndex(indexName, columnName);
         }

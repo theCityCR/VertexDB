@@ -49,11 +49,13 @@ Prepared statements store a SQL string containing `?` placeholders. `EXECUTE nam
 binds values positionally, reparses the bound statement, and executes it through the normal engine.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format under the executor's storage
-root. `LOAD DATABASE` without a name reloads the active database when one exists, otherwise it
-loads the first saved database file. Query executors also recover automatically on startup by
-loading the latest saved snapshot and replaying WAL records after that checkpoint. If no snapshot
-exists, startup recovery replays the WAL from the beginning. Successful saves checkpoint the WAL so
-future recovery only replays post-save changes.
+root. Current snapshots store schemas, indexes, capacity, free-list order, and live
+`(rowId, row)` entries so sparse IDs survive checkpoints; older dense v1 snapshots remain readable.
+`LOAD DATABASE` without a name reloads the active database when one exists, otherwise it loads the
+first saved database file. Query executors also recover automatically on startup by loading the
+latest saved snapshot and replaying WAL records after that checkpoint. If no snapshot exists,
+startup recovery replays the WAL from the beginning. Successful saves checkpoint the WAL so future
+recovery only replays post-save changes.
 
 Transactions use transaction state tracking, MVCC-aware reads, and snapshot rollback semantics.
 `BEGIN` captures the active database state, active-transaction reads route through the table MVCC

@@ -1,6 +1,7 @@
 #include "VertexDB/concurrency/lock_manager.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/indexing/hash_index.hpp"
+#include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/storage/buffer_pool.hpp"
@@ -11,7 +12,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <future>
 
 namespace VertexDB {
@@ -237,6 +240,56 @@ TEST(DeepFeatureTests, TransactionManagerTracksCommitRollbackAndInvalidTransitio
     EXPECT_THROW(transactions.rollback(second.id), std::runtime_error);
     EXPECT_THROW(transactions.commit(999), std::runtime_error);
     EXPECT_THROW(transactions.rollback(999), std::runtime_error);
+}
+
+TEST(DeepFeatureTests, StorageManagerLoadsLegacyDenseSnapshots) {
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_v1_snapshot_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+
+    {
+        std::ofstream out{root / "legacy.tcrdb", std::ios::binary};
+        ASSERT_TRUE(out);
+
+        const auto writePod = [&](const auto &value) {
+            out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+        };
+        const auto writeString = [&](std::string_view value) {
+            writePod(static_cast<std::uint64_t>(value.size()));
+            out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        };
+
+        out.write("TCRDB001", 8);
+        writePod(std::uint32_t{1});
+        writeString("legacy");
+        writePod(std::uint64_t{1}); // table count
+        writeString("Employees");
+        writePod(std::uint64_t{1}); // column count
+        writeString("id");
+        writePod(std::uint8_t{0}); // INT
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint64_t{0}); // indexes
+        writePod(std::uint64_t{2}); // dense rows
+        writePod(std::uint8_t{0});
+        writePod(std::int64_t{10});
+        writePod(std::uint8_t{0});
+        writePod(std::int64_t{20});
+    }
+
+    StorageManager storage{root};
+    auto database = storage.loadDatabase("legacy");
+    auto table = database->table("Employees");
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->capacity(), 2U);
+    EXPECT_EQ(table->rowCount(), 2U);
+    EXPECT_TRUE(table->freeList().empty());
+    ASSERT_NE(table->liveEntries().size(), 0U);
+    EXPECT_EQ(table->liveEntries()[0].first, 0U);
+    EXPECT_EQ(table->liveEntries()[1].first, 1U);
+
+    std::filesystem::remove_all(root);
 }
 
 } // namespace VertexDB

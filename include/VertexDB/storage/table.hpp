@@ -29,6 +29,7 @@ class Table {
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
     [[nodiscard]] std::vector<Row> rowsSnapshot(TransactionId readerId) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const;
+    [[nodiscard]] std::vector<RowId> freeList() const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds,
                                             TransactionId readerId) const;
@@ -51,6 +52,8 @@ class Table {
     bool update(RowId rowId, std::size_t columnIndex, Value value);
     bool createIndex(std::string name, std::string column);
     void replaceRows(std::vector<Row> rows);
+    void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                       std::vector<std::pair<RowId, Row>> entries);
 
   private:
     void addRowToIndexes(RowId rowId);

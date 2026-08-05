@@ -8,7 +8,8 @@ namespace VertexDB {
 namespace {
 
 constexpr std::string_view kMagic = "TCRDB001";
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersionV1 = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::uint8_t kNullValueType = 255;
 constexpr std::string_view kExtension = ".tcrdb";
 
@@ -86,6 +87,15 @@ Value readValue(std::istream &in) {
     throw std::runtime_error("unsupported value type in database file");
 }
 
+Row readRow(std::istream &in, std::size_t columnCount) {
+    Row row;
+    row.reserve(columnCount);
+    for (std::size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+        row.push_back(readValue(in));
+    }
+    return row;
+}
+
 std::filesystem::path pathFor(const std::filesystem::path &root, std::string_view databaseName) {
     return root / (std::string{databaseName} + std::string{kExtension});
 }
@@ -93,6 +103,35 @@ std::filesystem::path pathFor(const std::filesystem::path &root, std::string_vie
 std::filesystem::path temporaryPathFor(const std::filesystem::path &root,
                                        std::string_view databaseName) {
     return root / (std::string{databaseName} + std::string{kExtension} + ".tmp");
+}
+
+void loadDenseRows(Table &table, std::istream &in, std::size_t columnCount) {
+    const auto rowCount = readPod<std::uint64_t>(in);
+    std::vector<Row> rows;
+    rows.reserve(static_cast<std::size_t>(rowCount));
+    for (std::uint64_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
+        rows.push_back(readRow(in, columnCount));
+    }
+    table.replaceRows(std::move(rows));
+}
+
+void loadSparseRows(Table &table, std::istream &in, std::size_t columnCount) {
+    const auto capacity = static_cast<std::size_t>(readPod<std::uint64_t>(in));
+    const auto freeCount = readPod<std::uint64_t>(in);
+    std::vector<RowId> freeList;
+    freeList.reserve(static_cast<std::size_t>(freeCount));
+    for (std::uint64_t index = 0; index < freeCount; ++index) {
+        freeList.push_back(static_cast<RowId>(readPod<std::uint64_t>(in)));
+    }
+
+    const auto liveCount = readPod<std::uint64_t>(in);
+    std::vector<std::pair<RowId, Row>> entries;
+    entries.reserve(static_cast<std::size_t>(liveCount));
+    for (std::uint64_t index = 0; index < liveCount; ++index) {
+        const auto rowId = static_cast<RowId>(readPod<std::uint64_t>(in));
+        entries.emplace_back(rowId, readRow(in, columnCount));
+    }
+    table.replaceSparse(capacity, std::move(freeList), std::move(entries));
 }
 
 } // namespace
@@ -132,9 +171,17 @@ void StorageManager::saveDatabase(const Database &database) const {
                 writeString(out, columnName);
             }
 
-            const auto rows = table->rowsSnapshot();
-            writePod(out, static_cast<std::uint64_t>(rows.size()));
-            for (const auto &row : rows) {
+            writePod(out, static_cast<std::uint64_t>(table->capacity()));
+            const auto freeList = table->freeList();
+            writePod(out, static_cast<std::uint64_t>(freeList.size()));
+            for (const auto rowId : freeList) {
+                writePod(out, static_cast<std::uint64_t>(rowId));
+            }
+
+            const auto entries = table->liveEntries();
+            writePod(out, static_cast<std::uint64_t>(entries.size()));
+            for (const auto &[rowId, row] : entries) {
+                writePod(out, static_cast<std::uint64_t>(rowId));
                 for (const auto &value : row) {
                     writeValue(out, value);
                 }
@@ -167,7 +214,7 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
         throw std::runtime_error("invalid database file magic");
     }
     const auto version = readPod<std::uint32_t>(in);
-    if (version != kVersion) {
+    if (version != kVersion && version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
@@ -197,18 +244,11 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
             indexDefinitions.emplace_back(readString(in), readString(in));
         }
 
-        const auto rowCount = readPod<std::uint64_t>(in);
-        std::vector<Row> rows;
-        rows.reserve(static_cast<std::size_t>(rowCount));
-        for (std::uint64_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-            Row row;
-            row.reserve(static_cast<std::size_t>(columnCount));
-            for (std::uint64_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
-                row.push_back(readValue(in));
-            }
-            rows.push_back(std::move(row));
+        if (version == kVersionV1) {
+            loadDenseRows(*table, in, static_cast<std::size_t>(columnCount));
+        } else {
+            loadSparseRows(*table, in, static_cast<std::size_t>(columnCount));
         }
-        table->replaceRows(std::move(rows));
         for (const auto &[indexName, columnName] : indexDefinitions) {
             table->createIndex(indexName, columnName);
         }

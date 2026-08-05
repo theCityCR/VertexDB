@@ -47,9 +47,10 @@ CLI
 `RowStore` interface. `PageRowStore` is the default implementation and stores rows in compact
 buffer-pool-backed pages. Both row-store implementations assign stable row IDs: deletes leave
 tombstones and push IDs onto a free list, and inserts reuse freed IDs before growing capacity.
-Typed rows are still retained as the operational source of truth inside the row store; a planned
-storage milestone is to deserialize rows directly from page payloads. `VectorRowStore` remains
-available as a simple in-memory implementation for focused tests or future comparisons.
+Snapshots persist capacity, free-list order, and live `(rowId, row)` entries so IDs survive
+save/load. Typed rows are still retained as the operational source of truth inside the row store;
+a planned storage milestone is to deserialize rows directly from page payloads. `VectorRowStore`
+remains available as a simple in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata
 with page ids, leaf links, root children, separator keys, and row-id payloads in leaves. Lookup and
@@ -68,7 +69,6 @@ APIs while retaining snapshot-copy rollback semantics for transaction undo.
   merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.
 - Transactions have MVCC read routing but still use snapshot-copy rollback.
-- Save/load densifies live rows, so row IDs are stable within a session but not across checkpoints.
 
 ## Current Data Flow
 

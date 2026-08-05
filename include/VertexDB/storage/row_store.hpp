@@ -23,10 +23,13 @@ class RowStore {
     [[nodiscard]] virtual const Row *get(RowId rowId) const = 0;
     [[nodiscard]] virtual std::vector<Row> snapshot() const = 0;
     [[nodiscard]] virtual std::vector<std::pair<RowId, Row>> liveEntries() const = 0;
+    [[nodiscard]] virtual std::vector<RowId> freeList() const = 0;
     [[nodiscard]] virtual std::vector<Row> rowsById(std::span<const RowId> rowIds) const = 0;
     [[nodiscard]] virtual std::size_t size() const noexcept = 0;
     [[nodiscard]] virtual std::size_t capacity() const noexcept = 0;
     virtual void replaceRows(std::vector<Row> rows) = 0;
+    virtual void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                               std::vector<std::pair<RowId, Row>> entries) = 0;
 };
 
 class VectorRowStore final : public RowStore {
@@ -37,10 +40,13 @@ class VectorRowStore final : public RowStore {
     [[nodiscard]] const Row *get(RowId rowId) const override;
     [[nodiscard]] std::vector<Row> snapshot() const override;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const override;
+    [[nodiscard]] std::vector<RowId> freeList() const override;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const override;
     [[nodiscard]] std::size_t size() const noexcept override;
     [[nodiscard]] std::size_t capacity() const noexcept override;
     void replaceRows(std::vector<Row> rows) override;
+    void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                       std::vector<std::pair<RowId, Row>> entries) override;
 
   private:
     std::vector<std::optional<Row>> rows_;
@@ -58,10 +64,13 @@ class PageRowStore final : public RowStore {
     [[nodiscard]] const Row *get(RowId rowId) const override;
     [[nodiscard]] std::vector<Row> snapshot() const override;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const override;
+    [[nodiscard]] std::vector<RowId> freeList() const override;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const override;
     [[nodiscard]] std::size_t size() const noexcept override;
     [[nodiscard]] std::size_t capacity() const noexcept override;
     void replaceRows(std::vector<Row> rows) override;
+    void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                       std::vector<std::pair<RowId, Row>> entries) override;
 
   private:
     struct Slot {

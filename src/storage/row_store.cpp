@@ -1,6 +1,7 @@
 #include "VertexDB/storage/row_store.hpp"
 
 #include <stdexcept>
+#include <unordered_set>
 
 namespace VertexDB {
 namespace {
@@ -33,6 +34,38 @@ void appendValue(std::vector<std::byte> &bytes, const Value &value) {
         bytes.insert(bytes.end(), raw, raw + text.size());
         break;
     }
+    }
+}
+
+void validateSparseLayout(std::size_t capacity, const std::vector<RowId> &freeList,
+                          const std::vector<std::pair<RowId, Row>> &entries) {
+    if (entries.size() > capacity) {
+        throw std::invalid_argument("sparse row layout has more live rows than capacity");
+    }
+    if (freeList.size() + entries.size() != capacity) {
+        throw std::invalid_argument("sparse row layout free list and live rows must cover capacity");
+    }
+
+    std::unordered_set<RowId> seen;
+    seen.reserve(capacity);
+    for (const auto &[rowId, _] : entries) {
+        if (rowId >= capacity) {
+            throw std::invalid_argument("sparse live row id exceeds capacity");
+        }
+        if (!seen.insert(rowId).second) {
+            throw std::invalid_argument("duplicate sparse live row id");
+        }
+    }
+    for (const auto rowId : freeList) {
+        if (rowId >= capacity) {
+            throw std::invalid_argument("sparse free-list row id exceeds capacity");
+        }
+        if (!seen.insert(rowId).second) {
+            throw std::invalid_argument("sparse free-list overlaps a live or duplicate row id");
+        }
+    }
+    if (seen.size() != capacity) {
+        throw std::invalid_argument("sparse row layout does not cover every slot");
     }
 }
 
@@ -99,6 +132,8 @@ std::vector<std::pair<RowId, Row>> VectorRowStore::liveEntries() const {
     return entries;
 }
 
+std::vector<RowId> VectorRowStore::freeList() const { return freeList_; }
+
 std::vector<Row> VectorRowStore::rowsById(std::span<const RowId> rowIds) const {
     std::vector<Row> rows;
     rows.reserve(rowIds.size());
@@ -121,6 +156,17 @@ void VectorRowStore::replaceRows(std::vector<Row> rows) {
     rows_.reserve(rows.size());
     for (auto &row : rows) {
         (void)append(std::move(row));
+    }
+}
+
+void VectorRowStore::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                                  std::vector<std::pair<RowId, Row>> entries) {
+    validateSparseLayout(capacity, freeList, entries);
+    rows_.assign(capacity, std::nullopt);
+    freeList_ = std::move(freeList);
+    liveCount_ = entries.size();
+    for (auto &[rowId, row] : entries) {
+        rows_[rowId] = std::move(row);
     }
 }
 
@@ -215,6 +261,8 @@ std::vector<std::pair<RowId, Row>> PageRowStore::liveEntries() const {
     return entries;
 }
 
+std::vector<RowId> PageRowStore::freeList() const { return freeList_; }
+
 std::vector<Row> PageRowStore::rowsById(std::span<const RowId> rowIds) const {
     std::vector<Row> rows;
     rows.reserve(rowIds.size());
@@ -237,6 +285,35 @@ void PageRowStore::replaceRows(std::vector<Row> rows) {
     liveCount_ = 0;
     for (auto &row : rows) {
         (void)append(std::move(row));
+    }
+}
+
+void PageRowStore::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                                std::vector<std::pair<RowId, Row>> entries) {
+    validateSparseLayout(capacity, freeList, entries);
+
+    pages_.clear();
+    slots_.assign(capacity, Slot{});
+    freeList_ = std::move(freeList);
+    liveCount_ = entries.size();
+
+    std::vector<bool> live(capacity, false);
+    std::vector<Row> liveRows(capacity);
+    for (auto &[rowId, row] : entries) {
+        live[rowId] = true;
+        liveRows[rowId] = std::move(row);
+    }
+
+    for (RowId rowId = 0; rowId < capacity; ++rowId) {
+        const PageId pageId = rowId / rowsPerPage_ + 1;
+        auto &pageRows = pages_[pageId];
+        const auto offset = pageRows.size();
+        pageRows.push_back(live[rowId] ? std::move(liveRows[rowId]) : Row{});
+        slots_[rowId] = Slot{pageId, offset, live[rowId]};
+    }
+
+    for (const auto &[pageId, pageRows] : pages_) {
+        bufferPool_.put(serializePage(pageId, pageRows));
     }
 }
 

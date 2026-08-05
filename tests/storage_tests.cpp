@@ -162,6 +162,31 @@ TEST(StorageTests, TableIndexesTrackStableRowIdsAfterMiddleDelete) {
     EXPECT_EQ(table.findIndexed("id", Value{4}), std::vector<RowId>{reused});
 }
 
+TEST(StorageTests, ReplaceSparseRestoresCapacityFreeListAndLiveIds) {
+    for (auto makeStore : {makeVectorRowStore, makePageRowStore}) {
+        auto store = makeStore();
+        const auto first = store->append({Value{1}});
+        const auto second = store->append({Value{2}});
+        const auto third = store->append({Value{3}});
+        ASSERT_TRUE(store->erase(second));
+
+        auto restored = makeStore();
+        restored->replaceSparse(store->capacity(), store->freeList(), store->liveEntries());
+
+        EXPECT_EQ(restored->capacity(), 3U);
+        EXPECT_EQ(restored->size(), 2U);
+        EXPECT_EQ(restored->freeList(), std::vector<RowId>{second});
+        EXPECT_EQ(restored->get(second), nullptr);
+        ASSERT_NE(restored->get(first), nullptr);
+        ASSERT_NE(restored->get(third), nullptr);
+        EXPECT_EQ((*restored->get(first))[0], Value{1});
+        EXPECT_EQ((*restored->get(third))[0], Value{3});
+
+        const auto reused = restored->append({Value{4}});
+        EXPECT_EQ(reused, second);
+    }
+}
+
 TEST(StorageTests, SupportsConcurrentInserts) {
     Table table{"Events", {{"id", ColumnType::Int}}};
     constexpr int threadCount = 4;

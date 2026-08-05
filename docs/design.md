@@ -15,7 +15,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   management, joins, prepared execution, save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup
-- Persistence: versioned binary snapshots for database schemas, rows, and index definitions
+- Persistence: versioned binary snapshots for database schemas, sparse row IDs, free-list state,
+  and index definitions
 - WAL and recovery: append-only logical WAL, startup replay, save checkpoints, and recovery tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
 - Transactions: transaction manager, transaction states, snapshot rollback, MVCC row-version store,
@@ -35,8 +36,9 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   explicit node/page metadata, but still rebuilds its shallow layout from ordered entries on write.
 - The executor uses a rule-based planner that selects a full scan, hash index equality lookup, or
   ordered index range lookup.
-- Persistence uses versioned binary snapshots. WAL recovery replays logical SQL payloads after the
-  latest save checkpoint.
+- Persistence uses versioned binary snapshots that store capacity, free-list order, and live
+  `(rowId, row)` entries. WAL recovery replays logical SQL payloads after the latest save
+  checkpoint.
 - Transactions currently combine transaction state tracking, MVCC read APIs, and snapshot-copy
   rollback. This keeps behavior explainable while leaving room for real undo/redo and commit
   visibility.
@@ -53,7 +55,6 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - The planner does not collect statistics or perform cost-based optimization.
 - SQL support is intentionally limited and does not include aggregation, grouping, subqueries, or
   general DDL.
-- Save/load densifies live rows, so row IDs are stable within a session but not across checkpoints.
 
 ## Next Engineering Plan
 
@@ -63,8 +64,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 4. Harden recovery with physical redo records and crash-simulation regression tests.
 5. Add statistics to tables and indexes, then evolve the planner toward a cost model.
 6. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
-7. Persist sparse row IDs and free-list state across save/load instead of densifying.
-8. Turn benchmark output into documented reports and trend comparisons.
+7. Turn benchmark output into documented reports and trend comparisons.
 
 ## Definition of Done
 
