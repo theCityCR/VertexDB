@@ -1,0 +1,16 @@
+CREATE DATABASE company;
+CREATE TABLE Employees (id INT, name STRING, salary DOUBLE, department STRING);
+CREATE TABLE Departments (id INT, name STRING);
+CREATE INDEX idx_salary ON Employees(salary);
+CREATE INDEX idx_dept ON Employees(department);
+INSERT INTO Departments VALUES (1, "Engineering"), (2, "Sales");
+INSERT INTO Employees VALUES (1, "Alice", 120000.0, "Engineering"), (2, "Bob", 90000.0, "Sales"), (3, "Carol", 135000.0, "Engineering");
+SELECT name, salary FROM Employees WHERE salary > 100000.0 ORDER BY salary DESC LIMIT 10;
+SELECT Employees.name, Departments.name FROM Employees JOIN Departments ON Employees.department = Departments.name;
+BEGIN;
+UPDATE Employees SET salary = 150000.0 WHERE id = 1;
+SELECT name, salary FROM Employees WHERE id = 1;
+ROLLBACK;
+SELECT name, salary FROM Employees WHERE id = 1;
+SAVE DATABASE;
+EXIT;
