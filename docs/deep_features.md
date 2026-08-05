@@ -75,13 +75,18 @@ Next step: make page payloads the source of truth by deserializing rows from buf
 
 ## Query Planner
 
-The first planner chooses between:
+The planner chooses between:
 
 - full table scan
 - hash index equality lookup
 - ordered index range lookup
+- hash index `IN` multi-lookup
 
-This gives the executor an explicit planning step without introducing a cost model that is more
-complicated than the available statistics justify.
+For `AND` predicates it extracts one sargable conjunct for the access path and keeps the rest as a
+residual filter evaluated after the index fetch. `OR` predicates remain full scans. `EXPLAIN`
+surfaces the chosen path, residual status, and rewrite notes such as CTE inlining.
+
+A rewriter always inlines `WITH` CTEs into the outer `SELECT` and materializes `IN (SELECT …)`
+subqueries into value lists before planning, so nested SQL can still use base-table indexes.
 
 Next step: collect table/index statistics and use them for cost-based access-path selection.

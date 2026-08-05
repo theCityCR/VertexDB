@@ -23,6 +23,12 @@ FROM Employees JOIN Departments ON Employees.dept_id = Departments.id
 WHERE Departments.dept > "A"
 ORDER BY Employees.name DESC
 LIMIT 5;
+WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
+SELECT name FROM high WHERE id = 1;
+SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > 100000.0);
+EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
+EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
+SELECT name FROM high WHERE id = 1;
 UPDATE Employees SET salary = 150000.0 WHERE id = 1;
 DELETE FROM Employees WHERE id = 5;
 CREATE INDEX idx_salary ON Employees(salary);
@@ -39,7 +45,18 @@ EXIT;
 
 `CREATE INDEX` builds maintained hash and ordered index structures for the target column. Equality
 predicates can use hash index lookup. Less-than and greater-than predicates can use ordered index
-range lookup when the filtered column is indexed.
+range lookup when the filtered column is indexed. Compound `AND` predicates extract one sargable
+conjunct for an index access path and evaluate the remaining conjuncts as a residual filter.
+`OR` predicates still force a full scan.
+
+`WITH` CTEs are always inlined into the outer `SELECT` (no materialization fence), so outer filters
+can use base-table indexes. `WHERE col IN (SELECT …)` materializes the subquery (which itself may
+use indexes) and then probes the outer column via hash index `IN` lookup when that column is
+indexed. CTE bodies and `IN` subqueries are single-table in this version (no nested `WITH`, no
+`JOIN` inside them). Correlated subqueries are not supported.
+
+`EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
+the access path, CTE inlining notes, and whether a residual filter remains.
 
 `JOIN` supports a single equi-join. Joined result columns are qualified as `LeftTable.column` and
 `RightTable.column`. Projection, `WHERE`, `ORDER BY`, and `LIMIT` can reference qualified columns;
@@ -74,3 +91,5 @@ read APIs, `COMMIT` releases the snapshot, and `ROLLBACK` restores it.
 - Aggregates such as `COUNT`.
 - `GROUP BY`.
 - Broader join syntax and multiple joins.
+- Derived tables (`FROM (SELECT …)`), correlated subqueries, and `WITH … AS MATERIALIZED`.
+- Expression indexes and specialized indexes for substring/regex predicates.

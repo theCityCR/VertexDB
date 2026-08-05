@@ -74,6 +74,8 @@ APIs while retaining snapshot-copy rollback semantics for transaction undo.
 
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
-3. `Parser` creates a strongly typed `Query` variant.
-4. `QueryExecutor` dispatches the variant to storage operations.
-5. Results are returned as `QueryResult` with columns, rows, and a status message.
+3. `Parser` creates a strongly typed `Query` variant (including `WITH`, `IN` subqueries, and
+   `EXPLAIN`).
+4. For `SELECT`/`EXPLAIN`, a rewriter inlines CTEs and the executor materializes `IN` subqueries.
+5. `QueryPlanner` chooses an access path (including residual filters) and `QueryExecutor` runs it.
+6. Results are returned as `QueryResult` with columns, rows, and a status message.

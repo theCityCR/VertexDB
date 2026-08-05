@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <memory>
 
 namespace VertexDB {
 
@@ -199,6 +200,7 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
     EXPECT_EQ(equalityPlan.accessPath, AccessPath::HashIndexLookup);
     EXPECT_EQ(equalityPlan.estimatedRows, 1U);
     EXPECT_LT(equalityPlan.estimatedCost, static_cast<double>(table.rowCount()));
+    EXPECT_FALSE(equalityPlan.residual.has_value());
 
     Select range{"Employees", std::nullopt,
                  {"*"},       Predicate{"salary", ComparisonOperator::Greater, Value{100000.0}},
@@ -206,6 +208,26 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
     const auto rangePlan = planner.planSelect(range, table);
     EXPECT_EQ(rangePlan.accessPath, AccessPath::OrderedIndexRange);
     EXPECT_GE(rangePlan.estimatedRows, 1U);
+
+    Predicate andPredicate{
+        Predicate::Kind::And,
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{2}}),
+        std::make_shared<Predicate>(
+            Predicate{"salary", ComparisonOperator::Greater, Value{100000.0}})};
+    Select compound{"Employees", std::nullopt, {"*"}, andPredicate, {}, {}};
+    const auto compoundPlan = planner.planSelect(compound, table);
+    EXPECT_EQ(compoundPlan.accessPath, AccessPath::HashIndexLookup);
+    ASSERT_TRUE(compoundPlan.residual.has_value());
+    EXPECT_EQ(compoundPlan.residual->kind, Predicate::Kind::Comparison);
+    EXPECT_EQ(compoundPlan.residual->column, "salary");
+
+    Predicate orPredicate{
+        Predicate::Kind::Or,
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{1}}),
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{2}})};
+    Select orSelect{"Employees", std::nullopt, {"*"}, orPredicate, {}, {}};
+    const auto orPlan = planner.planSelect(orSelect, table);
+    EXPECT_EQ(orPlan.accessPath, AccessPath::FullScan);
 }
 
 TEST(DeepFeatureTests, MVCCTracksTransactionVisibility) {

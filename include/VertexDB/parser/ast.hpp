@@ -12,11 +12,15 @@
 
 namespace VertexDB {
 
+struct Select;
+
 struct Predicate {
     enum class Kind {
         Comparison,
         And,
         Or,
+        InSubquery,
+        InList,
     };
 
     Predicate() = default;
@@ -25,13 +29,19 @@ struct Predicate {
     Predicate(Kind predicateKind, std::shared_ptr<Predicate> leftPredicate,
               std::shared_ptr<Predicate> rightPredicate)
         : kind(predicateKind), left(std::move(leftPredicate)), right(std::move(rightPredicate)) {}
+    Predicate(std::string columnName, std::shared_ptr<Select> sub)
+        : kind(Kind::InSubquery), column(std::move(columnName)), subquery(std::move(sub)) {}
+    Predicate(std::string columnName, std::vector<Value> values)
+        : kind(Kind::InList), column(std::move(columnName)), inValues(std::move(values)) {}
 
     Kind kind{Kind::Comparison};
     std::string column;
-    ComparisonOperator op;
+    ComparisonOperator op{};
     Value value;
     std::shared_ptr<Predicate> left;
     std::shared_ptr<Predicate> right;
+    std::shared_ptr<Select> subquery;
+    std::vector<Value> inValues;
 };
 
 struct CreateDatabase {
@@ -77,6 +87,8 @@ struct Select {
     std::optional<Predicate> where;
     std::optional<OrderBy> orderBy;
     std::optional<std::size_t> limit;
+    // CTE bodies are stored by shared_ptr to avoid an incomplete-type cycle.
+    std::vector<std::pair<std::string, std::shared_ptr<Select>>> ctes;
 };
 
 struct Update {
@@ -112,11 +124,15 @@ struct ExecutePrepared {
     std::string name;
     std::vector<Value> parameters;
 };
+struct ExplainQuery {
+    Select query;
+};
 struct Exit {};
 
 using Query =
     std::variant<CreateDatabase, CreateTable, DropTable, RenameTable, ListTables, Insert, Select,
                  Update, Delete, CreateIndex, SaveDatabase, LoadDatabase, BeginTransaction,
-                 CommitTransaction, RollbackTransaction, PrepareStatement, ExecutePrepared, Exit>;
+                 CommitTransaction, RollbackTransaction, PrepareStatement, ExecutePrepared,
+                 ExplainQuery, Exit>;
 
 } // namespace VertexDB

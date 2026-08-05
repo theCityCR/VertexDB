@@ -64,6 +64,21 @@ std::string predicateLiteral(const Predicate &predicate) {
         return "(" + predicateLiteral(*predicate.left) + op + predicateLiteral(*predicate.right) +
                ")";
     }
+    if (predicate.kind == Predicate::Kind::InList) {
+        std::ostringstream out;
+        out << predicate.column << " IN (";
+        for (std::size_t i = 0; i < predicate.inValues.size(); ++i) {
+            if (i > 0) {
+                out << ", ";
+            }
+            out << sqlLiteral(predicate.inValues[i]);
+        }
+        out << ")";
+        return out.str();
+    }
+    if (predicate.kind == Predicate::Kind::InSubquery) {
+        return predicate.column + " IN (SELECT ...)";
+    }
 
     std::string op;
     switch (predicate.op) {
@@ -78,13 +93,6 @@ std::string predicateLiteral(const Predicate &predicate) {
         break;
     }
     return predicate.column + " " + op + " " + sqlLiteral(predicate.value);
-}
-
-const Predicate *simpleComparison(const std::optional<Predicate> &predicate) {
-    if (!predicate || predicate->kind != Predicate::Kind::Comparison) {
-        return nullptr;
-    }
-    return &*predicate;
 }
 
 std::string createTableSql(const CreateTable &command) {
@@ -186,8 +194,9 @@ QueryResult QueryExecutor::execute(const Query &query) {
         return executePrepared(std::get<ExecutePrepared>(query));
     }
 
-    const bool readOnly =
-        std::holds_alternative<Select>(query) || std::holds_alternative<ListTables>(query);
+    const bool readOnly = std::holds_alternative<Select>(query) ||
+                          std::holds_alternative<ListTables>(query) ||
+                          std::holds_alternative<ExplainQuery>(query);
     if (readOnly) {
         const auto lock = lockManager_.acquireRead();
         return executeUnlocked(query);
@@ -215,6 +224,8 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
                 return executeInsert(command);
             } else if constexpr (std::is_same_v<Command, Select>) {
                 return executeSelect(command);
+            } else if constexpr (std::is_same_v<Command, ExplainQuery>) {
+                return executeExplain(command);
             } else if constexpr (std::is_same_v<Command, Update>) {
                 return executeUpdate(command);
             } else if constexpr (std::is_same_v<Command, Delete>) {
@@ -311,23 +322,26 @@ QueryResult QueryExecutor::executeInsert(const Insert &command) {
 }
 
 QueryResult QueryExecutor::executeSelect(const Select &command) {
-    if (command.join) {
-        return executeJoinSelect(command);
+    RewriteResult rewrite;
+    const Select prepared = prepareSelect(command, rewrite);
+    if (prepared.join) {
+        return executeJoinSelect(prepared);
     }
 
-    auto table = requireTable(command.table);
+    auto table = requireTable(prepared.table);
+    const auto plan = planPreparedSelect(prepared, *table, rewrite);
 
     std::vector<std::string> columns;
-    const auto projection = resolveProjection(command, *table, columns);
-    auto rows = collectRows(command, *table);
+    const auto projection = resolveProjection(prepared, *table, columns);
+    auto rows = collectRows(prepared, *table, plan);
 
-    if (command.orderBy) {
-        const auto orderIndex = table->columnIndex(command.orderBy->column);
+    if (prepared.orderBy) {
+        const auto orderIndex = table->columnIndex(prepared.orderBy->column);
         if (!orderIndex) {
             throw std::runtime_error("unknown ORDER BY column");
         }
         std::ranges::sort(rows, [&](const Row &left, const Row &right) {
-            if (command.orderBy->ascending) {
+            if (prepared.orderBy->ascending) {
                 return left[*orderIndex] < right[*orderIndex];
             }
             return right[*orderIndex] < left[*orderIndex];
@@ -342,10 +356,35 @@ QueryResult QueryExecutor::executeSelect(const Select &command) {
             projected.push_back(row[index]);
         }
         result.rows.push_back(std::move(projected));
-        if (command.limit && result.rows.size() >= *command.limit) {
+        if (prepared.limit && result.rows.size() >= *prepared.limit) {
             break;
         }
     }
+    return result;
+}
+
+QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
+    RewriteResult rewrite;
+    const Select prepared = prepareSelect(command.query, rewrite);
+    if (prepared.join) {
+        QueryResult result;
+        result.success = true;
+        result.message = "explain";
+        result.columns = {"plan"};
+        result.rows.push_back({Value{"hash join (planner bypassed for JOIN)"}});
+        for (const auto &note : rewrite.notes) {
+            result.rows.push_back({Value{note}});
+        }
+        return result;
+    }
+
+    auto table = requireTable(prepared.table);
+    const auto plan = planPreparedSelect(prepared, *table, rewrite);
+    QueryResult result;
+    result.success = true;
+    result.message = "explain";
+    result.columns = {"plan"};
+    result.rows.push_back({Value{formatPlanExplanation(plan)}});
     return result;
 }
 
@@ -491,18 +530,43 @@ std::vector<std::size_t> QueryExecutor::resolveProjection(const Select &command,
     return projection;
 }
 
-std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &table) const {
-    const auto plan = planner_.planSelect(command, table);
-    const auto *predicate = simpleComparison(command.where);
-    if (predicate != nullptr && plan.accessPath == AccessPath::HashIndexLookup) {
-        if (auto rowIds = table.indexedLookup(predicate->column, predicate->value)) {
-            return rowsByIdForRead(table, *rowIds);
+std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &table,
+                                            const QueryPlan &plan) const {
+    auto applyResidual = [&](std::vector<Row> rows) {
+        if (!plan.residual) {
+            return rows;
         }
+        std::vector<Row> filtered;
+        filtered.reserve(rows.size());
+        for (auto &row : rows) {
+            if (matches(row, table, *plan.residual)) {
+                filtered.push_back(std::move(row));
+            }
+        }
+        return filtered;
+    };
+
+    if (plan.accessPath == AccessPath::HashIndexLookup) {
+        if (auto rowIds = table.indexedLookup(plan.indexColumn, plan.indexValue)) {
+            return applyResidual(rowsByIdForRead(table, *rowIds));
+        }
+        return {};
     }
-    if (predicate != nullptr && plan.accessPath == AccessPath::OrderedIndexRange) {
-        if (auto rowIds = table.orderedLookup(predicate->column, predicate->op, predicate->value)) {
-            return rowsByIdForRead(table, *rowIds);
+    if (plan.accessPath == AccessPath::OrderedIndexRange) {
+        if (auto rowIds =
+                table.orderedLookup(plan.indexColumn, plan.indexOp, plan.indexValue)) {
+            return applyResidual(rowsByIdForRead(table, *rowIds));
         }
+        return {};
+    }
+    if (plan.accessPath == AccessPath::HashIndexInLookup) {
+        std::vector<RowId> combined;
+        for (const auto &value : plan.indexValues) {
+            if (auto rowIds = table.indexedLookup(plan.indexColumn, value)) {
+                combined.insert(combined.end(), rowIds->begin(), rowIds->end());
+            }
+        }
+        return applyResidual(rowsByIdForRead(table, combined));
     }
 
     std::vector<Row> rows;
@@ -582,9 +646,20 @@ QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
                     if (predicate.kind == Predicate::Kind::Or) {
                         return self(*predicate.left, self) || self(*predicate.right, self);
                     }
+                    if (predicate.kind == Predicate::Kind::InSubquery) {
+                        throw std::runtime_error("IN subquery must be materialized before evaluation");
+                    }
                     const auto whereColumn = resolveResultColumn(joinedColumns, predicate.column);
                     if (!whereColumn) {
                         throw std::runtime_error("unknown predicate column");
+                    }
+                    if (predicate.kind == Predicate::Kind::InList) {
+                        for (const auto &value : predicate.inValues) {
+                            if (joined[*whereColumn] == value) {
+                                return true;
+                            }
+                        }
+                        return false;
                     }
                     return compare(joined[*whereColumn], predicate.op, predicate.value);
                 };
@@ -631,11 +706,100 @@ bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate 
     if (predicate.kind == Predicate::Kind::Or) {
         return matches(row, table, *predicate.left) || matches(row, table, *predicate.right);
     }
+    if (predicate.kind == Predicate::Kind::InSubquery) {
+        throw std::runtime_error("IN subquery must be materialized before evaluation");
+    }
+    if (predicate.kind == Predicate::Kind::InList) {
+        const auto index = table.columnIndex(predicate.column);
+        if (!index) {
+            throw std::runtime_error("unknown predicate column");
+        }
+        for (const auto &value : predicate.inValues) {
+            if (row[*index] == value) {
+                return true;
+            }
+        }
+        return false;
+    }
     const auto index = table.columnIndex(predicate.column);
     if (!index) {
         throw std::runtime_error("unknown predicate column");
     }
     return compare(row[*index], predicate.op, predicate.value);
+}
+
+Select QueryExecutor::prepareSelect(const Select &command, RewriteResult &rewrite) const {
+    rewrite = rewriteSelect(command);
+    Select prepared = rewrite.query;
+    if (prepared.where) {
+        prepared.where = materializePredicate(*prepared.where);
+    }
+    return prepared;
+}
+
+Predicate QueryExecutor::materializePredicate(const Predicate &predicate) const {
+    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
+        return Predicate{predicate.kind, std::make_shared<Predicate>(materializePredicate(*predicate.left)),
+                         std::make_shared<Predicate>(materializePredicate(*predicate.right))};
+    }
+    if (predicate.kind == Predicate::Kind::InSubquery) {
+        if (!predicate.subquery) {
+            throw std::runtime_error("IN subquery is missing");
+        }
+        return Predicate{predicate.column, evaluateSubqueryValues(*predicate.subquery)};
+    }
+    return predicate;
+}
+
+std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery) const {
+    RewriteResult rewrite;
+    const Select prepared = prepareSelect(subquery, rewrite);
+    if (prepared.join) {
+        throw std::runtime_error("JOIN inside IN subquery is not supported");
+    }
+    auto table = requireTable(prepared.table);
+    const auto plan = planPreparedSelect(prepared, *table, rewrite);
+    auto rows = collectRows(prepared, *table, plan);
+
+    if (prepared.columns.size() != 1 || prepared.columns.front() == "*") {
+        throw std::runtime_error("IN subquery must project exactly one column");
+    }
+    const auto columnIndex = table->columnIndex(prepared.columns.front());
+    if (!columnIndex) {
+        throw std::runtime_error("unknown IN subquery projection column");
+    }
+
+    if (prepared.orderBy) {
+        const auto orderIndex = table->columnIndex(prepared.orderBy->column);
+        if (!orderIndex) {
+            throw std::runtime_error("unknown ORDER BY column");
+        }
+        std::ranges::sort(rows, [&](const Row &left, const Row &right) {
+            if (prepared.orderBy->ascending) {
+                return left[*orderIndex] < right[*orderIndex];
+            }
+            return right[*orderIndex] < left[*orderIndex];
+        });
+    }
+
+    std::vector<Value> values;
+    values.reserve(rows.size());
+    for (const auto &row : rows) {
+        values.push_back(row[*columnIndex]);
+        if (prepared.limit && values.size() >= *prepared.limit) {
+            break;
+        }
+    }
+    return values;
+}
+
+QueryPlan QueryExecutor::planPreparedSelect(const Select &command, const Table &table,
+                                            const RewriteResult &rewrite) const {
+    auto plan = planner_.planSelect(command, table);
+    for (const auto &note : rewrite.notes) {
+        plan.notes.push_back(note);
+    }
+    return plan;
 }
 
 std::shared_ptr<Table> QueryExecutor::requireTable(std::string_view tableName) const {

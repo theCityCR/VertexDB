@@ -67,8 +67,14 @@ Query Parser::parse(std::span<const Token> tokens) {
     if (match(TokenType::Identifier, "INSERT")) {
         return finish(parseInsert());
     }
+    if (match(TokenType::Identifier, "WITH")) {
+        return finish(parseWithSelect());
+    }
     if (match(TokenType::Identifier, "SELECT")) {
-        return finish(parseSelect());
+        return finish(parseSelectAfterSelectKeyword());
+    }
+    if (match(TokenType::Identifier, "EXPLAIN")) {
+        return finish(parseExplain());
     }
     if (match(TokenType::Identifier, "UPDATE")) {
         return finish(parseUpdate());
@@ -254,6 +260,11 @@ Insert Parser::parseInsert() {
 }
 
 Select Parser::parseSelect() {
+    expect(TokenType::Identifier, "SELECT");
+    return parseSelectAfterSelectKeyword();
+}
+
+Select Parser::parseSelectAfterSelectKeyword() {
     std::vector<std::string> columns;
     if (match(TokenType::Star)) {
         columns.emplace_back("*");
@@ -320,7 +331,41 @@ Select Parser::parseSelect() {
         limit = static_cast<std::size_t>(parseInt(count.lexeme));
     }
     return {table.lexeme,     std::move(join),    std::move(columns),
-            std::move(where), std::move(orderBy), limit};
+            std::move(where), std::move(orderBy), limit, {}};
+}
+
+Select Parser::parseWithSelect() {
+    std::vector<std::pair<std::string, std::shared_ptr<Select>>> ctes;
+    do {
+        const auto name = advance();
+        if (name.type != TokenType::Identifier) {
+            throw std::runtime_error("expected CTE name");
+        }
+        expect(TokenType::Identifier, "AS");
+        expect(TokenType::LeftParen);
+        auto body = parseSelect();
+        if (!body.ctes.empty()) {
+            throw std::runtime_error("nested WITH inside CTE is not supported");
+        }
+        if (body.join) {
+            throw std::runtime_error("JOIN inside CTE is not supported");
+        }
+        expect(TokenType::RightParen);
+        ctes.emplace_back(name.lexeme, std::make_shared<Select>(std::move(body)));
+    } while (match(TokenType::Comma));
+
+    expect(TokenType::Identifier, "SELECT");
+    auto query = parseSelectAfterSelectKeyword();
+    query.ctes = std::move(ctes);
+    return query;
+}
+
+ExplainQuery Parser::parseExplain() {
+    if (match(TokenType::Identifier, "WITH")) {
+        return ExplainQuery{parseWithSelect()};
+    }
+    expect(TokenType::Identifier, "SELECT");
+    return ExplainQuery{parseSelectAfterSelectKeyword()};
 }
 
 Update Parser::parseUpdate() {
@@ -421,6 +466,23 @@ Predicate Parser::parseComparisonPredicate() {
     if (column.type != TokenType::Identifier) {
         throw std::runtime_error("expected predicate column");
     }
+    if (match(TokenType::Identifier, "IN")) {
+        expect(TokenType::LeftParen);
+        expect(TokenType::Identifier, "SELECT");
+        auto subquery = std::make_shared<Select>(parseSelectAfterSelectKeyword());
+        if (!subquery->ctes.empty()) {
+            throw std::runtime_error("WITH inside IN subquery is not supported");
+        }
+        if (subquery->join) {
+            throw std::runtime_error("JOIN inside IN subquery is not supported");
+        }
+        if (subquery->columns.size() != 1 || subquery->columns.front() == "*") {
+            throw std::runtime_error("IN subquery must project exactly one column");
+        }
+        expect(TokenType::RightParen);
+        return Predicate{column.lexeme, std::move(subquery)};
+    }
+
     ComparisonOperator op{};
     if (match(TokenType::Equal)) {
         op = ComparisonOperator::Equal;

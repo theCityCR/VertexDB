@@ -4,7 +4,8 @@
 
 VertexDB is a C++20 in-memory relational database engine. It implements a focused SQL execution
 pipeline with typed storage, indexes, persistence, write-ahead logging, concurrency control,
-transaction state, and MVCC read paths.
+transaction state, and MVCC read paths. A primary focus is index-aware query compilation for nested
+SQL: CTE inlining, `IN` subqueries, sargable predicate extraction, and `EXPLAIN`.
 
 The engine is intentionally small and educational: the goal is clear architecture, modern C++
 design, correctness tests, and explicit tradeoffs in database internals—not production readiness.
@@ -12,6 +13,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 ## Features
 
 - SQL tokenization, parsing, AST construction, query planning, and execution for a focused SQL subset
+- `WITH` CTE inlining, `WHERE col IN (SELECT …)`, sargable `AND` extraction with residual filters,
+  and `EXPLAIN`
 - Typed table storage with schema validation, nullable columns, page-backed row storage, an LRU
   buffer pool, and stable row IDs via tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree-style range lookup APIs
@@ -67,8 +70,9 @@ COMMIT;
 ROLLBACK;
 ```
 
-Also supported: nullable columns, compound predicates, single equi-joins, prepared statements with
-positional parameters, table rename/drop/list operations, and `EXIT`.
+Also supported: nullable columns, compound predicates, single equi-joins, `WITH` CTEs (always
+inlined), `IN` subqueries, `EXPLAIN`, prepared statements with positional parameters, table
+rename/drop/list operations, and `EXIT`.
 
 See [examples/](examples/) for a runnable walkthrough.
 
@@ -103,8 +107,8 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 55 GoogleTest cases covering parser, storage, indexes, execution, persistence, WAL recovery,
-  concurrency, transactions, and regressions
+- 61 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+  persistence, WAL recovery, concurrency, transactions, and regressions
 - Coverage script enforces an 85% line coverage floor for the core library
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, update/delete throughput, and
@@ -119,7 +123,9 @@ Or feed an example script:
 - Transactions expose MVCC read boundaries, but rollback still restores a database snapshot copy
 - WAL recovery replays logical SQL operations rather than physical page redo records
 - The planner is rule-based and does not yet collect table/index statistics for costing
-- SQL support is intentionally focused: no aggregates, grouping, subqueries, or general DDL
+- Nested SQL is intentionally limited: no derived tables, correlation, `JOIN` inside CTEs/`IN`
+  subqueries, or expression/regex indexes
+- SQL support is intentionally focused: no aggregates, grouping, or general DDL
 
 ## Roadmap
 
@@ -128,7 +134,8 @@ Or feed an example script:
 3. Implement incremental B+ tree split/merge with structural invariant tests
 4. Add physical WAL redo/recovery tests, including simulated partial writes
 5. Add table/index statistics and cost-based planning
-6. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
+6. Extend nested SQL (derived tables, correlation) and expression indexes
+7. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
 
 ## Documentation
 

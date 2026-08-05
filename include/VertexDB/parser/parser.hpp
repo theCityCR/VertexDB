@@ -27,10 +27,13 @@ class Parser {
     [[nodiscard]] CreateIndex parseCreateIndex();
     [[nodiscard]] Insert parseInsert();
     [[nodiscard]] Select parseSelect();
+    [[nodiscard]] Select parseSelectAfterSelectKeyword();
+    [[nodiscard]] Select parseWithSelect();
     [[nodiscard]] Update parseUpdate();
     [[nodiscard]] Delete parseDelete();
     [[nodiscard]] PrepareStatement parsePrepare();
     [[nodiscard]] ExecutePrepared parseExecutePrepared();
+    [[nodiscard]] ExplainQuery parseExplain();
     [[nodiscard]] Predicate parsePredicate();
     [[nodiscard]] Predicate parseOrPredicate();
     [[nodiscard]] Predicate parseAndPredicate();

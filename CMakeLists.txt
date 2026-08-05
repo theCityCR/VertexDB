@@ -34,6 +34,7 @@ add_library(VertexDB
     src/indexing/hash_index.cpp
     src/execution/query_executor.cpp
     src/planner/query_planner.cpp
+    src/planner/rewriter.cpp
     src/concurrency/lock_manager.cpp
     src/persistence/storage_manager.cpp
     src/persistence/write_ahead_log.cpp
@@ -97,6 +98,7 @@ if(VERTEXDB_BUILD_TESTS)
         tests/index_tests.cpp
         tests/execution_tests.cpp
         tests/deep_feature_tests.cpp
+        tests/nested_sql_tests.cpp
         tests/regression_tests.cpp
     )
     target_link_libraries(VertexDB_tests PRIVATE VertexDB::VertexDB GTest::gtest_main)

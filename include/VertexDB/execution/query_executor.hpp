@@ -6,6 +6,7 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
+#include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/database.hpp"
 #include "VertexDB/transaction/transaction_manager.hpp"
 
@@ -34,6 +35,7 @@ class QueryExecutor {
     [[nodiscard]] QueryResult executeListTables();
     [[nodiscard]] QueryResult executeInsert(const Insert &command);
     [[nodiscard]] QueryResult executeSelect(const Select &command);
+    [[nodiscard]] QueryResult executeExplain(const ExplainQuery &command);
     [[nodiscard]] QueryResult executeUpdate(const Update &command);
     [[nodiscard]] QueryResult executeDelete(const Delete &command);
     [[nodiscard]] QueryResult executeCreateIndex(const CreateIndex &command);
@@ -48,10 +50,16 @@ class QueryExecutor {
     [[nodiscard]] std::vector<std::size_t>
     resolveProjection(const Select &command, const Table &table,
                       std::vector<std::string> &columns) const;
-    [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table) const;
+    [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
+                                               const QueryPlan &plan) const;
     [[nodiscard]] QueryResult executeJoinSelect(const Select &command);
     [[nodiscard]] bool matches(const Row &row, const Table &table,
                                const Predicate &predicate) const;
+    [[nodiscard]] Select prepareSelect(const Select &command, RewriteResult &rewrite) const;
+    [[nodiscard]] Predicate materializePredicate(const Predicate &predicate) const;
+    [[nodiscard]] std::vector<Value> evaluateSubqueryValues(const Select &subquery) const;
+    [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
+                                               const RewriteResult &rewrite) const;
     [[nodiscard]] std::shared_ptr<Table> requireTable(std::string_view tableName) const;
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
     [[nodiscard]] std::string bindPreparedSql(const ExecutePrepared &command) const;
