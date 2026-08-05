@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 namespace VertexDB {
 namespace {
@@ -245,6 +246,53 @@ TEST(DesiredBehaviorTests, CteInliningLeavesBodyFilterAsResidualWhenOuterUsesInd
     EXPECT_NE(text.find("residual: yes"), std::string::npos);
 }
 
+TEST(DesiredBehaviorTests, ScaledCteWinQueryUsesHashIndexAndResidual) {
+    // Large enough that a materializing CTE of high-salary rows would be wasteful.
+    // Seed via Table::insert (bypass per-row SQL/WAL) so the suite stays CI-friendly; EXPLAIN and
+    // SELECT still go through the full rewrite/planner/executor path. 10k sits at the plan's lower
+    // bound; 100k is reserved for the CTE microbenchmark once packaging continues.
+    constexpr std::int64_t kRowCount = 10000;
+
+    Parser parser;
+    auto executor = makeExecutor("cte-scale");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+
+    auto database = executor.currentDatabase();
+    ASSERT_NE(database, nullptr);
+    auto table = database->table("Employees");
+    ASSERT_NE(table, nullptr);
+
+    table->insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}});
+    for (std::int64_t id = 2; id <= kRowCount; ++id) {
+        // Most rows match the CTE body filter; a materializing engine would build ~95k temps.
+        const double salary = (id % 20 == 0) ? 80000.0 : 110000.0;
+        table->insert({Value{id}, Value{"Emp"}, Value{salary}});
+    }
+    ASSERT_TRUE(table->createIndex("idx_id", "id"));
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+    EXPECT_EQ(text.find("full table scan"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
 // --- P2 -----------------------------------------------------------------
 
 TEST(DesiredBehaviorTests, ParsesCreateDatabaseIndexSaveLoadAndExit) {
@@ -372,7 +420,7 @@ TEST(DesiredBehaviorTests, RoadmapPhysicalWalRedoNotImplemented) {
 
 TEST(DesiredBehaviorTests, RoadmapIncrementalBTreeSplitMergeNotImplemented) {
     GTEST_SKIP() << "Desired: incremental B+ tree split/merge with structural invariants; "
-                    "current BTreeIndex rebuilds shallow layout on write.";
+                    "current BTreeIndex rebuilds a shallow layout lazily on read.";
 }
 
 TEST(DesiredBehaviorTests, RoadmapPageBytesAsSourceOfTruthNotImplemented) {

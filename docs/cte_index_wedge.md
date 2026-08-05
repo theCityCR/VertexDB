@@ -58,15 +58,14 @@ Shipped as [`examples/cte_index_win.sql`](../examples/cte_index_win.sql) (linked
 
 Optional follow-up: add the same `EXPLAIN` block to `examples/company.sql`.
 
-### 2. Scaled regression test
+### 2. Scaled regression test — done
 
-Add a desired-behavior test at ~10k–100k rows that asserts:
+`DesiredBehaviorTests::ScaledCteWinQueryUsesHashIndexAndResidual` seeds 10k employees (mostly
+high-salary) via `Table::insert`, then asserts `EXPLAIN` still chooses hash index lookup + inlined
+CTE + residual (not a full scan) and that the win query returns Alice through the executor.
 
-- `EXPLAIN` still chooses hash index lookup + inlined CTE + residual
-- the query returns the correct single-row result
-
-Today’s CTE+index tests use tiny tables; scale is what makes “we did not accidentally scan”
-credible.
+`createIndex` at this scale relies on deferred B+ tree layout rebuild (layout rebuilt on read, not
+on every key insert). The CTE microbenchmark can push toward 100k rows.
 
 ### 3. Microbenchmark
 

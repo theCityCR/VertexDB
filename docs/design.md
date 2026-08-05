@@ -37,7 +37,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - `VectorRowStore` remains available as a simple in-memory implementation for focused tests and
   comparisons.
 - Hash indexes provide fast equality lookup. `BTreeIndex` provides ordered lookup APIs and keeps
-  explicit node/page metadata, but still rebuilds its shallow layout from ordered entries on write.
+  explicit node/page metadata, rebuilding its shallow layout from ordered entries lazily on read.
 - The executor uses a rule-based planner that extracts one sargable conjunct from `AND` trees and
   selects a full scan, hash index equality lookup, ordered index range lookup, or hash index `IN`
   lookup, with residual filters for remaining conjuncts.

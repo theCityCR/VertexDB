@@ -37,11 +37,13 @@ class BTreeIndex {
     [[nodiscard]] std::vector<BTreeNode> nodesSnapshot() const;
 
   private:
-    void rebuildLayout();
+    void rebuildLayout() const;
+    void ensureLayout() const;
 
     std::map<Value, std::vector<RowId>> entries_;
     std::size_t maxKeysPerLeaf_;
-    std::vector<BTreeNode> nodes_;
+    mutable std::vector<BTreeNode> nodes_;
+    mutable bool layoutDirty_{true};
     mutable std::shared_mutex mutex_;
 };
 

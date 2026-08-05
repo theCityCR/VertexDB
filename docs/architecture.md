@@ -65,8 +65,8 @@ APIs while retaining snapshot-copy rollback semantics for transaction undo.
 
 - `PageRowStore` mirrors page bytes through `BufferPool`, but page bytes are not yet the only row
   source of truth.
-- `BTreeIndex` uses leaf payloads for reads but rebuilds layout on write rather than splitting and
-  merging nodes incrementally.
+- `BTreeIndex` uses leaf payloads for reads but rebuilds a shallow layout lazily on read rather than
+  splitting and merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.
 - Transactions have MVCC read routing but still use snapshot-copy rollback.
 

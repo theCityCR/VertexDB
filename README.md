@@ -107,7 +107,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 80 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 81 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
   (roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete behavior)
 - Coverage script enforces an 85% line coverage floor for the core library
@@ -119,7 +119,7 @@ Or feed an example script:
 
 - `PageRowStore` mirrors typed rows into buffer-pool pages, but typed row storage is still the
   operational source of truth
-- B+ tree writes rebuild a deterministic shallow layout instead of performing incremental
+- B+ tree layout is rebuilt lazily on read from ordered entries instead of performing incremental
   split/merge operations
 - Transactions expose MVCC read boundaries, but rollback still restores a database snapshot copy
 - WAL recovery replays logical SQL operations rather than physical page redo records

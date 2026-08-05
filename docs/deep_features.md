@@ -11,10 +11,11 @@ The first implementation exposes B+ tree behavior through an ordered index API:
 
 Internally it maintains explicit B+ tree layout metadata: leaf page ids, linked leaves, root
 children, separator keys, and row-id payloads in leaves. Point and range reads walk the leaf payloads.
-Ordered entries are retained as the mutation staging structure so inserts and deletes can rebuild a
-deterministic shallow layout until full incremental split/merge logic is warranted.
+Ordered entries are retained as the mutation staging structure; leaf/internal layout is rebuilt
+lazily on read until full incremental split/merge logic is warranted.
 
-Next step: replace rebuild-on-write with incremental leaf/internal-page split and merge logic.
+Next step: replace rebuild-on-read shallow layout with incremental leaf/internal-page split and
+merge logic.
 
 ## Write-Ahead Log
 

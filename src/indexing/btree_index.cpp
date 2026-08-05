@@ -12,12 +12,13 @@ BTreeIndex::BTreeIndex(std::size_t maxKeysPerLeaf) : maxKeysPerLeaf_(maxKeysPerL
         throw std::invalid_argument("B+ tree leaf capacity must be positive");
     }
     rebuildLayout();
+    layoutDirty_ = false;
 }
 
 void BTreeIndex::insert(const Value &key, RowId rowId) {
     std::unique_lock lock{mutex_};
     entries_[key].push_back(rowId);
-    rebuildLayout();
+    layoutDirty_ = true;
 }
 
 void BTreeIndex::remove(const Value &key, RowId rowId) {
@@ -30,17 +31,18 @@ void BTreeIndex::remove(const Value &key, RowId rowId) {
     if (it->second.empty()) {
         entries_.erase(it);
     }
-    rebuildLayout();
+    layoutDirty_ = true;
 }
 
 void BTreeIndex::clear() {
     std::unique_lock lock{mutex_};
     entries_.clear();
-    rebuildLayout();
+    layoutDirty_ = true;
 }
 
 std::vector<RowId> BTreeIndex::find(const Value &key) const {
-    std::shared_lock lock{mutex_};
+    std::unique_lock lock{mutex_};
+    ensureLayout();
     for (const auto &node : nodes_) {
         if (!node.leaf) {
             continue;
@@ -55,7 +57,8 @@ std::vector<RowId> BTreeIndex::find(const Value &key) const {
 }
 
 std::vector<RowId> BTreeIndex::lessThan(const Value &key) const {
-    std::shared_lock lock{mutex_};
+    std::unique_lock lock{mutex_};
+    ensureLayout();
     std::vector<RowId> result;
     for (const auto &node : nodes_) {
         if (!node.leaf) {
@@ -72,7 +75,8 @@ std::vector<RowId> BTreeIndex::lessThan(const Value &key) const {
 }
 
 std::vector<RowId> BTreeIndex::greaterThan(const Value &key) const {
-    std::shared_lock lock{mutex_};
+    std::unique_lock lock{mutex_};
+    ensureLayout();
     std::vector<RowId> result;
     bool collecting = false;
     for (const auto &node : nodes_) {
@@ -97,22 +101,33 @@ std::size_t BTreeIndex::size() const {
 }
 
 std::size_t BTreeIndex::height() const {
-    std::shared_lock lock{mutex_};
+    std::unique_lock lock{mutex_};
+    ensureLayout();
     return nodes_.size() <= 1 ? 1 : 2;
 }
 
 std::size_t BTreeIndex::leafPageCount() const {
-    std::shared_lock lock{mutex_};
+    std::unique_lock lock{mutex_};
+    ensureLayout();
     return static_cast<std::size_t>(
         std::ranges::count_if(nodes_, [](const BTreeNode &node) { return node.leaf; }));
 }
 
 std::vector<BTreeNode> BTreeIndex::nodesSnapshot() const {
-    std::shared_lock lock{mutex_};
+    std::unique_lock lock{mutex_};
+    ensureLayout();
     return nodes_;
 }
 
-void BTreeIndex::rebuildLayout() {
+void BTreeIndex::ensureLayout() const {
+    if (!layoutDirty_) {
+        return;
+    }
+    rebuildLayout();
+    layoutDirty_ = false;
+}
+
+void BTreeIndex::rebuildLayout() const {
     nodes_.clear();
     if (entries_.empty()) {
         nodes_.push_back(BTreeNode{1, true, {}, {}, {}, std::nullopt});
