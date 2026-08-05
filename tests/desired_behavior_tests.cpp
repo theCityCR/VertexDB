@@ -153,6 +153,50 @@ TEST(DesiredBehaviorTests, PageRowStoreMirrorsSerializedPagesIntoBufferPool) {
     EXPECT_TRUE(store.bufferContains(pageId));
 }
 
+TEST(DesiredBehaviorTests, PageRowStoreReadsLiveRowsFromPagePayloadBytes) {
+    // Tiny buffer (capacity 1) so accessing one page evicts the other from the LRU cache.
+    constexpr std::size_t rowsPerPage = 2;
+    PageRowStore store{rowsPerPage, 1};
+
+    const auto first = store.append({Value{1}, Value{std::string{"Alice"}}});
+    const auto second = store.append({Value{2}, Value{std::string{"Bob"}}});
+    const auto third = store.append({Value{3}, Value{std::string{"Cara"}}});
+    ASSERT_TRUE(store.update(second, {Value{20}, Value{std::string{"Bobby"}}}));
+    ASSERT_TRUE(store.erase(first));
+    const auto reused = store.append({Value{4}, Value{std::string{"Dana"}}});
+    EXPECT_EQ(reused, first);
+
+    const auto page1 = store.pageIdFor(second);
+    const auto page2 = store.pageIdFor(third);
+    EXPECT_EQ(page1, store.pageIdFor(reused));
+    EXPECT_NE(page1, page2);
+
+    // Touch page 2 so the capacity-1 pool evicts page 1.
+    ASSERT_NE(store.get(third), nullptr);
+    EXPECT_FALSE(store.bufferContains(page1));
+    EXPECT_TRUE(store.bufferContains(page2));
+
+    auto expectMatchesPayload = [&](RowId rowId, const Row &expected) {
+        const auto *row = store.get(rowId);
+        ASSERT_NE(row, nullptr);
+        EXPECT_EQ(*row, expected);
+
+        const auto pageId = store.pageIdFor(rowId);
+        const auto bytes = store.directoryBytes(pageId);
+        ASSERT_TRUE(bytes.has_value());
+        const auto decoded = PageRowStore::decodePage(*bytes);
+        const auto offset = rowId % rowsPerPage;
+        ASSERT_LT(offset, decoded.size());
+        EXPECT_EQ(decoded[offset], expected);
+        // Fill-on-miss: reading reloads the durable page bytes into the buffer pool.
+        EXPECT_TRUE(store.bufferContains(pageId));
+    };
+
+    expectMatchesPayload(reused, {Value{4}, Value{std::string{"Dana"}}});
+    expectMatchesPayload(second, {Value{20}, Value{std::string{"Bobby"}}});
+    expectMatchesPayload(third, {Value{3}, Value{std::string{"Cara"}}});
+}
+
 TEST(DesiredBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"salary", ColumnType::Double}}};
     table.insert({Value{1}, Value{120000.0}});
@@ -421,11 +465,6 @@ TEST(DesiredBehaviorTests, RoadmapPhysicalWalRedoNotImplemented) {
 TEST(DesiredBehaviorTests, RoadmapIncrementalBTreeSplitMergeNotImplemented) {
     GTEST_SKIP() << "Desired: incremental B+ tree split/merge with structural invariants; "
                     "current BTreeIndex rebuilds a shallow layout lazily on read.";
-}
-
-TEST(DesiredBehaviorTests, RoadmapPageBytesAsSourceOfTruthNotImplemented) {
-    GTEST_SKIP() << "Desired: deserialize live rows from buffer-pool page payloads as source of "
-                    "truth; typed rows in PageRowStore remain operational SoT today.";
 }
 
 TEST(DesiredBehaviorTests, RoadmapCostBasedJoinPlanningNotImplemented) {

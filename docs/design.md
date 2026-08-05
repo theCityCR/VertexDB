@@ -32,8 +32,9 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 - `Table` owns schema validation and index maintenance, while row storage is delegated to the
   `RowStore` interface.
-- `PageRowStore` is the default row store. It groups rows into logical pages and mirrors serialized
-  page bytes through the LRU `BufferPool`.
+- `PageRowStore` is the default row store. It keeps serialized page payloads in an in-memory page
+  directory as the source of truth and serves reads through the LRU `BufferPool` (fill-on-miss),
+  deserializing row slots from page bytes.
 - `VectorRowStore` remains available as a simple in-memory implementation for focused tests and
   comparisons.
 - Hash indexes provide fast equality lookup. `BTreeIndex` provides ordered lookup APIs and keeps
@@ -53,8 +54,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Known Limitations
 
-- Page payloads are serialized into the buffer pool, but typed rows remain the operational source
-  of truth inside `PageRowStore`.
+- Database snapshots still serialize typed sparse rows rather than persisting raw page files.
 - B+ tree insert/delete operations rebuild node layout rather than incrementally splitting and
   merging pages.
 - Transaction rollback restores a cloned database snapshot rather than applying undo records.
@@ -68,14 +68,13 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Make `PageRowStore` load rows from page bytes so page storage becomes the source of truth.
-2. Replace snapshot rollback with undo records or MVCC commit visibility.
-3. Implement incremental B+ tree page split/merge logic with invariants tests.
-4. Harden recovery with physical redo records and crash-simulation regression tests.
-5. Add statistics to tables and indexes, then evolve the planner toward a cost model.
-6. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
-7. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
-8. Turn benchmark output into documented reports and trend comparisons.
+1. Replace snapshot rollback with undo records or MVCC commit visibility.
+2. Implement incremental B+ tree page split/merge logic with invariants tests.
+3. Harden recovery with physical redo records and crash-simulation regression tests.
+4. Add statistics to tables and indexes, then evolve the planner toward a cost model.
+5. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
+6. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
+7. Turn benchmark output into documented reports and trend comparisons.
 
 ### CTE index wedge (parallel track) — first milestone shipped
 
