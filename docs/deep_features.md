@@ -90,6 +90,19 @@ surfaces the chosen path, residual status, and rewrite notes such as CTE inlinin
 A rewriter always inlines `WITH` CTEs into the outer `SELECT` and materializes `IN (SELECT …)`
 subqueries into value lists before planning, so nested SQL can still use base-table indexes.
 
+### CTE index demo
+
+```sql
+WITH high AS (
+  SELECT id, name, salary FROM Employees WHERE salary > 100000.0
+)
+SELECT name FROM high WHERE id = 1;
+```
+
+`EXPLAIN` chooses hash index equality on `id`, keeps `salary > …` as a residual, and notes
+`inlined CTE high`. Materializing the CTE would build the high-salary set first and lose the
+base-table `id` index for the outer filter. Full write-up, limitations, and comparison artifacts:
+[cte_index_wedge.md](cte_index_wedge.md) (Demo) and
+[cte_materialize_comparison.md](cte_materialize_comparison.md).
+
 Next step: collect table/index statistics and use them for cost-based access-path selection.
-For packaging that CTE+index behavior as a demo wedge (examples, scaled tests, benchmarks), see
-[cte_index_wedge.md](cte_index_wedge.md).

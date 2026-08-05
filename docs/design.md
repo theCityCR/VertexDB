@@ -77,11 +77,11 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 7. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
 8. Turn benchmark output into documented reports and trend comparisons.
 
-### CTE index wedge (parallel track)
+### CTE index wedge (parallel track) — first milestone shipped
 
-CTE inlining so outer predicates hit base-table indexes is already implemented. The remaining work
-is packaging a credible demo (script, scaled test, microbenchmark, comparison note). Track that in
-[cte_index_wedge.md](cte_index_wedge.md); it does not replace the storage/recovery roadmap above.
+CTE inlining so outer predicates hit base-table indexes is implemented and packaged: demo SQL,
+scaled regression, microbenchmarks, and a Postgres materialize comparison. See the Demo section in
+[cte_index_wedge.md](cte_index_wedge.md).
 
 ## Definition of Done
 

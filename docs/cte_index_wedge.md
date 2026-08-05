@@ -86,19 +86,72 @@ External comparison (preferred narrative path):
 Skipped for now: internal test-only materialize fence (CI A/B). The indexed vs non-indexed CTE
 microbenchmarks already provide an in-repo cost baseline.
 
-### 5. Wedge write-up
+### 5. Wedge write-up — done
 
-Keep this document as the living plan. When the milestone ships, add a short “Demo” section here
-(or in `docs/deep_features.md`) with:
+Demo section below (this living plan) plus a short pointer from `docs/deep_features.md`. The longer
+Postgres side-by-side lives in [cte_materialize_comparison.md](cte_materialize_comparison.md).
 
-- the query
-- sample VertexDB `EXPLAIN` output
-- why materializing CTEs lose the `id` index
-- honest limitations (single-table CTE, heuristic costs, no claim of beating Postgres in general)
+## Demo
 
-## First milestone
+### Query
 
-Ship items **1–3** and a minimal comparison note from **4** or **5**. That is enough to say:
+```sql
+CREATE INDEX idx_id ON Employees(id);
+
+WITH high AS (
+  SELECT id, name, salary FROM Employees WHERE salary > 100000.0
+)
+SELECT name FROM high WHERE id = 1;
+```
+
+Run it:
+
+```sh
+./build/VertexDB_cli < examples/cte_index_win.sql
+```
+
+### Sample `EXPLAIN`
+
+```text
+hash index equality lookup on id
+residual filter applied after index lookup
+inlined CTE high
+residual: yes
+```
+
+VertexDB always inlines the CTE, AND-merges the outer `id = 1` into the body, probes the `id` hash
+index, and applies `salary > 100000.0` as a residual filter.
+
+### Why materializing CTEs lose the `id` index
+
+If the CTE is materialized first, the engine builds a temporary result of all high-salary rows, then
+filters that temp by `id = 1`. The base-table index on `Employees(id)` is no longer in play for the
+outer predicate — you pay for the large intermediate set even though only one row is needed.
+
+Postgres can show that fence explicitly with `WITH … AS MATERIALIZED` (CTE Scan over a scanned CTE
+body). The same engine can also inline with `AS NOT MATERIALIZED`. VertexDB’s default is the
+inline path so nested SQL does not silently drop indexes. Details:
+[cte_materialize_comparison.md](cte_materialize_comparison.md).
+
+### Limitations (honest)
+
+- Single-table CTEs only (no `JOIN` / nested `WITH` inside CTE bodies).
+- Rule-based access paths and heuristic costs — not a statistics-driven optimizer.
+- This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
+- `UPDATE` / `DELETE` and joins still bypass this index access-path planner.
+
+### Evidence checklist
+
+| Artifact | Role |
+|----------|------|
+| [`examples/cte_index_win.sql`](../examples/cte_index_win.sql) | Runnable demo |
+| `DesiredBehaviorTests::ScaledCteWinQueryUsesHashIndexAndResidual` | Scaled plan regression |
+| `BM_CteIndexedWinSelect` / `BM_CteNonIndexedSelect` | Cost shape at 1k/100k |
+| [`scripts/compare_cte_materialize.sh`](../scripts/compare_cte_materialize.sh) | Live Postgres/VertexDB plans |
+
+## First milestone — shipped
+
+Items **1–5** are done. The one-liner:
 
 > For this query class, VertexDB uses the base-table index; a materializing CTE does not.
 
@@ -112,7 +165,7 @@ Ship items **1–3** and a minimal comparison note from **4** or **5**. That is 
 
 ## Definition of done
 
-- Demo script runs through `VertexDB_cli` and shows the index + inlined CTE plan.
-- Scaled test fails if the planner regresses to a full scan for the win query.
-- Benchmark exercises the CTE path at large N and is listed in `docs/benchmarks.md`.
-- Docs state the wedge, the evidence, and the limitations without overclaiming.
+- [x] Demo script runs through `VertexDB_cli` and shows the index + inlined CTE plan.
+- [x] Scaled test fails if the planner regresses to a full scan for the win query.
+- [x] Benchmark exercises the CTE path at large N and is listed in `docs/benchmarks.md`.
+- [x] Docs state the wedge, the evidence, and the limitations without overclaiming.
