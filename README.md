@@ -138,6 +138,9 @@ Or feed an example script:
 6. Extend nested SQL (derived tables, correlation) and expression indexes
 7. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
 
+Parallel product wedge (engine behavior already present; packaging evidence): see
+[CTE index wedge plan](docs/cte_index_wedge.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -146,6 +149,7 @@ Or feed an example script:
 - [Testing](docs/testing.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Deep features](docs/deep_features.md)
+- [CTE index wedge plan](docs/cte_index_wedge.md)
 
 ## License
 

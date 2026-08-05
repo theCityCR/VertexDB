@@ -90,3 +90,5 @@ A rewriter always inlines `WITH` CTEs into the outer `SELECT` and materializes `
 subqueries into value lists before planning, so nested SQL can still use base-table indexes.
 
 Next step: collect table/index statistics and use them for cost-based access-path selection.
+For packaging that CTE+index behavior as a demo wedge (examples, scaled tests, benchmarks), see
+[cte_index_wedge.md](cte_index_wedge.md).
