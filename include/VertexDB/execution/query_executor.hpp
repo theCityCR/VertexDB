@@ -75,6 +75,13 @@ class QueryExecutor {
     void recoverFromStorage();
     void recoverFromWal(bool loadedSnapshot);
     void appendWal(WalOperation operation, std::string payload);
+    void flushPendingWal();
+    void clearPendingWal() noexcept;
+
+    struct PendingWalRecord {
+        WalOperation operation{};
+        std::string payload;
+    };
 
     std::shared_ptr<Database> database_;
     StorageManager storageManager_;
@@ -82,6 +89,7 @@ class QueryExecutor {
     QueryPlanner planner_;
     TransactionManager transactionManager_;
     UndoLog undoLog_;
+    std::vector<PendingWalRecord> pendingWal_;
     std::optional<TransactionId> activeTransaction_;
     std::optional<ReadSnapshot> activeSnapshot_;
     std::unordered_map<std::string, std::string> preparedStatements_;

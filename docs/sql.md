@@ -84,13 +84,14 @@ WAL from the beginning. Successful saves checkpoint the WAL so future recovery o
 post-save changes.
 
 Transactions use transaction state tracking, commit-aware MVCC snapshot reads, and undo-log rollback
-for DML. `BEGIN` opens a transaction, captures a commit-seq read snapshot, and clears the undo log;
-SELECTs use that snapshot (plus read-your-writes) so concurrent uncommitted or post-`BEGIN` commits
-stay invisible; mutating `INSERT`/`UPDATE`/`DELETE` stamp SQL transaction ids and append compensating
-undo records; `COMMIT` marks the transaction committed and discards the log; `ROLLBACK` applies the
-log LIFO on the same database instance. While a transaction is active, `CREATE DATABASE`,
-`CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`, `CREATE INDEX`, `SAVE DATABASE`, and `LOAD DATABASE`
-are rejected. Logical WAL records are not yet transaction-atomic.
+for DML. `BEGIN` opens a transaction, captures a commit-seq read snapshot, and clears the undo log
+and any deferred WAL buffer; SELECTs use that snapshot (plus read-your-writes) so concurrent
+uncommitted or post-`BEGIN` commits stay invisible; mutating `INSERT`/`UPDATE`/`DELETE` stamp SQL
+transaction ids, append compensating undo records, and buffer logical WAL records; `COMMIT` flushes
+deferred WAL then marks the transaction committed and discards the undo log; `ROLLBACK` applies the
+undo log LIFO on the same database instance and drops deferred WAL. While a transaction is active,
+`CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`, `CREATE INDEX`, `SAVE DATABASE`, and
+`LOAD DATABASE` are rejected.
 
 ## Types
 

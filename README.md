@@ -21,8 +21,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 - Maintained hash indexes and ordered B+ tree-style range lookup APIs
 - Versioned binary persistence (sparse v2 `.tcrdb` snapshots; dense v1 still loadable), logical WAL
   records, save checkpoints, and startup recovery
-- Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, and
-  undo-log rollback for DML
+- Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
+  rollback for DML, and transaction-atomic logical WAL (DML deferred until `COMMIT`)
 - GoogleTest suite, Google Benchmark targets, sanitizer/coverage scripts, and multi-platform CI (GCC, Clang, macOS Clang, MSVC)
 
 ## Architecture
@@ -111,7 +111,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 89 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 92 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
   (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
   behavior)
@@ -126,8 +126,8 @@ Or feed an example script:
 - Database snapshots still persist typed sparse `(rowId, row)` entries rather than raw page files
 - B+ tree layout is rebuilt lazily on read from ordered entries instead of performing incremental
   split/merge operations
-- Transactions use undo-log rollback for DML and commit-aware MVCC snapshot isolation for reads;
-  logical WAL records are not transaction-atomic (rolled-back DML may still appear in the WAL)
+- Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
+  transaction-atomic logical WAL (DML deferred until `COMMIT`, dropped on `ROLLBACK`)
 - WAL recovery still replays logical SQL operations rather than physical page redo records
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
 - The planner is rule-based with heuristic access-path costs and does not yet collect table/index
@@ -138,12 +138,11 @@ Or feed an example script:
 
 ## Roadmap
 
-1. Make logical WAL records transaction-atomic (defer DML WAL until `COMMIT`)
-2. Implement incremental B+ tree split/merge with structural invariant tests
-3. Add physical WAL redo/recovery tests, including simulated partial writes
-4. Add table/index statistics and cost-based planning
-5. Extend nested SQL (derived tables, correlation) and expression indexes
-6. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
+1. Implement incremental B+ tree split/merge with structural invariant tests
+2. Add physical WAL redo/recovery tests, including simulated partial writes
+3. Add table/index statistics and cost-based planning
+4. Extend nested SQL (derived tables, correlation) and expression indexes
+5. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
 
 Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)
 and [materialize vs inline comparison](docs/cte_materialize_comparison.md).

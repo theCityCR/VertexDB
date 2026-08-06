@@ -155,4 +155,31 @@ TEST(RegressionTests, NullableUpdatesAcceptNullAndStrictUpdatesRejectNull) {
     std::filesystem::remove_all(root);
 }
 
+TEST(RegressionTests, WalDoubleLiteralsRoundTripThroughRecovery) {
+    const auto root = testRoot("wal_double_roundtrip");
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE TABLE Prices (id INT, amount DOUBLE);")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Prices VALUES (1, 120000.0);")).success);
+    }
+
+    const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
+    ASSERT_EQ(records.size(), 3U);
+    EXPECT_EQ(records[2].operation, WalOperation::Insert);
+    EXPECT_NE(records[2].payload.find("120000.0"), std::string::npos);
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT amount FROM Prices WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{120000.0});
+
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB

@@ -39,8 +39,18 @@ std::string sqlLiteral(const Value &value) {
     }
     switch (value.type()) {
     case ColumnType::Int:
-    case ColumnType::Double:
         return value.toString();
+    case ColumnType::Double: {
+        // Ensure the lexeme re-parses as DOUBLE (integers without '.' become INT).
+        std::ostringstream out;
+        out << std::get<double>(value.data());
+        auto text = out.str();
+        if (text.find('.') == std::string::npos && text.find('e') == std::string::npos &&
+            text.find('E') == std::string::npos) {
+            text += ".0";
+        }
+        return text;
+    }
     case ColumnType::String: {
         std::string escaped;
         escaped.reserve(std::get<std::string>(value.data()).size());
@@ -495,6 +505,7 @@ QueryResult QueryExecutor::executeLoadDatabase(const LoadDatabase &command) {
         database_ = storageManager_.loadFirstDatabase();
     }
     undoLog_.clear();
+    clearPendingWal();
     activeTransaction_.reset();
     activeSnapshot_.reset();
     return messageResult(true, "loaded database " + database_->name());
@@ -510,6 +521,7 @@ QueryResult QueryExecutor::executeBegin() {
     activeTransaction_ = transactionManager_.begin().id;
     activeSnapshot_ = transactionManager_.currentSnapshot(*activeTransaction_);
     undoLog_.clear();
+    clearPendingWal();
     return messageResult(true, "began transaction");
 }
 
@@ -517,6 +529,7 @@ QueryResult QueryExecutor::executeCommit() {
     if (!transactionActive()) {
         return messageResult(false, "no active transaction");
     }
+    flushPendingWal();
     transactionManager_.commit(*activeTransaction_);
     activeTransaction_.reset();
     activeSnapshot_.reset();
@@ -535,6 +548,7 @@ QueryResult QueryExecutor::executeRollback() {
     activeTransaction_.reset();
     activeSnapshot_.reset();
     undoLog_.clear();
+    clearPendingWal();
     return messageResult(true, "rolled back transaction");
 }
 
@@ -994,7 +1008,20 @@ void QueryExecutor::appendWal(WalOperation operation, std::string payload) {
     if (replayingWal_) {
         return;
     }
+    if (transactionActive()) {
+        pendingWal_.push_back(PendingWalRecord{operation, std::move(payload)});
+        return;
+    }
     (void)wal_.append(operation, std::move(payload));
 }
+
+void QueryExecutor::flushPendingWal() {
+    for (auto &record : pendingWal_) {
+        (void)wal_.append(record.operation, std::move(record.payload));
+    }
+    pendingWal_.clear();
+}
+
+void QueryExecutor::clearPendingWal() noexcept { pendingWal_.clear(); }
 
 } // namespace VertexDB

@@ -56,15 +56,13 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
   ids; `BEGIN` captures a commit-seq snapshot for isolation. While a transaction is active, the
   executor rejects `CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE INDEX`, and
-  `SAVE`/`LOAD`. Transaction-atomic WAL remains future work.
+  `SAVE`/`LOAD`. DML WAL records are deferred until `COMMIT` and dropped on `ROLLBACK`.
 
 ## Known Limitations
 
 - Database snapshots still serialize typed sparse rows rather than persisting raw page files.
 - B+ tree mutations mark layout dirty and rebuild node layout lazily on the next read rather than
   incrementally splitting and merging pages.
-- Transaction rollback uses undo records for DML; commit-aware MVCC snapshot isolation is implemented
-  for reads, but transaction-atomic WAL is not.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - WAL records are logical and replay SQL operations; there is no physical redo log yet.
 - The planner uses hardcoded heuristic costs and does not collect table/index statistics or perform
@@ -76,13 +74,12 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Make logical WAL records transaction-atomic (defer DML WAL until `COMMIT`; drop on `ROLLBACK`).
-2. Implement incremental B+ tree page split/merge logic with invariants tests.
-3. Harden recovery with physical redo records and crash-simulation regression tests.
-4. Add statistics to tables and indexes, then evolve the planner toward a cost model.
-5. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
-6. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
-7. Turn benchmark output into documented reports and trend comparisons.
+1. Implement incremental B+ tree page split/merge logic with invariants tests.
+2. Harden recovery with physical redo records and crash-simulation regression tests.
+3. Add statistics to tables and indexes, then evolve the planner toward a cost model.
+4. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
+5. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
+6. Turn benchmark output into documented reports and trend comparisons.
 
 ### CTE index wedge (parallel track) — first milestone shipped
 

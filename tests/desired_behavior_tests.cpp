@@ -1,6 +1,7 @@
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/row_store.hpp"
@@ -580,6 +581,100 @@ TEST(DesiredBehaviorTests, TransactionReadsOwnUncommittedWrites) {
     ASSERT_EQ(own.rows.size(), 1U);
     EXPECT_EQ(own.rows[0][0], Value{"Zed"});
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+}
+
+TEST(DesiredBehaviorTests, RollbackDropsDeferredWalRecords) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-rollback-atomic";
+    std::filesystem::remove_all(root);
+    Parser parser;
+    QueryExecutor executor{root};
+
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                    .success);
+
+    const auto before = WriteAheadLog{root / "VertexDB.wal"}.readAll();
+    ASSERT_EQ(before.size(), 3U);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (99, \"Zed\", 1.0);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET salary = 2.0 WHERE id = 1;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 1;")).success);
+
+    EXPECT_EQ(WriteAheadLog{root / "VertexDB.wal"}.readAll().size(), before.size());
+
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    const auto after = WriteAheadLog{root / "VertexDB.wal"}.readAll();
+    ASSERT_EQ(after.size(), before.size());
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(after[i].operation, before[i].operation);
+        EXPECT_EQ(after[i].payload, before[i].payload);
+    }
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id FROM Employees WHERE id = 99;"));
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.rows.empty());
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-commit-atomic";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), "
+                            "(2, \"Bob\", 90000.0);"))
+                        .success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("UPDATE Employees SET salary = 150000.0 WHERE id = 1;"))
+                .success);
+        ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 2;")).success);
+
+        EXPECT_EQ(WriteAheadLog{root / "VertexDB.wal"}.readAll().size(), 2U);
+
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
+    ASSERT_EQ(records.size(), 6U);
+    EXPECT_EQ(records[0].operation, WalOperation::CreateDatabase);
+    EXPECT_EQ(records[1].operation, WalOperation::CreateTable);
+    EXPECT_EQ(records[2].operation, WalOperation::Insert);
+    EXPECT_EQ(records[3].operation, WalOperation::Insert);
+    EXPECT_EQ(records[4].operation, WalOperation::Update);
+    EXPECT_EQ(records[5].operation, WalOperation::Delete);
+
+    QueryExecutor recovered{root};
+    auto result =
+        recovered.execute(parser.parse("SELECT id, name, salary FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[0][1], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][2], Value{150000.0});
+    std::filesystem::remove_all(root);
 }
 
 // --- P3 roadmap placeholders (desired, not yet implemented) -------------

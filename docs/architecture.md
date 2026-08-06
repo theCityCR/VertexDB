@@ -87,7 +87,7 @@ On `LOAD`, indexes are registered on each table before sparse (or legacy dense) 
   splitting and merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
-  logical WAL records are not yet transaction-atomic (rolled-back DML may still appear in the WAL).
+  DML WAL records are deferred until `COMMIT` and dropped on `ROLLBACK`.
 
 ## Current Data Flow
 

@@ -29,10 +29,11 @@ The WAL records logical operations before mutating in-memory state:
 - save
 
 The WAL persists append-only binary log records with a versioned header per record. Mutating
-executor operations write replayable payloads. Startup recovery loads the latest saved snapshot,
-then replays WAL records after the last save checkpoint. If no saved snapshot exists, recovery
-replays the WAL from the beginning. Successful saves are written through a temporary snapshot file
-and then checkpoint the WAL.
+executor operations write replayable payloads. Inside an open transaction, DML records are buffered
+in the executor and only appended on `COMMIT` (dropped on `ROLLBACK`); autocommit and DDL still
+append immediately. Startup recovery loads the latest saved snapshot, then replays WAL records after
+the last save checkpoint. If no saved snapshot exists, recovery replays the WAL from the beginning.
+Successful saves are written through a temporary snapshot file and then checkpoint the WAL.
 
 Next step: introduce physical redo records and crash-simulation tests for partial writes.
 
@@ -62,8 +63,10 @@ commit-aware snapshot reads. DML stamps `createdBy`/`deletedBy` with the active 
 `maxCommitSeq`); SELECTs always evaluate visibility through that snapshot so readers see only
 committed creators/deleters at or before the watermark, plus their own uncommitted writes. User-facing
 rollback still applies a per-transaction undo log against the live database without cloning it.
+Logical DML WAL records are buffered while a transaction is active, flushed on `COMMIT`, and dropped
+on `ROLLBACK`.
 
-Next step: make logical WAL records transaction-atomic (defer DML WAL until `COMMIT`).
+Next step: introduce physical redo records and crash-simulation tests for partial writes.
 
 ## Buffer Pool
 
