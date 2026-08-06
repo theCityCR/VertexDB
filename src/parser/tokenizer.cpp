@@ -98,6 +98,9 @@ std::vector<Token> Tokenizer::tokenize(std::string_view sql) const {
         case '-':
             tokens.push_back({TokenType::Minus, "-"});
             break;
+        case '?':
+            tokens.push_back({TokenType::Parameter, "?"});
+            break;
         default:
             throw std::runtime_error("unexpected character in SQL input");
         }

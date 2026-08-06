@@ -37,21 +37,24 @@ for older WAL files.
 
 ## Prepared Statements
 
-Prepared statements keep named SQL templates with `?` placeholders. Execution binds literal values,
-parses the resolved SQL, and routes it through the same planner and executor paths as direct SQL.
-This keeps the first implementation compact while establishing a public API that can later move to
-typed parameterized AST nodes.
-
-Next step: store prepared ASTs with typed parameter slots instead of reparsing bound SQL.
+Prepared statements parse the template SQL once into a typed `Query` AST. `?` placeholders become
+`Value` parameter slots. `EXECUTE` binds a `vector<Value>` into a cloned AST and runs the normal
+planner/executor path without re-tokenizing or reparsing. `QueryExecutor::preparedAst` exposes the
+stored AST for tests and introspection.
 
 ## Joins
 
-Joins support a single equi-join with projected or `SELECT *` output, qualified output column names,
-joined `WHERE`, `ORDER BY`, and `LIMIT`. The planner chooses between an in-memory hash join (build
-the right side) and a nested-loop index probe when a join key is indexed and the estimated probe
-cost is cheaper. `EXPLAIN` reports the chosen algorithm and cost.
+Joins support left-deep equi-join chains with projected or `SELECT *` output, qualified output column
+names, joined `WHERE`, `ORDER BY`, and `LIMIT`. Each join is planned independently: hash join (build
+the right side) or nested-loop index probe when a join key is indexed and cheaper. After the first
+join, the left side is an intermediate row set, so only hash join or right-side index probe apply.
+`EXPLAIN` reports each join algorithm and cost.
 
-Next step: support multiple joins and additional join strategies.
+## Aggregates
+
+`COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, and `MAX` are hash-aggregated after filter/join.
+`GROUP BY` validates that non-aggregated selected columns are grouped; `ORDER BY`/`LIMIT` apply to
+group output. `EXPLAIN` adds an `aggregation` marker.
 
 ## MVCC
 
@@ -99,14 +102,16 @@ become a residual filter. Top-level `OR` predicates remain full scans; an `OR` n
 may stay as a residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path,
 residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
 
-Equi-joins are planned with the same statistics: hash join versus nested-loop index probe.
+Equi-joins are planned with the same statistics: hash join versus nested-loop index probe, including
+per-join planning for left-deep multi-join chains.
 
 A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) and derived tables
 (`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`. 
 `AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Uncorrelated
 `IN (SELECT …)` subqueries materialize into value lists; correlated `IN`/`EXISTS` bind a single
 outer scope per row. Expression indexes match `(expr) =/>/< const` predicates. CTE/derived bodies
-may carry a single equi-join through inlining.
+may carry equi-joins (including multi-join chains) through inlining. Aggregates/`GROUP BY` are
+planned as a post-join hash aggregate (`EXPLAIN` reports `aggregation`).
 
 ### CTE index demo
 

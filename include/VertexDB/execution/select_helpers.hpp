@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VertexDB/execution/query_result.hpp"
+#include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/table.hpp"
 
@@ -29,5 +30,12 @@ void sortRowsByColumn(std::vector<Row> &rows, std::size_t columnIndex, bool asce
                                                             std::string_view requested);
 
 [[nodiscard]] QueryResult messageResult(bool success, std::string message);
+
+void validateAggregation(const Select &command);
+
+[[nodiscard]] QueryResult aggregateRows(const Select &command, const std::vector<std::string> &sourceColumns,
+                                        std::vector<Row> rows);
+
+[[nodiscard]] Query bindQueryParameters(const Query &query, const std::vector<Value> &parameters);
 
 } // namespace VertexDB

@@ -141,7 +141,8 @@ Predicate Parser::parseComparisonPredicate() {
         expect(TokenType::LeftParen);
         expect(TokenType::Identifier, "SELECT");
         auto subquery = std::make_shared<Select>(parseSubquerySelect(true));
-        if (subquery->columns.size() != 1 || subquery->columns.front() == "*") {
+        if (subquery->columns.size() != 1 || isStarProjection(subquery->columns) ||
+            subquery->columns.front().kind != SelectExpr::Kind::Column) {
             throw std::runtime_error("IN subquery must project exactly one column");
         }
         expect(TokenType::RightParen);
@@ -188,7 +189,7 @@ Select Parser::parseSubquerySelect(bool /*allowOuterRefs*/) {
         outerTableStack_.pop_back();
         throw std::runtime_error("WITH inside subquery is not supported");
     }
-    if (subquery.join) {
+    if (!subquery.joins.empty()) {
         outerTableStack_.pop_back();
         throw std::runtime_error("JOIN inside subquery is not supported");
     }
@@ -255,6 +256,9 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
 }
 
 Value Parser::parseValue() {
+    if (match(TokenType::Parameter)) {
+        return Value::parameter(nextParameterIndex_++);
+    }
     if (match(TokenType::Minus)) {
         const auto token = advance();
         if (token.type != TokenType::Number) {

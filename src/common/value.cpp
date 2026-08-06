@@ -16,9 +16,18 @@ Value::Value(double value) : data_(value) {}
 
 Value::Value(std::string value) : data_(std::move(value)) {}
 
+Value Value::parameter(std::size_t index) {
+    Value value;
+    value.data_ = ParameterSlot{index};
+    return value;
+}
+
 ColumnType Value::type() const {
     if (isNull()) {
         throw std::runtime_error("null value has no concrete column type");
+    }
+    if (isParameter()) {
+        throw std::runtime_error("parameter placeholder has no concrete column type");
     }
     if (std::holds_alternative<std::int64_t>(data_)) {
         return ColumnType::Int;
@@ -31,16 +40,29 @@ ColumnType Value::type() const {
 
 bool Value::isNull() const noexcept { return std::holds_alternative<std::monostate>(data_); }
 
+bool Value::isParameter() const noexcept { return std::holds_alternative<ParameterSlot>(data_); }
+
+std::size_t Value::parameterIndex() const {
+    if (!isParameter()) {
+        throw std::runtime_error("value is not a parameter placeholder");
+    }
+    return std::get<ParameterSlot>(data_).index;
+}
+
 const ValueData &Value::data() const noexcept { return data_; }
 
 std::string Value::toString() const {
     if (isNull()) {
         return "NULL";
     }
+    if (isParameter()) {
+        return "?";
+    }
     return std::visit(
         [](const auto &item) {
             std::ostringstream stream;
-            if constexpr (!std::is_same_v<std::decay_t<decltype(item)>, std::monostate>) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(item)>, std::monostate> &&
+                          !std::is_same_v<std::decay_t<decltype(item)>, ParameterSlot>) {
                 stream << item;
             }
             return stream.str();
@@ -49,7 +71,7 @@ std::string Value::toString() const {
 }
 
 bool operator<(const Value &lhs, const Value &rhs) {
-    if (lhs.isNull() || rhs.isNull()) {
+    if (lhs.isNull() || rhs.isNull() || lhs.isParameter() || rhs.isParameter()) {
         return lhs.data_.index() < rhs.data_.index();
     }
     if (lhs.type() != rhs.type()) {

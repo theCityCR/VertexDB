@@ -53,6 +53,8 @@ class Parser {
     std::string currentFromTable_;
     // Outer FROM tables while parsing nested subqueries (immediate outer is back()).
     std::vector<std::string> outerTableStack_;
+    // Positional `?` parameter indices assigned while parsing prepared SQL.
+    std::size_t nextParameterIndex_{0};
 };
 
 } // namespace VertexDB

@@ -263,8 +263,8 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
     ASSERT_TRUE(table.createIndex("idx_salary", "salary"));
 
     QueryPlanner planner;
-    Select equality{"Employees", std::nullopt,
-                    {"*"},       Predicate{"id", ComparisonOperator::Equal, Value{1}},
+    Select equality{"Employees", {},
+                    {SelectExpr::makeStar()},       Predicate{"id", ComparisonOperator::Equal, Value{1}},
                     {},          {}};
     const auto equalityPlan = planner.planSelect(equality, table);
     EXPECT_EQ(equalityPlan.accessPath, AccessPath::HashIndexLookup);
@@ -272,8 +272,8 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
     EXPECT_LT(equalityPlan.estimatedCost, static_cast<double>(table.rowCount()));
     EXPECT_FALSE(equalityPlan.residual.has_value());
 
-    Select range{"Employees", std::nullopt,
-                 {"*"},       Predicate{"salary", ComparisonOperator::Greater, Value{100000.0}},
+    Select range{"Employees", {},
+                 {SelectExpr::makeStar()},       Predicate{"salary", ComparisonOperator::Greater, Value{100000.0}},
                  {},          {}};
     const auto rangePlan = planner.planSelect(range, table);
     EXPECT_EQ(rangePlan.accessPath, AccessPath::OrderedIndexRange);
@@ -284,7 +284,7 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
         std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{2}}),
         std::make_shared<Predicate>(
             Predicate{"salary", ComparisonOperator::Greater, Value{100000.0}})};
-    Select compound{"Employees", std::nullopt, {"*"}, andPredicate, {}, {}};
+    Select compound{"Employees", {}, {SelectExpr::makeStar()}, andPredicate, {}, {}};
     const auto compoundPlan = planner.planSelect(compound, table);
     EXPECT_EQ(compoundPlan.accessPath, AccessPath::HashIndexLookup);
     ASSERT_TRUE(compoundPlan.residual.has_value());

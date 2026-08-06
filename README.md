@@ -75,9 +75,10 @@ COMMIT;
 ROLLBACK;
 ```
 
-Also supported: nullable columns, compound predicates, single equi-joins, `WITH` CTEs (always
-inlined), derived tables `FROM (SELECT …) [AS] alias`, `IN` subqueries, `EXPLAIN`, prepared
-statements with positional parameters, table rename/drop/list operations, and `EXIT`.
+Also supported: nullable columns, compound predicates, left-deep equi-join chains, aggregates
+(`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default), derived
+tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN`, prepared statements that
+store a typed AST with `?` parameter slots, table rename/drop/list operations, and `EXIT`.
 
 See [examples/](examples/) for a runnable walkthrough.
 
@@ -112,7 +113,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 123 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
+- 128 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
   (materialized CTEs, correlated `IN`/`EXISTS`, expression indexes), desired-behavior gaps,
   persistence (snapshot v4 index pages and page-image WAL), WAL recovery, concurrency, transactions,
   and regressions
@@ -135,16 +136,18 @@ Or feed an example script:
 - Nested SQL is intentionally limited: no nested `WITH`, multi-level correlation, outer `JOIN`
   against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS` subqueries; expression indexes cover
   column / unary minus / `+/-` literal only (no regex/substring indexes)
-- SQL support is intentionally focused: no aggregates, grouping, or general DDL; joins are single
-  equi-joins only
+- Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
+  Joins are left-deep equi-join chains only (no outer/cross joins)
 
 ## Roadmap
 
 1. Persist index pages with snapshots and evolve WAL redo toward page images — **done** (snapshot v4
    + `PageImageRedo`)
 2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED` — **done**
-3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies
+3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies —
+   **done**
 4. Add histograms / `ANALYZE` and multi-index AND optimization
+5. Turn benchmark output into documented reports and trend comparisons
 
 Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)
 and [materialize vs inline comparison](docs/cte_materialize_comparison.md).

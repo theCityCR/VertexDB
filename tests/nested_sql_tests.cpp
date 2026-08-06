@@ -253,8 +253,8 @@ TEST(NestedSqlTests, PlannerChoosesHashIndexInLookup) {
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
 
     Select query{"Employees",
-                 std::nullopt,
-                 {"*"},
+                 {},
+                 {SelectExpr::makeStar()},
                  Predicate{"id", std::vector<Value>{Value{1}, Value{3}}},
                  {},
                  {}};
@@ -414,6 +414,39 @@ TEST(NestedSqlTests, ExpressionIndexEqualityAndRangeExplain) {
     ASSERT_TRUE(rangeExplain.success);
     EXPECT_NE(rangeExplain.rows.front().front().toString().find("expression ordered index"),
               std::string::npos);
+}
+
+TEST(NestedSqlTests, CteBodyMultiJoinAndAggregateProjection) {
+    auto executor = makeExecutor();
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, dept_id INT, salary DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, office_id INT);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Offices (id INT, city STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 10, 120000.0), "
+                        "(2, \"Bob\", 10, 80000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, 100);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Offices VALUES (100, \"SF\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "WITH joined AS ("
+        "  SELECT Employees.name, Offices.city, Employees.salary FROM Employees "
+        "  JOIN Departments ON Employees.dept_id = Departments.id "
+        "  JOIN Offices ON Departments.office_id = Offices.id"
+        ") SELECT COUNT(*), SUM(salary) FROM joined;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{2});
+    EXPECT_EQ(result.rows[0][1], Value{200000.0});
 }
 
 } // namespace VertexDB

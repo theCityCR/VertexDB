@@ -52,6 +52,9 @@ class QueryPlanner {
     [[nodiscard]] QueryPlan planSelect(const Select &query, const Table &table) const;
     [[nodiscard]] JoinPlan planJoin(const Table &left, const Table &right,
                                     const JoinClause &join) const;
+    // Left side is an intermediate row set (no indexes); only hash join or right-side index probe.
+    [[nodiscard]] JoinPlan planJoinAgainstRows(std::size_t leftRows, const Table &right,
+                                               const JoinClause &join) const;
 };
 
 [[nodiscard]] std::string formatPlanExplanation(const QueryPlan &plan);

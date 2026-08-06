@@ -1,11 +1,35 @@
 #include "VertexDB/parser/parser.hpp"
 
+#include "VertexDB/common/string_utils.hpp"
 #include "parse_utils.hpp"
 
 #include <memory>
 #include <stdexcept>
 
 namespace VertexDB {
+namespace {
+
+[[nodiscard]] std::optional<AggregateOp> aggregateOpFromName(std::string_view name) {
+    if (equalsIgnoreCase(name, "COUNT")) {
+        return AggregateOp::Count;
+    }
+    if (equalsIgnoreCase(name, "SUM")) {
+        return AggregateOp::Sum;
+    }
+    if (equalsIgnoreCase(name, "AVG")) {
+        return AggregateOp::Avg;
+    }
+    if (equalsIgnoreCase(name, "MIN")) {
+        return AggregateOp::Min;
+    }
+    if (equalsIgnoreCase(name, "MAX")) {
+        return AggregateOp::Max;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
 Insert Parser::parseInsert() {
     expect(TokenType::Identifier, "INTO");
     const auto table = advance();
@@ -32,16 +56,41 @@ Select Parser::parseSelect() {
 }
 
 Select Parser::parseSelectAfterSelectKeyword() {
-    std::vector<std::string> columns;
+    std::vector<SelectExpr> columns;
     if (match(TokenType::Star)) {
-        columns.emplace_back("*");
+        columns.push_back(SelectExpr::makeStar());
     } else {
         do {
+            if (peek().type == TokenType::Identifier) {
+                const auto agg = aggregateOpFromName(peek().lexeme);
+                if (agg && current_ + 1 < tokens_.size() &&
+                    tokens_[current_ + 1].type == TokenType::LeftParen) {
+                    advance(); // aggregate name
+                    expect(TokenType::LeftParen);
+                    if (*agg == AggregateOp::Count && match(TokenType::Star)) {
+                        expect(TokenType::RightParen);
+                        columns.push_back(SelectExpr::makeAggregate(AggregateOp::CountStar));
+                    } else {
+                        const auto arg = advance();
+                        if (arg.type != TokenType::Identifier) {
+                            throw std::runtime_error("expected aggregate column argument");
+                        }
+                        expect(TokenType::RightParen);
+                        if (*agg == AggregateOp::Count) {
+                            columns.push_back(
+                                SelectExpr::makeAggregate(AggregateOp::Count, arg.lexeme));
+                        } else {
+                            columns.push_back(SelectExpr::makeAggregate(*agg, arg.lexeme));
+                        }
+                    }
+                    continue;
+                }
+            }
             const auto column = advance();
             if (column.type != TokenType::Identifier) {
                 throw std::runtime_error("expected selected column");
             }
-            columns.push_back(column.lexeme);
+            columns.push_back(SelectExpr::makeColumn(column.lexeme));
         } while (match(TokenType::Comma));
     }
 
@@ -71,8 +120,8 @@ Select Parser::parseSelectAfterSelectKeyword() {
         tableName = table.lexeme;
     }
 
-    std::optional<JoinClause> join;
-    if (match(TokenType::Identifier, "JOIN")) {
+    std::vector<JoinClause> joins;
+    while (match(TokenType::Identifier, "JOIN")) {
         const auto joinedTable = advance();
         if (joinedTable.type != TokenType::Identifier) {
             throw std::runtime_error("expected joined table name");
@@ -87,10 +136,11 @@ Select Parser::parseSelectAfterSelectKeyword() {
         if (rightColumn.type != TokenType::Identifier) {
             throw std::runtime_error("expected right join column");
         }
-        join = JoinClause{joinedTable.lexeme, leftColumn.lexeme, rightColumn.lexeme};
+        joins.push_back(JoinClause{joinedTable.lexeme, leftColumn.lexeme, rightColumn.lexeme});
     }
 
     std::optional<Predicate> where;
+    std::vector<std::string> groupBy;
     std::optional<OrderBy> orderBy;
     std::optional<std::size_t> limit;
     const auto previousFromTable = currentFromTable_;
@@ -99,6 +149,16 @@ Select Parser::parseSelectAfterSelectKeyword() {
         where = parsePredicate();
     }
     currentFromTable_ = previousFromTable;
+    if (match(TokenType::Identifier, "GROUP")) {
+        expect(TokenType::Identifier, "BY");
+        do {
+            const auto column = advance();
+            if (column.type != TokenType::Identifier) {
+                throw std::runtime_error("expected GROUP BY column");
+            }
+            groupBy.push_back(column.lexeme);
+        } while (match(TokenType::Comma));
+    }
     if (match(TokenType::Identifier, "ORDER")) {
         expect(TokenType::Identifier, "BY");
         const auto column = advance();
@@ -120,9 +180,9 @@ Select Parser::parseSelectAfterSelectKeyword() {
         }
         limit = static_cast<std::size_t>(parser_detail::parseIntLiteral(count.lexeme));
     }
-    return {std::move(tableName), std::move(join),    std::move(columns),
-            std::move(where),      std::move(orderBy), limit,
-            std::move(derivedCtes)};
+    return {std::move(tableName), std::move(joins),   std::move(columns),
+            std::move(where),     std::move(groupBy), std::move(orderBy),
+            limit,                std::move(derivedCtes)};
 }
 
 Select Parser::parseWithSelect() {

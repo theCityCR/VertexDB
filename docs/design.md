@@ -10,13 +10,13 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
   recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer, AST, grammar tests, table-management commands, predicates, ordering, limits,
-  joins, `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`), derived tables, `IN`/`EXISTS`
-  subqueries (including single-level correlation), expression indexes, `EXPLAIN`, transactions,
-  prepared statements, save/load, and exit
-- Query execution: projection, filtering, ordering, limit, insert, update, delete, table
-  management, joins, CTE/derived-table inlining or materialization, correlated `IN`/`EXISTS`,
-  expression-index maintenance, prepared execution, save/load, recovery, and transactional read
-  routing
+  left-deep equi-joins, aggregates/`GROUP BY`, `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`),
+  derived tables, `IN`/`EXISTS` subqueries (including single-level correlation), expression indexes,
+  `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, and exit
+- Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
+  delete, table management, multi-join chains, CTE/derived-table inlining or materialization,
+  correlated `IN`/`EXISTS`, expression-index maintenance, prepared AST binding, save/load, recovery,
+  and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup (column and expression keys), plus hash index `IN` multi-lookup
 - Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
@@ -64,7 +64,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   executes the body into an ephemeral indexed table before planning the outer query. Derived tables
   `FROM (SELECT …) [AS] alias` always inline. `IN (SELECT …)` subqueries are planned/executed for
   their values when uncorrelated; correlated `IN`/`EXISTS` bind a single outer scope per row.
-  CTE/derived bodies may include a single equi-join.
+  CTE/derived bodies may include equi-joins (including left-deep multi-join chains). Aggregates and
+  `GROUP BY` run after filter/join. Prepared statements store a typed AST with parameter slots.
 - Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v4) that store
   `rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and per-index B+ tree
   nodes plus hash buckets. Index definitions encode expression indexes as `expr:…` alongside column
@@ -90,15 +91,15 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - Nested SQL is limited: no nested `WITH`, no multi-level correlated subqueries, no outer `JOIN`
   against a CTE/derived alias, no `JOIN` inside `IN`/`EXISTS` subqueries, and no regex/substring
   indexes. Single-level correlation and expression indexes (`column`, `-column`, `column+/-literal`)
-  are supported. CTE/derived bodies may include a single equi-join.
-- SQL support is intentionally limited and does not include aggregation, grouping, or general DDL.
-  Joins are single equi-joins only.
+  are supported. CTE/derived bodies may include equi-joins.
+- Aggregates/`GROUP BY` are supported; joins are left-deep equi-join chains only (no outer/cross
+  joins). General DDL beyond the current table/index commands is still out of scope.
 
 ## Next Engineering Plan
 
 1. Persist index pages in snapshots; evolve redo toward page images. — **done** (v4 + `PageImageRedo`)
 2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`. — **done**
-3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins.
+3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins. — **done**
 4. Add histograms / `ANALYZE` and multi-index AND optimization.
 5. Turn benchmark output into documented reports and trend comparisons.
 

@@ -51,7 +51,8 @@ CLI
   abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
   validation).
 - `execution`: `QueryExecutor` façade for command dispatch; helpers for predicate evaluation,
-  SELECT projection/ORDER BY/LIMIT, SQL/WAL literal formatting, and startup recovery.
+  SELECT projection/ORDER BY/LIMIT, hash aggregation, prepared-parameter binding, SQL/WAL literal
+  formatting, and startup recovery.
 - `indexing`: hash indexes and ordered B+ tree index APIs with explicit node/page layout metadata.
 - `persistence`: binary serialization (`.tcrdb` snapshots v1–v4), versioning, save/load, and WAL
   recovery (page-image redo plus legacy physical/logical records).
@@ -99,11 +100,13 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
-3. `Parser` creates a strongly typed `Query` variant (including `WITH` materialize modes,
-   `IN`/`EXISTS`, expression indexes, and `EXPLAIN`).
+3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
+   chains, `WITH` materialize modes, `IN`/`EXISTS`, expression indexes, and `EXPLAIN`). Prepared
+   statements store that AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables; the executor
    materializes uncorrelated `IN` subqueries and evaluates single-level correlated `IN`/`EXISTS`
    per outer row.
-5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and
-   `QueryExecutor` runs it.
+5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and per-join
+   algorithms for left-deep equi-join chains; `QueryExecutor` runs filters/joins, then optional
+   hash aggregation, then `ORDER BY`/`LIMIT`.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.

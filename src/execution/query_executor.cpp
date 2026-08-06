@@ -176,26 +176,19 @@ QueryResult QueryExecutor::executeSelect(const Select &command) {
     for (const auto &[name, body] : rewrite.materialize) {
         temps.emplace(name, materializeCteTable(name, body));
     }
-    if (prepared.join) {
+    if (!prepared.joins.empty()) {
         return executeJoinSelect(prepared);
     }
 
     auto table = requireTable(prepared.table, temps);
     const auto plan = planPreparedSelect(prepared, *table, rewrite);
 
-    std::vector<std::string> columns;
-    const auto projection = resolveProjection(prepared, *table, columns);
-    auto rows = collectRows(prepared, *table, plan);
-
-    if (prepared.orderBy) {
-        const auto orderIndex = table->columnIndex(prepared.orderBy->column);
-        if (!orderIndex) {
-            throw std::runtime_error("unknown ORDER BY column");
-        }
-        sortRowsByColumn(rows, *orderIndex, prepared.orderBy->ascending);
+    std::vector<std::string> sourceColumns;
+    for (const auto &column : table->schema()) {
+        sourceColumns.push_back(column.name);
     }
-
-    return projectWithLimit(std::move(rows), projection, std::move(columns), prepared.limit);
+    auto rows = collectRows(prepared, *table, plan);
+    return finalizeSelectResult(prepared, std::move(sourceColumns), std::move(rows));
 }
 
 QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
@@ -205,28 +198,39 @@ QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
     for (const auto &[name, body] : rewrite.materialize) {
         temps.emplace(name, materializeCteTable(name, body));
     }
-    if (prepared.join) {
-        auto leftTable = requireTable(prepared.table, temps);
-        auto rightTable = requireTable(prepared.join->table, temps);
-        const auto joinPlan = planner_.planJoin(*leftTable, *rightTable, *prepared.join);
-        QueryResult result;
-        result.success = true;
-        result.message = "explain";
-        result.columns = {"plan"};
-        result.rows.push_back({Value{formatJoinPlanExplanation(joinPlan)}});
-        for (const auto &note : rewrite.notes) {
-            result.rows.push_back({Value{note}});
-        }
-        return result;
-    }
 
-    auto table = requireTable(prepared.table, temps);
-    const auto plan = planPreparedSelect(prepared, *table, rewrite);
     QueryResult result;
     result.success = true;
     result.message = "explain";
     result.columns = {"plan"};
-    result.rows.push_back({Value{formatPlanExplanation(plan)}});
+
+    if (!prepared.joins.empty()) {
+        auto leftTable = requireTable(prepared.table, temps);
+        std::size_t leftRows = leftTable->rowCount();
+        for (std::size_t joinIndex = 0; joinIndex < prepared.joins.size(); ++joinIndex) {
+            const auto &join = prepared.joins[joinIndex];
+            auto rightTable = requireTable(join.table, temps);
+            JoinPlan joinPlan;
+            if (joinIndex == 0) {
+                joinPlan = planner_.planJoin(*leftTable, *rightTable, join);
+            } else {
+                joinPlan = planner_.planJoinAgainstRows(leftRows, *rightTable, join);
+            }
+            result.rows.push_back({Value{formatJoinPlanExplanation(joinPlan)}});
+            leftRows = joinPlan.estimatedRows;
+        }
+        for (const auto &note : rewrite.notes) {
+            result.rows.push_back({Value{note}});
+        }
+    } else {
+        auto table = requireTable(prepared.table, temps);
+        const auto plan = planPreparedSelect(prepared, *table, rewrite);
+        result.rows.push_back({Value{formatPlanExplanation(plan)}});
+    }
+
+    if (hasAggregates(prepared.columns) || !prepared.groupBy.empty()) {
+        result.rows.push_back({Value{std::string{"aggregation"}}});
+    }
     return result;
 }
 
@@ -369,33 +373,68 @@ QueryResult QueryExecutor::executeRollback() {
 }
 
 QueryResult QueryExecutor::executePrepare(const PrepareStatement &command) {
-    preparedStatements_[command.name] = command.sql;
+    // Parse once into a typed AST with Parameter slots; EXECUTE binds without reparsing.
+    auto ast = Parser{}.parse(command.sql);
+    preparedStatements_[command.name] = std::move(ast);
     return messageResult(true, "prepared statement " + command.name);
 }
 
 QueryResult QueryExecutor::executePrepared(const ExecutePrepared &command) {
-    const auto sql = bindPreparedSql(command);
-    return execute(Parser{}.parse(sql));
+    Query stored;
+    {
+        const auto lock = lockManager_.acquireRead();
+        auto prepared = preparedStatements_.find(command.name);
+        if (prepared == preparedStatements_.end()) {
+            throw std::runtime_error("unknown prepared statement");
+        }
+        stored = prepared->second;
+    }
+    const Query bound = bindQueryParameters(stored, command.parameters);
+    return execute(bound);
+}
+
+std::optional<Query> QueryExecutor::preparedAst(std::string_view name) const {
+    const auto lock = lockManager_.acquireRead();
+    for (const auto &[storedName, query] : preparedStatements_) {
+        if (equalsIgnoreCase(storedName, name)) {
+            return query;
+        }
+    }
+    return std::nullopt;
 }
 
 std::vector<std::size_t> QueryExecutor::resolveProjection(const Select &command, const Table &table,
                                                           std::vector<std::string> &columns) const {
+    std::vector<std::string> sourceColumns;
+    for (const auto &column : table.schema()) {
+        sourceColumns.push_back(column.name);
+    }
+    return resolveProjectionFromNames(command, sourceColumns, columns);
+}
+
+std::vector<std::size_t>
+QueryExecutor::resolveProjectionFromNames(const Select &command,
+                                          const std::vector<std::string> &sourceColumns,
+                                          std::vector<std::string> &projectedColumns) const {
     std::vector<std::size_t> projection;
-    if (command.columns.size() == 1 && command.columns.front() == "*") {
-        for (std::size_t i = 0; i < table.schema().size(); ++i) {
+    if (isStarProjection(command.columns)) {
+        for (std::size_t i = 0; i < sourceColumns.size(); ++i) {
             projection.push_back(i);
-            columns.push_back(table.schema()[i].name);
+            projectedColumns.push_back(sourceColumns[i]);
         }
         return projection;
     }
 
-    for (const auto &column : command.columns) {
-        auto index = table.columnIndex(column);
+    for (const auto &expr : command.columns) {
+        if (expr.kind != SelectExpr::Kind::Column) {
+            throw std::runtime_error("non-aggregate projection expected a column reference");
+        }
+        auto index = resolveResultColumn(sourceColumns, expr.column);
         if (!index) {
             throw std::runtime_error("unknown selected column");
         }
         projection.push_back(*index);
-        columns.push_back(column);
+        projectedColumns.push_back(sourceColumns[*index]);
     }
     return projection;
 }
@@ -463,113 +502,147 @@ std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &
     return rows;
 }
 
-QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
-    auto leftTable = requireTable(command.table);
-    auto rightTable = requireTable(command.join->table);
-    const auto leftJoinColumn =
-        resolveTableColumn(*leftTable, command.table, command.join->leftColumn);
-    const auto rightJoinColumn =
-        resolveTableColumn(*rightTable, command.join->table, command.join->rightColumn);
-    if (!leftJoinColumn || !rightJoinColumn) {
-        throw std::runtime_error("unknown join column");
+QueryResult QueryExecutor::finalizeSelectResult(const Select &command,
+                                                std::vector<std::string> sourceColumns,
+                                                std::vector<Row> rows) const {
+    if (hasAggregates(command.columns) || !command.groupBy.empty()) {
+        auto result = aggregateRows(command, sourceColumns, std::move(rows));
+        if (command.orderBy) {
+            const auto orderColumn = resolveResultColumn(result.columns, command.orderBy->column);
+            if (!orderColumn) {
+                throw std::runtime_error("unknown ORDER BY column");
+            }
+            sortRowsByColumn(result.rows, *orderColumn, command.orderBy->ascending);
+        }
+        if (command.limit && result.rows.size() > *command.limit) {
+            result.rows.resize(*command.limit);
+        }
+        return result;
     }
 
-    std::vector<std::string> joinedColumns;
+    std::vector<std::string> projectedColumns;
+    const auto projection = resolveProjectionFromNames(command, sourceColumns, projectedColumns);
+    if (command.orderBy) {
+        const auto orderColumn = resolveResultColumn(sourceColumns, command.orderBy->column);
+        if (!orderColumn) {
+            throw std::runtime_error("unknown ORDER BY column");
+        }
+        sortRowsByColumn(rows, *orderColumn, command.orderBy->ascending);
+    }
+    return projectWithLimit(std::move(rows), projection, std::move(projectedColumns), command.limit);
+}
+
+void QueryExecutor::collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
+                                    std::vector<Row> &joinedRows) const {
+    if (command.joins.empty()) {
+        throw std::runtime_error("collectJoinRows requires at least one join");
+    }
+
+    auto leftTable = requireTable(command.table);
+    joinedColumns.clear();
     for (const auto &column : leftTable->schema()) {
         joinedColumns.push_back(command.table + "." + column.name);
     }
-    for (const auto &column : rightTable->schema()) {
-        joinedColumns.push_back(command.join->table + "." + column.name);
-    }
+    joinedRows = rowsSnapshotForRead(*leftTable);
 
-    std::vector<std::size_t> projection;
-    std::vector<std::string> projectedColumns;
-    if (command.columns.size() == 1 && command.columns.front() == "*") {
-        for (std::size_t i = 0; i < joinedColumns.size(); ++i) {
-            projection.push_back(i);
+    for (std::size_t joinIndex = 0; joinIndex < command.joins.size(); ++joinIndex) {
+        const auto &join = command.joins[joinIndex];
+        auto rightTable = requireTable(join.table);
+        const auto leftJoinColumn = resolveResultColumn(joinedColumns, join.leftColumn);
+        const auto rightJoinColumn =
+            resolveTableColumn(*rightTable, join.table, join.rightColumn);
+        if (!leftJoinColumn || !rightJoinColumn) {
+            throw std::runtime_error("unknown join column");
         }
-        projectedColumns = joinedColumns;
-    } else {
-        projection.reserve(command.columns.size());
-        projectedColumns.reserve(command.columns.size());
-        for (const auto &column : command.columns) {
-            auto index = resolveResultColumn(joinedColumns, column);
-            if (!index) {
-                throw std::runtime_error("unknown selected column");
-            }
-            projection.push_back(*index);
-            projectedColumns.push_back(joinedColumns[*index]);
+
+        JoinPlan joinPlan;
+        if (joinIndex == 0) {
+            joinPlan = planner_.planJoin(*leftTable, *rightTable, join);
+        } else {
+            joinPlan = planner_.planJoinAgainstRows(joinedRows.size(), *rightTable, join);
         }
-    }
 
-    const ColumnLookup joinLookup = [&](std::string_view column) {
-        return resolveResultColumn(joinedColumns, column);
-    };
-
-    const auto joinPlan = planner_.planJoin(*leftTable, *rightTable, *command.join);
-    std::vector<Row> joinedRows;
-
-    auto appendJoined = [&](const Row &leftRow, const Row &rightRow) {
-        Row joined;
-        joined.reserve(leftRow.size() + rightRow.size());
-        joined.insert(joined.end(), leftRow.begin(), leftRow.end());
-        joined.insert(joined.end(), rightRow.begin(), rightRow.end());
-        if (command.where && !evalPredicate(*command.where, joined, joinLookup)) {
-            return;
+        std::vector<std::string> nextColumns = joinedColumns;
+        for (const auto &column : rightTable->schema()) {
+            nextColumns.push_back(join.table + "." + column.name);
         }
-        joinedRows.push_back(std::move(joined));
-    };
 
-    if (joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe) {
-        if (joinPlan.outerIsLeft) {
-            const auto outerRows = rowsSnapshotForRead(*leftTable);
-            for (const auto &leftRow : outerRows) {
+        std::vector<Row> nextRows;
+        auto appendJoined = [&](const Row &leftRow, const Row &rightRow) {
+            Row joined;
+            joined.reserve(leftRow.size() + rightRow.size());
+            joined.insert(joined.end(), leftRow.begin(), leftRow.end());
+            joined.insert(joined.end(), rightRow.begin(), rightRow.end());
+            nextRows.push_back(std::move(joined));
+        };
+
+        auto unqualified = [](const std::string &name) {
+            const auto dot = name.rfind('.');
+            return dot == std::string::npos ? name : name.substr(dot + 1);
+        };
+
+        if (joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe && joinPlan.outerIsLeft) {
+            const auto probeColumn = unqualified(join.rightColumn);
+            for (const auto &leftRow : joinedRows) {
                 if (auto rowIds =
-                        rightTable->indexedLookup(command.join->rightColumn, leftRow[*leftJoinColumn])) {
+                        rightTable->indexedLookup(probeColumn, leftRow[*leftJoinColumn])) {
                     for (const auto &rightRow : rowsByIdForRead(*rightTable, *rowIds)) {
                         appendJoined(leftRow, rightRow);
                     }
                 }
             }
-        } else {
+        } else if (joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe && !joinPlan.outerIsLeft &&
+                   joinIndex == 0) {
             const auto outerRows = rowsSnapshotForRead(*rightTable);
+            const auto probeColumn = unqualified(join.leftColumn);
             for (const auto &rightRow : outerRows) {
-                if (auto rowIds =
-                        leftTable->indexedLookup(command.join->leftColumn, rightRow[*rightJoinColumn])) {
+                if (auto rowIds = leftTable->indexedLookup(probeColumn, rightRow[*rightJoinColumn])) {
                     for (const auto &leftRow : rowsByIdForRead(*leftTable, *rowIds)) {
                         appendJoined(leftRow, rightRow);
                     }
                 }
             }
-        }
-    } else {
-        const auto leftRows = rowsSnapshotForRead(*leftTable);
-        const auto rightRows = rowsSnapshotForRead(*rightTable);
-        std::map<Value, std::vector<Row>> rightRowsByKey;
-        for (const auto &row : rightRows) {
-            rightRowsByKey[row[*rightJoinColumn]].push_back(row);
-        }
-        for (const auto &leftRow : leftRows) {
-            auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
-            if (matchingRightRows == rightRowsByKey.end()) {
-                continue;
+        } else {
+            const auto rightRows = rowsSnapshotForRead(*rightTable);
+            std::map<Value, std::vector<Row>> rightRowsByKey;
+            for (const auto &row : rightRows) {
+                rightRowsByKey[row[*rightJoinColumn]].push_back(row);
             }
-            for (const auto &rightRow : matchingRightRows->second) {
-                appendJoined(leftRow, rightRow);
+            for (const auto &leftRow : joinedRows) {
+                auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
+                if (matchingRightRows == rightRowsByKey.end()) {
+                    continue;
+                }
+                for (const auto &rightRow : matchingRightRows->second) {
+                    appendJoined(leftRow, rightRow);
+                }
             }
         }
+
+        joinedColumns = std::move(nextColumns);
+        joinedRows = std::move(nextRows);
     }
 
-    if (command.orderBy) {
-        const auto orderColumn = resolveResultColumn(joinedColumns, command.orderBy->column);
-        if (!orderColumn) {
-            throw std::runtime_error("unknown ORDER BY column");
+    if (command.where) {
+        const ColumnLookup joinLookup = [&](std::string_view column) {
+            return resolveResultColumn(joinedColumns, column);
+        };
+        std::vector<Row> filtered;
+        filtered.reserve(joinedRows.size());
+        for (auto &row : joinedRows) {
+            if (evalPredicate(*command.where, row, joinLookup)) {
+                filtered.push_back(std::move(row));
+            }
         }
-        sortRowsByColumn(joinedRows, *orderColumn, command.orderBy->ascending);
+        joinedRows = std::move(filtered);
     }
+}
 
-    return projectWithLimit(std::move(joinedRows), projection, std::move(projectedColumns),
-                            command.limit);
+QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
+    std::vector<std::string> joinedColumns;
+    std::vector<Row> joinedRows;
+    collectJoinRows(command, joinedColumns, joinedRows);
+    return finalizeSelectResult(command, std::move(joinedColumns), std::move(joinedRows));
 }
 
 bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate &predicate) const {
@@ -658,17 +731,18 @@ Predicate QueryExecutor::materializePredicate(const Predicate &predicate) const 
 std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery) const {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(subquery, rewrite);
-    if (prepared.join) {
+    if (!prepared.joins.empty()) {
         throw std::runtime_error("JOIN inside IN subquery is not supported");
     }
     auto table = requireTable(prepared.table);
     const auto plan = planPreparedSelect(prepared, *table, rewrite);
     auto rows = collectRows(prepared, *table, plan);
 
-    if (prepared.columns.size() != 1 || prepared.columns.front() == "*") {
+    if (prepared.columns.size() != 1 || isStarProjection(prepared.columns) ||
+        prepared.columns.front().kind != SelectExpr::Kind::Column) {
         throw std::runtime_error("IN subquery must project exactly one column");
     }
-    const auto columnIndex = table->columnIndex(prepared.columns.front());
+    const auto columnIndex = table->columnIndex(prepared.columns.front().column);
     if (!columnIndex) {
         throw std::runtime_error("unknown IN subquery projection column");
     }
@@ -695,7 +769,7 @@ std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery)
 bool QueryExecutor::evaluateExists(const Select &subquery) const {
     RewriteResult rewrite;
     Select prepared = prepareSelect(subquery, rewrite);
-    if (prepared.join) {
+    if (!prepared.joins.empty()) {
         throw std::runtime_error("JOIN inside EXISTS subquery is not supported");
     }
     prepared.limit = 1;
@@ -765,40 +839,44 @@ std::shared_ptr<Table> QueryExecutor::materializeCteTable(const std::string &nam
     RewriteResult rewrite;
     const Select prepared = prepareSelect(body, rewrite);
     QueryResult bodyResult;
-    if (prepared.join) {
+    if (!prepared.joins.empty()) {
         bodyResult = const_cast<QueryExecutor *>(this)->executeJoinSelect(prepared);
     } else {
         auto source = requireTable(prepared.table);
         const auto plan = planPreparedSelect(prepared, *source, rewrite);
-        std::vector<std::string> projectedNames;
-        const auto projection = resolveProjection(prepared, *source, projectedNames);
+        std::vector<std::string> sourceColumns;
+        for (const auto &column : source->schema()) {
+            sourceColumns.push_back(column.name);
+        }
         auto rows = collectRows(prepared, *source, plan);
-        if (prepared.orderBy) {
-            const auto orderIndex = source->columnIndex(prepared.orderBy->column);
-            if (!orderIndex) {
-                throw std::runtime_error("unknown ORDER BY column");
-            }
-            sortRowsByColumn(rows, *orderIndex, prepared.orderBy->ascending);
+        bodyResult = finalizeSelectResult(prepared, std::move(sourceColumns), std::move(rows));
+        if (!bodyResult.success) {
+            throw std::runtime_error(bodyResult.message);
         }
-        if (prepared.limit && rows.size() > *prepared.limit) {
-            rows.resize(*prepared.limit);
-        }
-        bodyResult.success = true;
-        bodyResult.columns = std::move(projectedNames);
-        for (const auto &row : rows) {
-            Row projected;
-            projected.reserve(projection.size());
-            for (const auto index : projection) {
-                projected.push_back(row[index]);
-            }
-            bodyResult.rows.push_back(std::move(projected));
-        }
-        // Capture types from the source schema for projected columns.
         std::vector<Column> schema;
-        schema.reserve(projection.size());
-        for (std::size_t i = 0; i < projection.size(); ++i) {
-            const auto &sourceColumn = source->schema()[projection[i]];
-            schema.push_back({bodyResult.columns[i], sourceColumn.type, sourceColumn.nullable});
+        schema.reserve(bodyResult.columns.size());
+        if (hasAggregates(prepared.columns) || !prepared.groupBy.empty()) {
+            for (std::size_t i = 0; i < bodyResult.columns.size(); ++i) {
+                ColumnType type = ColumnType::Int;
+                for (const auto &row : bodyResult.rows) {
+                    if (!row[i].isNull()) {
+                        type = row[i].type();
+                        break;
+                    }
+                }
+                schema.push_back({bodyResult.columns[i], type, true});
+            }
+        } else {
+            std::vector<std::string> projectedNames;
+            const auto projection = resolveProjection(prepared, *source, projectedNames);
+            schema.reserve(projection.size());
+            for (std::size_t i = 0; i < projection.size(); ++i) {
+                const auto &sourceColumn = source->schema()[projection[i]];
+                schema.push_back({bodyResult.columns[i], sourceColumn.type, sourceColumn.nullable});
+            }
+        }
+        if (schema.empty()) {
+            throw std::runtime_error("materialized CTE produced no columns");
         }
         auto table = std::make_shared<Table>(name, std::move(schema));
         for (auto &row : bodyResult.rows) {
@@ -863,35 +941,6 @@ std::shared_ptr<Table> QueryExecutor::requireTable(
         throw std::runtime_error("unknown table");
     }
     return table;
-}
-
-std::string QueryExecutor::bindPreparedSql(const ExecutePrepared &command) const {
-    std::string sql;
-    {
-        const auto lock = lockManager_.acquireRead();
-        auto prepared = preparedStatements_.find(command.name);
-        if (prepared == preparedStatements_.end()) {
-            throw std::runtime_error("unknown prepared statement");
-        }
-        sql = prepared->second;
-    }
-
-    std::ostringstream bound;
-    std::size_t parameterIndex = 0;
-    for (const char character : sql) {
-        if (character != '?') {
-            bound << character;
-            continue;
-        }
-        if (parameterIndex >= command.parameters.size()) {
-            throw std::runtime_error("not enough prepared statement parameters");
-        }
-        bound << sqlLiteral(command.parameters[parameterIndex++]);
-    }
-    if (parameterIndex != command.parameters.size()) {
-        throw std::runtime_error("too many prepared statement parameters");
-    }
-    return bound.str();
 }
 
 ReadSnapshot QueryExecutor::readSnapshot() const {

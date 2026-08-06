@@ -29,6 +29,7 @@ class QueryExecutor {
 
     [[nodiscard]] QueryResult execute(const Query &query);
     [[nodiscard]] std::shared_ptr<Database> currentDatabase() const noexcept;
+    [[nodiscard]] std::optional<Query> preparedAst(std::string_view name) const;
 
   private:
     [[nodiscard]] QueryResult executeCreateDatabase(const CreateDatabase &command);
@@ -53,9 +54,17 @@ class QueryExecutor {
     [[nodiscard]] std::vector<std::size_t>
     resolveProjection(const Select &command, const Table &table,
                       std::vector<std::string> &columns) const;
+    [[nodiscard]] std::vector<std::size_t>
+    resolveProjectionFromNames(const Select &command, const std::vector<std::string> &sourceColumns,
+                               std::vector<std::string> &projectedColumns) const;
     [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
                                                const QueryPlan &plan) const;
     [[nodiscard]] QueryResult executeJoinSelect(const Select &command);
+    [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
+                                                   std::vector<std::string> sourceColumns,
+                                                   std::vector<Row> rows) const;
+    void collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
+                         std::vector<Row> &joinedRows) const;
     [[nodiscard]] bool matches(const Row &row, const Table &table,
                                const Predicate &predicate) const;
     [[nodiscard]] Select prepareSelect(const Select &command, RewriteResult &rewrite) const;
@@ -74,7 +83,6 @@ class QueryExecutor {
     [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
                                                const RewriteResult &rewrite) const;
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
-    [[nodiscard]] std::string bindPreparedSql(const ExecutePrepared &command) const;
     [[nodiscard]] ReadSnapshot readSnapshot() const;
     [[nodiscard]] TransactionId writeTransactionId();
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
@@ -106,7 +114,7 @@ class QueryExecutor {
     std::vector<PendingWalRecord> pendingWal_;
     std::optional<TransactionId> activeTransaction_;
     std::optional<ReadSnapshot> activeSnapshot_;
-    std::unordered_map<std::string, std::string> preparedStatements_;
+    std::unordered_map<std::string, Query> preparedStatements_;
     bool replayingWal_{false};
     LockManager lockManager_;
 };

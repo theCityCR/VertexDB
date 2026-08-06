@@ -53,7 +53,7 @@ RewriteResult rewriteSelect(const Select &query) {
         return result;
     }
 
-    if (query.join) {
+    if (!query.joins.empty()) {
         // Body WHERE is AND-merged onto the joined result; that would mis-scope filters and can
         // make columns ambiguous. Require JOIN to live inside the CTE/derived body instead.
         throw std::runtime_error("JOIN with CTE is not supported in this version");
@@ -100,21 +100,24 @@ RewriteResult rewriteSelect(const Select &query) {
     // DefaultInline / NotMaterialized: always inline (today's behavior).
     Select inlined = std::move(bodySelect);
     // Outer projection wins when not "*"; CTE projection restricts available columns for "*".
-    if (!(query.columns.size() == 1 && query.columns.front() == "*")) {
+    if (!isStarProjection(query.columns)) {
         inlined.columns = query.columns;
-    } else if (!(inlined.columns.size() == 1 && inlined.columns.front() == "*")) {
+    } else if (!isStarProjection(inlined.columns)) {
         // Keep CTE projection when outer asks for *.
     } else {
         inlined.columns = query.columns;
     }
 
     inlined.where = andPredicates(std::move(inlined.where), query.where);
+    if (!query.groupBy.empty()) {
+        inlined.groupBy = query.groupBy;
+    }
     inlined.orderBy = query.orderBy ? query.orderBy : inlined.orderBy;
     if (query.limit) {
         inlined.limit = query.limit;
     }
     inlined.ctes.clear();
-    // Preserve a JOIN that lived inside the CTE/derived body.
+    // Preserve JOINs that lived inside the CTE/derived body.
 
     result.notes.push_back("inlined CTE " + matched->name);
     // Recursively inline if the CTE body still referenced another CTE name from the same WITH.

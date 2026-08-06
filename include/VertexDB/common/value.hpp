@@ -15,7 +15,16 @@ enum class ColumnType : std::uint8_t {
     String,
 };
 
-using ValueData = std::variant<std::monostate, std::int64_t, double, std::string>;
+struct ParameterSlot {
+    std::size_t index{};
+
+    [[nodiscard]] friend bool operator==(const ParameterSlot &, const ParameterSlot &) = default;
+    [[nodiscard]] friend bool operator<(const ParameterSlot &lhs, const ParameterSlot &rhs) {
+        return lhs.index < rhs.index;
+    }
+};
+
+using ValueData = std::variant<std::monostate, std::int64_t, double, std::string, ParameterSlot>;
 
 class Value {
   public:
@@ -25,8 +34,12 @@ class Value {
     Value(double value);
     Value(std::string value);
 
+    [[nodiscard]] static Value parameter(std::size_t index);
+
     [[nodiscard]] ColumnType type() const;
     [[nodiscard]] bool isNull() const noexcept;
+    [[nodiscard]] bool isParameter() const noexcept;
+    [[nodiscard]] std::size_t parameterIndex() const;
     [[nodiscard]] const ValueData &data() const noexcept;
     [[nodiscard]] std::string toString() const;
 

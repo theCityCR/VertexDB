@@ -23,6 +23,16 @@ FROM Employees JOIN Departments ON Employees.dept_id = Departments.id
 WHERE Departments.dept > "A"
 ORDER BY Employees.name DESC
 LIMIT 5;
+SELECT Employees.name, Offices.city
+FROM Employees
+JOIN Departments ON Employees.dept_id = Departments.id
+JOIN Offices ON Departments.office_id = Offices.id;
+SELECT dept_id, COUNT(*), SUM(salary), AVG(salary), MIN(salary), MAX(salary)
+FROM Employees
+GROUP BY dept_id
+ORDER BY dept_id;
+SELECT COUNT(*) FROM Employees;
+SELECT COUNT(name), MIN(salary), MAX(salary) FROM Employees;
 WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
 WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
@@ -73,8 +83,8 @@ inline path. `WHERE col IN (SELECT …)` materializes uncorrelated subqueries (w
 use indexes) and probes the outer column via hash index `IN` lookup when indexed. Correlated
 `IN` / `EXISTS` with single-level outer refs (`table.column` or unambiguous unqualified names) bind
 outer values per candidate row; multi-level correlation is rejected. CTE and derived-table bodies
-may include a single equi-join. Nested `WITH`, outer `JOIN` against a CTE/derived alias, and `JOIN`
-inside `IN`/`EXISTS` subqueries are not supported.
+may include equi-joins (including left-deep multi-join chains). Nested `WITH`, outer `JOIN` against a
+CTE/derived alias, and `JOIN` inside `IN`/`EXISTS` subqueries are not supported.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds the same structures on an evaluated expression key, where
@@ -84,19 +94,27 @@ access. Expression metadata is stored with index definitions in snapshot v4 (`ex
 SAVE/LOAD restores expression indexes without losing keys.
 
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
-the access path or join algorithm, CTE inlining/materialization notes, residual status, and
-`est_rows` / `cost`.
+the access path or each join algorithm in a left-deep chain, CTE inlining/materialization notes,
+residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
+present.
 
-`JOIN` supports a single equi-join. Joined result columns are qualified as `LeftTable.column` and
-`RightTable.column`. Projection, `WHERE`, `ORDER BY`, and `LIMIT` can reference qualified columns;
-unqualified references are allowed when the column name is not ambiguous. The planner chooses
-between an in-memory hash join and a nested-loop index probe when a join key is indexed and cheaper.
+`JOIN` supports left-deep equi-join chains (`t0 JOIN t1 ON … JOIN t2 ON …`). Joined result columns
+are qualified as `LeftTable.column` and `RightTable.column`. Projection, `WHERE`, `ORDER BY`, and
+`LIMIT` can reference qualified columns; unqualified references are allowed when the column name is
+not ambiguous. The planner chooses between an in-memory hash join and a nested-loop index probe per
+join when a join key is indexed and cheaper; after the first join, the left side is an intermediate
+row set so only hash join or right-side index probe apply.
+
+Aggregates `COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, and `MAX` run as a hash aggregate after
+filter/join. `GROUP BY` is required for non-aggregated selected columns; `ORDER BY`/`LIMIT` apply to
+group results. `SELECT *` is rejected with aggregates/`GROUP BY`.
 
 `UPDATE` and `DELETE` evaluate their `WHERE` clause with a full scan of live rows. They do not yet
 use the planner's index access paths (intentional v1 limitation).
 
-Prepared statements store a SQL string containing `?` placeholders. `EXECUTE name VALUES (...)`
-binds values positionally, reparses the bound statement, and executes it through the normal engine.
+Prepared statements parse once into a typed `Query` AST with `?` parameter slots (`Value` parameter
+placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST and executes without
+re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
 page-payload + index-pages format v4, extension `.tcrdb`) under the executor's storage root. Current
@@ -133,8 +151,6 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 ## Near-Term Grammar Work
 
 - Better diagnostics with source positions.
-- Aggregates such as `COUNT`.
-- `GROUP BY`.
-- Broader join syntax and multiple joins.
 - Specialized indexes for substring/regex predicates.
 - Multi-level correlated subqueries.
+- Outer / non-equi joins.

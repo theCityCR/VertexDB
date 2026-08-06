@@ -25,7 +25,8 @@ TEST(ParserTests, ParsesSelectWithPredicateAndLimit) {
     const auto &command = std::get<Select>(query);
     EXPECT_EQ(command.table, "Employees");
     ASSERT_EQ(command.columns.size(), 1U);
-    EXPECT_EQ(command.columns.front(), "name");
+    EXPECT_EQ(command.columns.front().kind, SelectExpr::Kind::Column);
+    EXPECT_EQ(command.columns.front().column, "name");
     ASSERT_TRUE(command.where.has_value());
     EXPECT_EQ(command.where->column, "salary");
     ASSERT_TRUE(command.limit.has_value());
@@ -90,10 +91,10 @@ TEST(ParserTests, ParsesJoinAndPreparedStatements) {
     auto join = parser.parse("SELECT * FROM Employees JOIN Departments ON dept_id = id LIMIT 5;");
     ASSERT_TRUE(std::holds_alternative<Select>(join));
     const auto &select = std::get<Select>(join);
-    ASSERT_TRUE(select.join.has_value());
-    EXPECT_EQ(select.join->table, "Departments");
-    EXPECT_EQ(select.join->leftColumn, "dept_id");
-    EXPECT_EQ(select.join->rightColumn, "id");
+    ASSERT_EQ(select.joins.size(), 1U);
+    EXPECT_EQ(select.joins[0].table, "Departments");
+    EXPECT_EQ(select.joins[0].leftColumn, "dept_id");
+    EXPECT_EQ(select.joins[0].rightColumn, "id");
 
     auto qualified =
         parser.parse("SELECT Employees.name, Departments.dept FROM Employees JOIN Departments ON "
@@ -101,8 +102,25 @@ TEST(ParserTests, ParsesJoinAndPreparedStatements) {
     ASSERT_TRUE(std::holds_alternative<Select>(qualified));
     const auto &qualifiedSelect = std::get<Select>(qualified);
     ASSERT_EQ(qualifiedSelect.columns.size(), 2U);
-    EXPECT_EQ(qualifiedSelect.columns[0], "Employees.name");
-    EXPECT_EQ(qualifiedSelect.join->leftColumn, "Employees.dept_id");
+    EXPECT_EQ(qualifiedSelect.columns[0].column, "Employees.name");
+    EXPECT_EQ(qualifiedSelect.joins[0].leftColumn, "Employees.dept_id");
+
+    auto multiJoin = parser.parse(
+        "SELECT * FROM Employees JOIN Departments ON dept_id = id JOIN Offices ON "
+        "Departments.id = Offices.dept_id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(multiJoin));
+    EXPECT_EQ(std::get<Select>(multiJoin).joins.size(), 2U);
+
+    auto aggregate = parser.parse(
+        "SELECT dept_id, COUNT(*), SUM(salary) FROM Employees GROUP BY dept_id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(aggregate));
+    const auto &agg = std::get<Select>(aggregate);
+    ASSERT_EQ(agg.columns.size(), 3U);
+    EXPECT_EQ(agg.columns[1].kind, SelectExpr::Kind::Aggregate);
+    EXPECT_EQ(agg.columns[1].aggregate, AggregateOp::CountStar);
+    EXPECT_EQ(agg.columns[2].aggregate, AggregateOp::Sum);
+    ASSERT_EQ(agg.groupBy.size(), 1U);
+    EXPECT_EQ(agg.groupBy[0], "dept_id");
 
     EXPECT_TRUE(std::holds_alternative<PrepareStatement>(
         parser.parse("PREPARE by_id AS \"SELECT name FROM Employees WHERE id = ?;\";")));

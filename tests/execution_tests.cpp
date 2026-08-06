@@ -275,6 +275,60 @@ TEST(ExecutionTests, ExecutesPreparedStatementsWithParameters) {
     ASSERT_EQ(result.rows.size(), 1U);
     EXPECT_EQ(result.rows.front().front(), Value{std::string{"Alice"}});
 
+    const auto ast = executor.preparedAst("by_id");
+    ASSERT_TRUE(ast.has_value());
+    ASSERT_TRUE(std::holds_alternative<Select>(*ast));
+    EXPECT_TRUE(std::get<Select>(*ast).where->value.isParameter());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, ExecutesAggregatesGroupByAndMultiJoin) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_agg_join_test_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE, dept_id INT);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, office_id INT);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Offices (id INT, city STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0, 10), "
+                        "(2, \"Bob\", 90000.0, 20), (3, \"Cara\", 110000.0, 10);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, 100), (20, 200);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Offices VALUES (100, \"SF\"), (200, \"NY\");"))
+                    .success);
+
+    auto aggregates =
+        executor.execute(parser.parse("SELECT COUNT(name), MIN(salary), MAX(salary) FROM Employees;"));
+    ASSERT_TRUE(aggregates.success);
+    ASSERT_EQ(aggregates.rows.size(), 1U);
+    EXPECT_EQ(aggregates.rows[0][0], Value{3});
+    EXPECT_EQ(aggregates.rows[0][1], Value{90000.0});
+    EXPECT_EQ(aggregates.rows[0][2], Value{120000.0});
+
+    auto multiJoin = executor.execute(parser.parse(
+        "SELECT Employees.name, Offices.city FROM Employees "
+        "JOIN Departments ON Employees.dept_id = Departments.id "
+        "JOIN Offices ON Departments.office_id = Offices.id "
+        "ORDER BY Employees.name;"));
+    ASSERT_TRUE(multiJoin.success);
+    ASSERT_EQ(multiJoin.rows.size(), 3U);
+    EXPECT_EQ(multiJoin.rows[0][0], Value{std::string{"Alice"}});
+    EXPECT_EQ(multiJoin.rows[0][1], Value{std::string{"SF"}});
+
     std::filesystem::remove_all(root);
 }
 

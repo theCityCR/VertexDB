@@ -618,8 +618,8 @@ TEST(DesiredBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
     ASSERT_TRUE(table.createIndex("idx_salary", "salary"));
 
     QueryPlanner planner;
-    Select less{"Employees", std::nullopt,
-                {"*"},       Predicate{"salary", ComparisonOperator::Less, Value{100000.0}},
+    Select less{"Employees", {},
+                {SelectExpr::makeStar()},       Predicate{"salary", ComparisonOperator::Less, Value{100000.0}},
                 {},          {}};
     const auto plan = planner.planSelect(less, table);
     EXPECT_EQ(plan.accessPath, AccessPath::OrderedIndexRange);
@@ -653,7 +653,7 @@ TEST(DesiredBehaviorTests, OrPredicateFullScanIsDocumentedLimitation) {
         Predicate::Kind::Or,
         std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{1}}),
         std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{2}})};
-    Select query{"Employees", std::nullopt, {"*"}, orPredicate, {}, {}};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, orPredicate, {}, {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::FullScan);
@@ -803,8 +803,8 @@ TEST(DesiredBehaviorTests, IndexPreferredOverFullScanWhenCostsAreTied) {
     table.insert({Value{1}});
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
 
-    Select query{"Employees", std::nullopt,
-                 {"*"},       Predicate{"id", ComparisonOperator::Equal, Value{1}},
+    Select query{"Employees", {},
+                 {SelectExpr::makeStar()},       Predicate{"id", ComparisonOperator::Equal, Value{1}},
                  {},          {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
@@ -825,7 +825,7 @@ TEST(DesiredBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidua
     Predicate where{Predicate::Kind::And, std::make_shared<Predicate>(mid),
                     std::make_shared<Predicate>(leafSalary)};
 
-    Select query{"Employees", std::nullopt, {"*"}, where, {}, {}};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
     EXPECT_EQ(plan.indexColumn, "id");
@@ -1284,7 +1284,7 @@ TEST(DesiredBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCard
         Predicate::Kind::And,
         std::make_shared<Predicate>(Predicate{"dept", ComparisonOperator::Equal, Value{1}}),
         std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{50}})};
-    Select query{"Employees", std::nullopt, {"*"}, where, {}, {}};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
     EXPECT_EQ(plan.indexColumn, "id");
@@ -1306,7 +1306,7 @@ TEST(DesiredBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
         std::make_shared<Predicate>(
             Predicate{"dept", std::vector<Value>{Value{0}, Value{1}, Value{2}}}),
         std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{7}})};
-    Select query{"Employees", std::nullopt, {"*"}, where, {}, {}};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
     EXPECT_EQ(plan.indexColumn, "id");
@@ -1501,6 +1501,114 @@ TEST(DesiredBehaviorTests, IncrementalBTreeSplitMergeMaintainsStructuralInvarian
     EXPECT_EQ(index.size(), 0U);
     EXPECT_EQ(index.height(), 1U);
     EXPECT_EQ(index.leafPageCount(), 1U);
+}
+
+TEST(DesiredBehaviorTests, AggregatesAndGroupByProduceGroupedResults) {
+    auto executor = makeExecutor("aggregates-groupby");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE, dept_id INT);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0, 10), "
+                        "(2, \"Bob\", 90000.0, 20), (3, \"Cara\", 110000.0, 10);"))
+                    .success);
+
+    auto countAll = executor.execute(parser.parse("SELECT COUNT(*) FROM Employees;"));
+    ASSERT_TRUE(countAll.success);
+    ASSERT_EQ(countAll.rows.size(), 1U);
+    EXPECT_EQ(countAll.rows[0][0], Value{3});
+    EXPECT_EQ(countAll.columns[0], "COUNT(*)");
+
+    auto grouped = executor.execute(
+        parser.parse("SELECT dept_id, COUNT(*), SUM(salary), AVG(salary), MIN(salary), MAX(salary) "
+                     "FROM Employees GROUP BY dept_id ORDER BY dept_id;"));
+    ASSERT_TRUE(grouped.success);
+    ASSERT_EQ(grouped.rows.size(), 2U);
+    EXPECT_EQ(grouped.rows[0][0], Value{10});
+    EXPECT_EQ(grouped.rows[0][1], Value{2});
+    EXPECT_EQ(grouped.rows[0][2], Value{230000.0});
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT dept_id, COUNT(*) FROM Employees GROUP BY dept_id;"));
+    ASSERT_TRUE(explain.success);
+    bool sawAggregation = false;
+    for (const auto &row : explain.rows) {
+        if (row.front().toString().find("aggregation") != std::string::npos) {
+            sawAggregation = true;
+        }
+    }
+    EXPECT_TRUE(sawAggregation);
+
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT name, COUNT(*) FROM Employees;")),
+                 std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, MultiEquiJoinLeftDeepChain) {
+    auto executor = makeExecutor("multi-join");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, office_id INT);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Offices (id INT, city STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, 100);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Offices VALUES (100, \"SF\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT Employees.name, Offices.city FROM Employees "
+        "JOIN Departments ON Employees.dept_id = Departments.id "
+        "JOIN Offices ON Departments.office_id = Offices.id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
+    EXPECT_EQ(result.rows[0][1], Value{std::string{"SF"}});
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT Employees.name, Offices.city FROM Employees "
+        "JOIN Departments ON Employees.dept_id = Departments.id "
+        "JOIN Offices ON Departments.office_id = Offices.id;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_GE(explain.rows.size(), 2U);
+    EXPECT_NE(explain.rows[0].front().toString().find("join"), std::string::npos);
+    EXPECT_NE(explain.rows[1].front().toString().find("join"), std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, PreparedStatementStoresTypedAstWithoutReparse) {
+    auto executor = makeExecutor("prepared-ast");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE by_id AS \"SELECT name FROM Employees WHERE id = ?;\";"))
+                    .success);
+
+    const auto ast = executor.preparedAst("by_id");
+    ASSERT_TRUE(ast.has_value());
+    ASSERT_TRUE(std::holds_alternative<Select>(*ast));
+    const auto &select = std::get<Select>(*ast);
+    ASSERT_TRUE(select.where.has_value());
+    EXPECT_TRUE(select.where->value.isParameter());
+    EXPECT_EQ(select.where->value.parameterIndex(), 0U);
+
+    auto result = executor.execute(parser.parse("EXECUTE by_id VALUES (1);"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
 }
 
 } // namespace VertexDB

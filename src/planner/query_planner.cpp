@@ -261,6 +261,34 @@ JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
     return plan;
 }
 
+JoinPlan QueryPlanner::planJoinAgainstRows(std::size_t leftRows, const Table &right,
+                                           const JoinClause &join) const {
+    JoinPlan plan;
+    const auto rightRows = right.rowCount();
+    plan.estimatedRows = std::max(leftRows, rightRows);
+    plan.estimatedCost =
+        static_cast<double>(std::max<std::size_t>(leftRows, 1) + std::max<std::size_t>(rightRows, 1));
+    plan.explanation = "hash join";
+    plan.algorithm = JoinAlgorithm::HashJoin;
+    plan.outerIsLeft = true;
+
+    if (right.hasIndex(join.rightColumn)) {
+        const double fanout = averageRowsPerKey(rightRows, distinctOrOne(right, join.rightColumn));
+        const double cost = static_cast<double>(std::max<std::size_t>(leftRows, 1)) * fanout;
+        if (cost < plan.estimatedCost) {
+            plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
+            plan.estimatedCost = cost;
+            plan.outerIsLeft = true;
+            plan.probeTable = right.name();
+            plan.probeColumn = join.rightColumn;
+            plan.explanation = std::string{"nested loop join (index probe on "} + right.name() +
+                               "." + join.rightColumn + ")";
+        }
+    }
+
+    return plan;
+}
+
 std::string formatPlanExplanation(const QueryPlan &plan) {
     std::ostringstream out;
     out << plan.explanation;
