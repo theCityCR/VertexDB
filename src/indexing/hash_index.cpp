@@ -1,8 +1,6 @@
 #include "VertexDB/indexing/hash_index.hpp"
 
 #include <algorithm>
-#include <mutex>
-#include <shared_mutex>
 
 namespace VertexDB {
 
@@ -21,13 +19,9 @@ std::size_t HashIndex::ValueHash::operator()(const Value &value) const {
     return 0;
 }
 
-void HashIndex::insert(const Value &key, RowId rowId) {
-    std::unique_lock lock{mutex_};
-    entries_[key].push_back(rowId);
-}
+void HashIndex::insert(const Value &key, RowId rowId) { entries_[key].push_back(rowId); }
 
 void HashIndex::remove(const Value &key, RowId rowId) {
-    std::unique_lock lock{mutex_};
     auto it = entries_.find(key);
     if (it == entries_.end()) {
         return;
@@ -39,13 +33,9 @@ void HashIndex::remove(const Value &key, RowId rowId) {
     }
 }
 
-void HashIndex::clear() {
-    std::unique_lock lock{mutex_};
-    entries_.clear();
-}
+void HashIndex::clear() { entries_.clear(); }
 
 std::vector<RowId> HashIndex::find(const Value &key) const {
-    std::shared_lock lock{mutex_};
     auto it = entries_.find(key);
     if (it == entries_.end()) {
         return {};
@@ -53,9 +43,6 @@ std::vector<RowId> HashIndex::find(const Value &key) const {
     return it->second;
 }
 
-std::size_t HashIndex::size() const {
-    std::shared_lock lock{mutex_};
-    return entries_.size();
-}
+std::size_t HashIndex::size() const { return entries_.size(); }
 
 } // namespace VertexDB

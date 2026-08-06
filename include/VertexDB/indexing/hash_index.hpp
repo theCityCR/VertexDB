@@ -2,7 +2,6 @@
 
 #include "VertexDB/storage/row.hpp"
 
-#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -21,8 +20,8 @@ class HashIndex {
         [[nodiscard]] std::size_t operator()(const Value &value) const;
     };
 
+    // Table::mutex_ serializes access; keep HashIndex movable for map storage.
     std::unordered_map<Value, std::vector<RowId>, ValueHash> entries_;
-    mutable std::shared_mutex mutex_;
 };
 
 } // namespace VertexDB

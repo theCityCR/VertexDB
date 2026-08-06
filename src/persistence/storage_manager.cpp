@@ -1,8 +1,10 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 
 namespace VertexDB {
 namespace {
@@ -246,10 +248,18 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
 
         // Register indexes before loading rows so replaceRows/replaceSparse rebuilds them.
         for (const auto &[indexName, columnName] : indexDefinitions) {
-            if (!table->createIndex(indexName, columnName)) {
-                throw std::runtime_error("failed to restore index " + indexName + " on table " +
-                                         tableName);
+            if (table->createIndex(indexName, columnName)) {
+                continue;
             }
+            const auto columnExists = table->columnIndex(columnName).has_value();
+            const auto indexExists = table->listIndexes().end() !=
+                                     std::find(table->listIndexes().begin(),
+                                               table->listIndexes().end(), indexName);
+            throw std::runtime_error(
+                "failed to restore index '" + indexName + "' on column '" + columnName +
+                "' for table '" + tableName + "' (columnExists=" +
+                (columnExists ? "true" : "false") +
+                ", indexExists=" + (indexExists ? "true" : "false") + ")");
         }
 
         if (version == kVersionV1) {

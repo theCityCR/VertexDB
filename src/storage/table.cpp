@@ -140,8 +140,8 @@ std::vector<std::pair<std::string, std::string>> Table::indexDefinitions() const
     std::shared_lock lock{mutex_};
     std::vector<std::pair<std::string, std::string>> definitions;
     definitions.reserve(indexColumns_.size());
-    for (const auto &[name, columnIndex] : indexColumns_) {
-        definitions.emplace_back(name, schema_[columnIndex].name);
+    for (const auto &entry : indexColumns_) {
+        definitions.emplace_back(entry.first, schema_.at(entry.second).name);
     }
     return definitions;
 }
@@ -251,7 +251,7 @@ bool Table::createIndex(std::string name, std::string column) {
     }
 
     std::unique_lock lock{mutex_};
-    if (indexes_.contains(name)) {
+    if (indexes_.contains(name) || indexColumns_.contains(name)) {
         return false;
     }
     indexColumns_.emplace(name, *indexColumn);
