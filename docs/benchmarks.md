@@ -9,8 +9,8 @@ broad performance regressions and compare storage and access paths under control
 - Indexed point lookup over 1,000 and 100,000 rows.
 - Indexed filtered `SELECT`.
 - Non-indexed filtered `SELECT`.
-- Update throughput.
-- Delete throughput.
+- Update throughput (1,000 and 10,000 rows).
+- Delete throughput (1,000 and 10,000 rows).
 - Concurrent indexed point lookup scaling.
 - CTE index-win `SELECT` (inlined `WITH` + outer equality) with an `id` hash index, at 1,000 and
   100,000 rows.
@@ -42,15 +42,6 @@ Suggested comparisons:
 - Single-thread read vs. multi-thread read.
 - Debug vs. release builds.
 - Sanitized vs. unsanitized builds.
-
-The CTE benchmarks use the wedge query:
-
-```sql
-WITH high AS (
-  SELECT id, name, salary FROM Employees WHERE salary > 100000.0
-)
-SELECT name FROM high WHERE id = 1;
-```
 
 The CTE benchmarks use the wedge query:
 

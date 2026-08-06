@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 project(
     VertexDB
     VERSION 0.1.0
-    DESCRIPTION "A high-performance in-memory relational database engine"
+    DESCRIPTION "An educational C++20 in-memory relational database engine"
     LANGUAGES CXX
 )
 

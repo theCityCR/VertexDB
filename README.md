@@ -13,13 +13,14 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 ## Features
 
 - SQL tokenization, parsing, AST construction, query planning, and execution for a focused SQL subset
-- `WITH` CTE inlining, `WHERE col IN (SELECT …)`, sargable `AND` extraction with residual filters,
-  and `EXPLAIN`
+- `WITH` CTE inlining, `WHERE col IN (SELECT …)`, cheapest-indexable `AND` extraction with residual
+  filters, and `EXPLAIN`
 - Typed table storage with schema validation, nullable columns, page-backed row storage (page-byte
   directory as source of truth with an LRU buffer-pool access cache), and stable row IDs via
   tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree-style range lookup APIs
-- Versioned binary persistence, logical WAL records, save checkpoints, and startup recovery
+- Versioned binary persistence (sparse v2 `.tcrdb` snapshots; dense v1 still loadable), logical WAL
+  records, save checkpoints, and startup recovery
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, and
   undo-log rollback for DML
 - GoogleTest suite, Google Benchmark targets, sanitizer/coverage scripts, and multi-platform CI (GCC, Clang, macOS Clang, MSVC)
@@ -53,6 +54,7 @@ CLI
      +-- LockManager
      +-- TransactionManager
      +-- MVCCRowStore
+     +-- UndoLog
 ```
 
 ## SQL Surface
@@ -113,7 +115,8 @@ Or feed an example script:
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
   (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
   behavior)
-- Coverage script enforces an 85% line coverage floor for the core library
+- Coverage script enforces an 85% line coverage floor for the core library (latest local run:
+  88.06%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
   baselines, update/delete throughput, and concurrent indexed point lookups
@@ -127,7 +130,8 @@ Or feed an example script:
   logical WAL records are not transaction-atomic (rolled-back DML may still appear in the WAL)
 - WAL recovery still replays logical SQL operations rather than physical page redo records
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
-- The planner is rule-based and does not yet collect table/index statistics for costing
+- The planner is rule-based with heuristic access-path costs and does not yet collect table/index
+  statistics for costing
 - Nested SQL is intentionally limited: no derived tables, correlation, `JOIN` inside CTEs/`IN`
   subqueries, or expression/regex indexes
 - SQL support is intentionally focused: no aggregates, grouping, or general DDL

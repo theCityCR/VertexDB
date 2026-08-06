@@ -31,8 +31,8 @@ statement per input line). Type `EXIT;` to quit.
 
 ## CTE index win
 
-[`cte_index_win.sql`](cte_index_win.sql) loads ~100 high-salary employees plus a few low-salary
-rows, indexes `id`, then runs the wedge query:
+[`cte_index_win.sql`](cte_index_win.sql) loads 101 high-salary employees plus 10 low-salary rows,
+indexes `id`, then runs the wedge query:
 
 ```sql
 WITH high AS (

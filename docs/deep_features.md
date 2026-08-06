@@ -67,13 +67,14 @@ Next step: make logical WAL records transaction-atomic (defer DML WAL until `COM
 
 ## Buffer Pool
 
-The buffer pool is an LRU cache for fixed-size page payloads. `Table` delegates physical row storage
-through a `RowStore` interface and defaults to `PageRowStore`, which groups rows into compact pages.
-Serialized page bytes in an in-memory page directory are the source of truth; the buffer pool caches
-those pages and fills on miss so reads deserialize live slots from page payloads. Both
-`PageRowStore` and `VectorRowStore` keep stable row IDs with tombstones and LIFO free-list reuse:
-deletes leave holes, and inserts reuse freed IDs before allocating new capacity. Database snapshots
-persist that sparse layout so row IDs survive save/load.
+The buffer pool is an LRU cache of serialized page payloads, sized by page count (not fixed byte
+width). `Table` delegates physical row storage through a `RowStore` interface and defaults to
+`PageRowStore`, which groups rows into pages with a fixed number of row slots per page. Serialized
+page bytes in an in-memory page directory are the source of truth; the buffer pool caches those
+pages and fills on miss so reads deserialize live slots from page payloads. Both `PageRowStore` and
+`VectorRowStore` keep stable row IDs with tombstones and LIFO free-list reuse: deletes leave holes,
+and inserts reuse freed IDs before allocating new capacity. Database snapshots persist that sparse
+layout so row IDs survive save/load.
 
 Next step: persist page payloads as the on-disk snapshot format instead of typed sparse row
 entries.
@@ -87,9 +88,12 @@ The planner chooses between:
 - ordered index range lookup
 - hash index `IN` multi-lookup
 
-For `AND` predicates it extracts one sargable conjunct for the access path and keeps the rest as a
-residual filter evaluated after the index fetch. `OR` predicates remain full scans. `EXPLAIN`
-surfaces the chosen path, residual status, and rewrite notes such as CTE inlining.
+For `AND` predicates it selects the cheapest indexable conjunct for the access path (heuristic
+costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value count, with tie-breaks preferring any index over a
+full scan and equality over range/`IN`) and keeps the rest as a residual filter evaluated after the
+index fetch. Top-level `OR` predicates remain full scans; an `OR` nested under `AND` may stay as a
+residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path, residual status,
+and rewrite notes such as CTE inlining.
 
 A rewriter always inlines `WITH` CTEs into the outer `SELECT` and materializes `IN (SELECT …)`
 subqueries into value lists before planning, so nested SQL can still use base-table indexes.

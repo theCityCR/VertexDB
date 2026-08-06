@@ -15,7 +15,7 @@ line coverage.
 The current suite contains 89 discovered GoogleTest cases across parser, storage, index, execution,
 nested SQL rewrite/`EXPLAIN`, desired-behavior coverage, deep-feature, and regression tests (three
 roadmap placeholders are intentionally `GTEST_SKIP`'d with reasons). The latest local coverage run
-reported 85.77% line coverage.
+reported 88.06% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented
 test binary. Override it for local experiments with:
@@ -51,4 +51,4 @@ cmake --build build-benchmark
 ```
 
 Use sanitizer and coverage builds before changing shared systems such as `Table`, `QueryExecutor`,
-`StorageManager`, indexes, or transaction code. 
+`StorageManager`, indexes, or transaction code.

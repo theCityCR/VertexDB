@@ -17,15 +17,15 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup, plus hash index `IN` multi-lookup
-- Persistence: versioned binary snapshots for database schemas, sparse row IDs, free-list state,
-  and index definitions
+- Persistence: versioned binary snapshots (current sparse v2, legacy dense v1 still readable) for
+  database schemas, sparse row IDs, free-list state, and index definitions under `.tcrdb` files
 - WAL and recovery: append-only logical WAL, startup replay, save checkpoints, and recovery tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
 - Transactions: transaction manager with commit sequences, per-transaction undo-log rollback for DML,
   MVCC row-version store stamped with SQL transaction ids, and commit-aware snapshot reads
   (including dirty-read prevention and snapshot isolation across concurrent statements)
-- Planner: sargable conjunct extraction from `AND` trees, residual filters, CTE rewrite notes, and
-  `EXPLAIN` text
+- Planner: cheapest indexable conjunct selection from `AND` trees (heuristic costs), residual
+  filters, CTE rewrite notes, and `EXPLAIN` text
 - Quality: GoogleTest coverage, regression tests, sanitizer script, coverage script, benchmark
   target, and multi-platform CI
 
@@ -40,31 +40,36 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   comparisons.
 - Hash indexes provide fast equality lookup. `BTreeIndex` provides ordered lookup APIs and keeps
   explicit node/page metadata, rebuilding its shallow layout from ordered entries lazily on read.
-- The executor uses a rule-based planner that extracts one sargable conjunct from `AND` trees and
-  selects a full scan, hash index equality lookup, ordered index range lookup, or hash index `IN`
-  lookup, with residual filters for remaining conjuncts.
+- The executor uses a rule-based planner that picks the cheapest indexable conjunct from `AND`
+  trees (heuristic costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value count) and selects a full scan,
+  hash index equality lookup, ordered index range lookup, or hash index `IN` lookup, with residual
+  filters for remaining conjuncts. Top-level `OR` predicates are not split and force a full scan;
+  nested `OR` under `AND` may remain as a residual while another conjunct uses an index.
 - `WITH` CTEs are always inlined before planning so outer predicates can hit base-table indexes.
   `IN (SELECT …)` subqueries are planned/executed for their values, then probed via index when
   possible.
-- Persistence uses versioned binary snapshots that store capacity, free-list order, and live
-  `(rowId, row)` entries. WAL recovery replays logical SQL payloads after the latest save
-  checkpoint.
+- Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v2) that store
+  capacity, free-list order, and live `(rowId, row)` entries. On load, indexes are created before
+  rows are reloaded so index rebuilds see the restored data. WAL recovery replays logical SQL
+  payloads after the latest save checkpoint.
 - Transactions use transaction state tracking, MVCC read APIs, and an undo log that reverses DML on
   `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
-  ids; `BEGIN` captures a commit-seq snapshot for isolation. Schema changes and save/load are
-  rejected while a transaction is active. Transaction-atomic WAL remains future work.
+  ids; `BEGIN` captures a commit-seq snapshot for isolation. While a transaction is active, the
+  executor rejects `CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE INDEX`, and
+  `SAVE`/`LOAD`. Transaction-atomic WAL remains future work.
 
 ## Known Limitations
 
 - Database snapshots still serialize typed sparse rows rather than persisting raw page files.
-- B+ tree insert/delete operations rebuild node layout rather than incrementally splitting and
-  merging pages.
+- B+ tree mutations mark layout dirty and rebuild node layout lazily on the next read rather than
+  incrementally splitting and merging pages.
 - Transaction rollback uses undo records for DML; commit-aware MVCC snapshot isolation is implemented
   for reads, but transaction-atomic WAL is not.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - WAL records are logical and replay SQL operations; there is no physical redo log yet.
-- The planner does not collect statistics or perform cost-based multi-index optimization.
-- `OR` predicates are not split for indexing; they force a full scan.
+- The planner uses hardcoded heuristic costs and does not collect table/index statistics or perform
+  cost-based multi-index optimization.
+- Top-level `OR` predicates are not split for indexing; they force a full scan.
 - Nested SQL is limited: no derived tables, no correlated subqueries, no `JOIN` / nested `WITH`
   inside CTE bodies or `IN` subqueries, and no expression/regex indexes.
 - SQL support is intentionally limited and does not include aggregation, grouping, or general DDL.
@@ -90,7 +95,7 @@ scaled regression, microbenchmarks, and a Postgres materialize comparison. See t
 Each feature should include:
 
 - Public interface and implementation.
-- Unit or execution tests for expected behavior and edge cases.
+- Unit or execution tests for desired behavior and edge cases.
 - Regression tests for bugs and non-obvious failure modes.
 - SQL documentation updates when syntax or behavior changes.
 - Benchmark updates when performance-sensitive paths change.
