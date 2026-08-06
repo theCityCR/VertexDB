@@ -1,21 +1,13 @@
 #include "VertexDB/parser/parser.hpp"
 
+#include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/parser/tokenizer.hpp"
 
-#include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <stdexcept>
 
 namespace VertexDB {
 namespace {
-
-bool equalsIgnoreCase(std::string_view lhs, std::string_view rhs) {
-    return lhs.size() == rhs.size() && std::ranges::equal(lhs, rhs, [](char left, char right) {
-               return std::toupper(static_cast<unsigned char>(left)) ==
-                      std::toupper(static_cast<unsigned char>(right));
-           });
-}
 
 std::int64_t parseInt(std::string_view text) {
     std::int64_t result{};

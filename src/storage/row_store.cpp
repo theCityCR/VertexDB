@@ -1,7 +1,8 @@
 #include "VertexDB/storage/row_store.hpp"
 
+#include "VertexDB/common/binary_io.hpp"
+
 #include <algorithm>
-#include <cstring>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -39,29 +40,20 @@ void appendValue(std::vector<std::byte> &bytes, const Value &value) {
     }
 }
 
-template <typename T> T readPod(std::span<const std::byte> &bytes) {
-    if (bytes.size() < sizeof(T)) {
-        throw std::runtime_error("truncated page payload while reading fixed-width field");
-    }
-    T value{};
-    std::memcpy(&value, bytes.data(), sizeof(T));
-    bytes = bytes.subspan(sizeof(T));
-    return value;
-}
-
 Value readValue(std::span<const std::byte> &bytes) {
-    const auto typeTag = readPod<std::uint8_t>(bytes);
+    constexpr std::string_view kTruncated = "truncated page payload while reading fixed-width field";
+    const auto typeTag = readPod<std::uint8_t>(bytes, kTruncated);
     if (typeTag == 255) {
         return Value{};
     }
 
     switch (static_cast<ColumnType>(typeTag)) {
     case ColumnType::Int:
-        return Value{readPod<std::int64_t>(bytes)};
+        return Value{readPod<std::int64_t>(bytes, kTruncated)};
     case ColumnType::Double:
-        return Value{readPod<double>(bytes)};
+        return Value{readPod<double>(bytes, kTruncated)};
     case ColumnType::String: {
-        const auto size = readPod<std::uint64_t>(bytes);
+        const auto size = readPod<std::uint64_t>(bytes, kTruncated);
         if (bytes.size() < size) {
             throw std::runtime_error("truncated page payload while reading string");
         }

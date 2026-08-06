@@ -1,5 +1,7 @@
 #include "VertexDB/persistence/write_ahead_log.hpp"
 
+#include "VertexDB/common/binary_io.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
@@ -9,19 +11,7 @@ namespace {
 
 constexpr std::uint32_t kWalMagic = 0x54435741; // TCWA
 constexpr std::uint32_t kWalVersion = 1;
-
-template <typename T> void writePod(std::ostream &out, const T &value) {
-    out.write(reinterpret_cast<const char *>(&value), sizeof(T));
-}
-
-template <typename T> T readPod(std::istream &in) {
-    T value{};
-    in.read(reinterpret_cast<char *>(&value), sizeof(T));
-    if (!in) {
-        throw std::runtime_error("failed to read WAL record");
-    }
-    return value;
-}
+constexpr std::string_view kWalIoError = "failed to read WAL record";
 
 } // namespace
 
@@ -57,15 +47,15 @@ std::vector<WalRecord> WriteAheadLog::readAll() const {
     }
 
     while (in.peek() != std::ifstream::traits_type::eof()) {
-        const auto magic = readPod<std::uint32_t>(in);
-        const auto version = readPod<std::uint32_t>(in);
+        const auto magic = readPod<std::uint32_t>(in, kWalIoError);
+        const auto version = readPod<std::uint32_t>(in, kWalIoError);
         if (magic != kWalMagic || version != kWalVersion) {
             throw std::runtime_error("invalid WAL record header");
         }
         WalRecord record;
-        record.lsn = readPod<std::uint64_t>(in);
-        record.operation = static_cast<WalOperation>(readPod<std::uint8_t>(in));
-        const auto payloadSize = readPod<std::uint64_t>(in);
+        record.lsn = readPod<std::uint64_t>(in, kWalIoError);
+        record.operation = static_cast<WalOperation>(readPod<std::uint8_t>(in, kWalIoError));
+        const auto payloadSize = readPod<std::uint64_t>(in, kWalIoError);
         record.payload.resize(static_cast<std::size_t>(payloadSize));
         in.read(record.payload.data(), static_cast<std::streamsize>(record.payload.size()));
         if (!in) {

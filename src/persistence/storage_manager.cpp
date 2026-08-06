@@ -1,5 +1,7 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 
+#include "VertexDB/common/binary_io.hpp"
+
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
@@ -13,57 +15,51 @@ constexpr std::uint32_t kVersionV1 = 1;
 constexpr std::uint32_t kVersion = 2;
 constexpr std::uint8_t kNullValueType = 255;
 constexpr std::string_view kExtension = ".tcrdb";
+constexpr std::string_view kWriteError = "failed to write database file";
+constexpr std::string_view kReadError = "failed to read database file";
 
-void writeBytes(std::ostream &out, const void *data, std::size_t size) {
-    out.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
-    if (!out) {
-        throw std::runtime_error("failed to write database file");
-    }
+template <typename T> void writePodDb(std::ostream &out, const T &value) {
+    writePod(out, value, kWriteError);
 }
 
-void readBytes(std::istream &in, void *data, std::size_t size) {
-    in.read(static_cast<char *>(data), static_cast<std::streamsize>(size));
-    if (!in) {
-        throw std::runtime_error("failed to read database file");
-    }
+template <typename T> [[nodiscard]] T readPodDb(std::istream &in) {
+    return readPod<T>(in, kReadError);
 }
 
-template <typename T> void writePod(std::ostream &out, const T &value) {
-    writeBytes(out, &value, sizeof(T));
+void writeBytesDb(std::ostream &out, const void *data, std::size_t size) {
+    writeBytes(out, data, size, kWriteError);
 }
 
-template <typename T> T readPod(std::istream &in) {
-    T value{};
-    readBytes(in, &value, sizeof(T));
-    return value;
+void readBytesDb(std::istream &in, void *data, std::size_t size) {
+    readBytes(in, data, size, kReadError);
 }
 
 void writeString(std::ostream &out, std::string_view value) {
     const auto size = static_cast<std::uint64_t>(value.size());
-    writePod(out, size);
-    writeBytes(out, value.data(), value.size());
+    writePodDb(out, size);
+    writeBytesDb(out, value.data(), value.size());
 }
 
 std::string readString(std::istream &in) {
-    const auto size = readPod<std::uint64_t>(in);
+    const auto size = readPodDb<std::uint64_t>(in);
     std::string value(size, '\0');
-    readBytes(in, value.data(), value.size());
+    readBytesDb(in, value.data(), value.size());
     return value;
 }
 
 void writeValue(std::ostream &out, const Value &value) {
     if (value.isNull()) {
-        writePod(out, kNullValueType);
+        writePodDb(out, kNullValueType);
         return;
     }
     const auto type = static_cast<std::uint8_t>(value.type());
-    writePod(out, type);
+    writePodDb(out, type);
     switch (value.type()) {
     case ColumnType::Int:
-        writePod(out, std::get<std::int64_t>(value.data()));
+        writePodDb(out, std::get<std::int64_t>(value.data()));
         break;
     case ColumnType::Double:
-        writePod(out, std::get<double>(value.data()));
+        writePodDb(out, std::get<double>(value.data()));
         break;
     case ColumnType::String:
         writeString(out, std::get<std::string>(value.data()));
@@ -72,16 +68,16 @@ void writeValue(std::ostream &out, const Value &value) {
 }
 
 Value readValue(std::istream &in) {
-    const auto encodedType = readPod<std::uint8_t>(in);
+    const auto encodedType = readPodDb<std::uint8_t>(in);
     if (encodedType == kNullValueType) {
         return Value{};
     }
     const auto type = static_cast<ColumnType>(encodedType);
     switch (type) {
     case ColumnType::Int:
-        return Value{readPod<std::int64_t>(in)};
+        return Value{readPodDb<std::int64_t>(in)};
     case ColumnType::Double:
-        return Value{readPod<double>(in)};
+        return Value{readPodDb<double>(in)};
     case ColumnType::String:
         return Value{readString(in)};
     }
@@ -107,7 +103,7 @@ std::filesystem::path temporaryPathFor(const std::filesystem::path &root,
 }
 
 void loadDenseRows(Table &table, std::istream &in, std::size_t columnCount) {
-    const auto rowCount = readPod<std::uint64_t>(in);
+    const auto rowCount = readPodDb<std::uint64_t>(in);
     std::vector<Row> rows;
     rows.reserve(static_cast<std::size_t>(rowCount));
     for (std::uint64_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
@@ -117,19 +113,19 @@ void loadDenseRows(Table &table, std::istream &in, std::size_t columnCount) {
 }
 
 void loadSparseRows(Table &table, std::istream &in, std::size_t columnCount) {
-    const auto capacity = static_cast<std::size_t>(readPod<std::uint64_t>(in));
-    const auto freeCount = readPod<std::uint64_t>(in);
+    const auto capacity = static_cast<std::size_t>(readPodDb<std::uint64_t>(in));
+    const auto freeCount = readPodDb<std::uint64_t>(in);
     std::vector<RowId> freeList;
     freeList.reserve(static_cast<std::size_t>(freeCount));
     for (std::uint64_t index = 0; index < freeCount; ++index) {
-        freeList.push_back(static_cast<RowId>(readPod<std::uint64_t>(in)));
+        freeList.push_back(static_cast<RowId>(readPodDb<std::uint64_t>(in)));
     }
 
-    const auto liveCount = readPod<std::uint64_t>(in);
+    const auto liveCount = readPodDb<std::uint64_t>(in);
     std::vector<std::pair<RowId, Row>> entries;
     entries.reserve(static_cast<std::size_t>(liveCount));
     for (std::uint64_t index = 0; index < liveCount; ++index) {
-        const auto rowId = static_cast<RowId>(readPod<std::uint64_t>(in));
+        const auto rowId = static_cast<RowId>(readPodDb<std::uint64_t>(in));
         entries.emplace_back(rowId, readRow(in, columnCount));
     }
     table.replaceSparse(capacity, std::move(freeList), std::move(entries));
@@ -149,40 +145,40 @@ void StorageManager::saveDatabase(const Database &database) const {
             throw std::runtime_error("failed to open temporary database file for writing");
         }
 
-        writeBytes(out, kMagic.data(), kMagic.size());
-        writePod(out, kVersion);
+        writeBytesDb(out, kMagic.data(), kMagic.size());
+        writePodDb(out, kVersion);
         writeString(out, database.name());
 
         const auto tables = database.tables();
-        writePod(out, static_cast<std::uint64_t>(tables.size()));
+        writePodDb(out, static_cast<std::uint64_t>(tables.size()));
         for (const auto &table : tables) {
             writeString(out, table->name());
 
-            writePod(out, static_cast<std::uint64_t>(table->schema().size()));
+            writePodDb(out, static_cast<std::uint64_t>(table->schema().size()));
             for (const auto &column : table->schema()) {
                 writeString(out, column.name);
-                writePod(out, static_cast<std::uint8_t>(column.type));
-                writePod(out, static_cast<std::uint8_t>(column.nullable ? 1 : 0));
+                writePodDb(out, static_cast<std::uint8_t>(column.type));
+                writePodDb(out, static_cast<std::uint8_t>(column.nullable ? 1 : 0));
             }
 
             const auto indexes = table->indexDefinitions();
-            writePod(out, static_cast<std::uint64_t>(indexes.size()));
+            writePodDb(out, static_cast<std::uint64_t>(indexes.size()));
             for (const auto &[indexName, columnName] : indexes) {
                 writeString(out, indexName);
                 writeString(out, columnName);
             }
 
-            writePod(out, static_cast<std::uint64_t>(table->capacity()));
+            writePodDb(out, static_cast<std::uint64_t>(table->capacity()));
             const auto freeList = table->freeList();
-            writePod(out, static_cast<std::uint64_t>(freeList.size()));
+            writePodDb(out, static_cast<std::uint64_t>(freeList.size()));
             for (const auto rowId : freeList) {
-                writePod(out, static_cast<std::uint64_t>(rowId));
+                writePodDb(out, static_cast<std::uint64_t>(rowId));
             }
 
             const auto entries = table->liveEntries();
-            writePod(out, static_cast<std::uint64_t>(entries.size()));
+            writePodDb(out, static_cast<std::uint64_t>(entries.size()));
             for (const auto &[rowId, row] : entries) {
-                writePod(out, static_cast<std::uint64_t>(rowId));
+                writePodDb(out, static_cast<std::uint64_t>(rowId));
                 for (const auto &value : row) {
                     writeValue(out, value);
                 }
@@ -210,26 +206,26 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
     }
 
     std::string magic(kMagic.size(), '\0');
-    readBytes(in, magic.data(), magic.size());
+    readBytesDb(in, magic.data(), magic.size());
     if (magic != kMagic) {
         throw std::runtime_error("invalid database file magic");
     }
-    const auto version = readPod<std::uint32_t>(in);
+    const auto version = readPodDb<std::uint32_t>(in);
     if (version != kVersion && version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
     auto database = std::make_shared<Database>(readString(in));
-    const auto tableCount = readPod<std::uint64_t>(in);
+    const auto tableCount = readPodDb<std::uint64_t>(in);
     for (std::uint64_t tableIndex = 0; tableIndex < tableCount; ++tableIndex) {
         auto tableName = readString(in);
-        const auto columnCount = readPod<std::uint64_t>(in);
+        const auto columnCount = readPodDb<std::uint64_t>(in);
         std::vector<Column> schema;
         schema.reserve(static_cast<std::size_t>(columnCount));
         for (std::uint64_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
             auto columnName = readString(in);
-            const auto type = static_cast<ColumnType>(readPod<std::uint8_t>(in));
-            const bool nullable = readPod<std::uint8_t>(in) != 0;
+            const auto type = static_cast<ColumnType>(readPodDb<std::uint8_t>(in));
+            const bool nullable = readPodDb<std::uint8_t>(in) != 0;
             schema.push_back({std::move(columnName), type, nullable});
         }
         const bool created = database->createTable(tableName, std::move(schema));
@@ -238,7 +234,7 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
         }
         auto table = database->table(tableName);
 
-        const auto indexCount = readPod<std::uint64_t>(in);
+        const auto indexCount = readPodDb<std::uint64_t>(in);
         std::vector<std::pair<std::string, std::string>> indexDefinitions;
         indexDefinitions.reserve(static_cast<std::size_t>(indexCount));
         for (std::uint64_t index = 0; index < indexCount; ++index) {

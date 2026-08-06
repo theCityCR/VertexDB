@@ -1,25 +1,12 @@
 #include "VertexDB/planner/rewriter.hpp"
 
-#include <cctype>
+#include "VertexDB/common/string_utils.hpp"
+
 #include <stdexcept>
 #include <utility>
 
 namespace VertexDB {
 namespace {
-
-bool equalsIgnoreCase(std::string_view lhs, std::string_view rhs) {
-    if (lhs.size() != rhs.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < lhs.size(); ++i) {
-        const auto left = static_cast<unsigned char>(lhs[i]);
-        const auto right = static_cast<unsigned char>(rhs[i]);
-        if (std::toupper(left) != std::toupper(right)) {
-            return false;
-        }
-    }
-    return true;
-}
 
 std::optional<Predicate> andPredicates(std::optional<Predicate> left,
                                        std::optional<Predicate> right) {
