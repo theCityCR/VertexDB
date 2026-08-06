@@ -50,6 +50,11 @@ class Table {
     RowId insert(Row row);
     bool erase(RowId rowId);
     bool update(RowId rowId, std::size_t columnIndex, Value value);
+    // Undo helpers: reverse INSERT/UPDATE/DELETE without leaving abort residue in MVCC.
+    bool eraseDiscardingVersion(RowId rowId);
+    bool replaceRow(RowId rowId, Row row);
+    bool revive(RowId rowId, Row row);
+    [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     bool createIndex(std::string name, std::string column);
     void replaceRows(std::vector<Row> rows);
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,

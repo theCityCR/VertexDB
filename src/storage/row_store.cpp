@@ -1,5 +1,6 @@
 #include "VertexDB/storage/row_store.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_set>
@@ -140,6 +141,20 @@ bool VectorRowStore::update(RowId rowId, Row row) {
     return true;
 }
 
+bool VectorRowStore::revive(RowId rowId, Row row) {
+    if (rowId >= rows_.size() || rows_[rowId].has_value()) {
+        return false;
+    }
+    const auto freeIt = std::find(freeList_.begin(), freeList_.end(), rowId);
+    if (freeIt == freeList_.end()) {
+        return false;
+    }
+    freeList_.erase(freeIt);
+    rows_[rowId] = std::move(row);
+    ++liveCount_;
+    return true;
+}
+
 const Row *VectorRowStore::get(RowId rowId) const {
     if (rowId >= rows_.size() || !rows_[rowId].has_value()) {
         return nullptr;
@@ -269,6 +284,28 @@ bool PageRowStore::update(RowId rowId, Row row) {
     }
     pageRows[slot.offset] = std::move(row);
     storePage(slot.pageId, pageRows);
+    return true;
+}
+
+bool PageRowStore::revive(RowId rowId, Row row) {
+    if (rowId >= slots_.size() || slots_[rowId].live) {
+        return false;
+    }
+    const auto freeIt = std::find(freeList_.begin(), freeList_.end(), rowId);
+    if (freeIt == freeList_.end()) {
+        return false;
+    }
+    freeList_.erase(freeIt);
+
+    auto &slot = slots_[rowId];
+    slot.live = true;
+    auto pageRows = loadPageRows(slot.pageId);
+    if (slot.offset >= pageRows.size()) {
+        throw std::runtime_error("page slot offset out of range on revive");
+    }
+    pageRows[slot.offset] = std::move(row);
+    storePage(slot.pageId, pageRows);
+    ++liveCount_;
     return true;
 }
 

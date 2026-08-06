@@ -21,8 +21,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   and index definitions
 - WAL and recovery: append-only logical WAL, startup replay, save checkpoints, and recovery tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
-- Transactions: transaction manager, transaction states, snapshot rollback, MVCC row-version store,
-  and active-transaction reads routed through MVCC table APIs
+- Transactions: transaction manager, transaction states, per-transaction undo-log rollback for DML,
+  MVCC row-version store, and active-transaction reads routed through MVCC table APIs
 - Planner: sargable conjunct extraction from `AND` trees, residual filters, CTE rewrite notes, and
   `EXPLAIN` text
 - Quality: GoogleTest coverage, regression tests, sanitizer script, coverage script, benchmark
@@ -48,17 +48,19 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - Persistence uses versioned binary snapshots that store capacity, free-list order, and live
   `(rowId, row)` entries. WAL recovery replays logical SQL payloads after the latest save
   checkpoint.
-- Transactions currently combine transaction state tracking, MVCC read APIs, and snapshot-copy
-  rollback. This keeps behavior explainable while leaving room for real undo/redo and commit
-  visibility.
+- Transactions use transaction state tracking, MVCC read APIs, and an undo log that reverses DML on
+  `ROLLBACK` against the live database (no full-database clone). Schema changes and save/load are
+  rejected while a transaction is active. This leaves room for commit-aware MVCC visibility and
+  transactional WAL later.
 
 ## Known Limitations
 
 - Database snapshots still serialize typed sparse rows rather than persisting raw page files.
 - B+ tree insert/delete operations rebuild node layout rather than incrementally splitting and
   merging pages.
-- Transaction rollback restores a cloned database snapshot rather than applying undo records.
-- MVCC does not yet enforce full isolation levels or conflict detection.
+- Transaction rollback uses undo records for DML only; commit-aware MVCC isolation and
+  transaction-atomic WAL are not implemented yet.
+- Schema changes, index creation, and save/load are rejected inside an open transaction.
 - WAL records are logical and replay SQL operations; there is no physical redo log yet.
 - The planner does not collect statistics or perform cost-based multi-index optimization.
 - `OR` predicates are not split for indexing; they force a full scan.
@@ -68,7 +70,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Replace snapshot rollback with undo records or MVCC commit visibility.
+1. Add commit-aware MVCC visibility / richer isolation on top of undo-log rollback.
 2. Implement incremental B+ tree page split/merge logic with invariants tests.
 3. Harden recovery with physical redo records and crash-simulation regression tests.
 4. Add statistics to tables and indexes, then evolve the planner toward a cost model.

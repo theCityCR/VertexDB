@@ -18,6 +18,27 @@ void MVCCRowStore::erase(RowId rowId, TransactionId transactionId) {
     }
 }
 
+bool MVCCRowStore::popLatestVersion(RowId rowId) {
+    auto it = versions_.find(rowId);
+    if (it == versions_.end() || it->second.empty()) {
+        return false;
+    }
+    it->second.pop_back();
+    if (it->second.empty()) {
+        versions_.erase(it);
+    }
+    return true;
+}
+
+bool MVCCRowStore::clearLatestDeletedBy(RowId rowId) {
+    auto it = versions_.find(rowId);
+    if (it == versions_.end() || it->second.empty() || !it->second.back().deletedBy) {
+        return false;
+    }
+    it->second.back().deletedBy.reset();
+    return true;
+}
+
 void MVCCRowStore::clear() { versions_.clear(); }
 
 std::optional<Row> MVCCRowStore::read(RowId rowId, TransactionId readerId) const {

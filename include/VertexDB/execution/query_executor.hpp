@@ -9,6 +9,7 @@
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/database.hpp"
 #include "VertexDB/transaction/transaction_manager.hpp"
+#include "VertexDB/transaction/undo_log.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -67,16 +68,19 @@ class QueryExecutor {
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
     [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,
                                                    std::span<const RowId> rowIds) const;
+    [[nodiscard]] bool transactionActive() const noexcept;
+    [[nodiscard]] QueryResult rejectIfTransactionActive(std::string_view action) const;
+    void applyUndoRecord(const UndoRecord &record);
     void recoverFromStorage();
     void recoverFromWal(bool loadedSnapshot);
     void appendWal(WalOperation operation, std::string payload);
 
     std::shared_ptr<Database> database_;
-    std::shared_ptr<Database> transactionSnapshot_;
     StorageManager storageManager_;
     WriteAheadLog wal_;
     QueryPlanner planner_;
     TransactionManager transactionManager_;
+    UndoLog undoLog_;
     std::optional<TransactionId> activeTransaction_;
     std::unordered_map<std::string, std::string> preparedStatements_;
     bool replayingWal_{false};

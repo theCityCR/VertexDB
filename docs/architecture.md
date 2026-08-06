@@ -59,7 +59,8 @@ keeps node rebuilds deterministic.
 
 `Table` exposes transaction-aware snapshots through `rowsSnapshot(TransactionId)` and
 `rowsById(..., TransactionId)`. The executor routes active-transaction reads through those MVCC
-APIs while retaining snapshot-copy rollback semantics for transaction undo.
+APIs. `BEGIN`/`COMMIT`/`ROLLBACK` use a per-transaction undo log: DML records compensating actions,
+`ROLLBACK` applies them LIFO on the same `Database` instance, and `COMMIT` discards the log.
 
 ## Current Limitations
 
@@ -67,7 +68,8 @@ APIs while retaining snapshot-copy rollback semantics for transaction undo.
 - `BTreeIndex` uses leaf payloads for reads but rebuilds a shallow layout lazily on read rather than
   splitting and merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.
-- Transactions have MVCC read routing but still use snapshot-copy rollback.
+- Transactions have MVCC read routing and undo-log DML rollback; commit-aware isolation and
+  transaction-atomic WAL are still future work.
 
 ## Current Data Flow
 

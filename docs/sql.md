@@ -79,9 +79,12 @@ latest saved snapshot and replaying WAL records after that checkpoint. If no sna
 startup recovery replays the WAL from the beginning. Successful saves checkpoint the WAL so future
 recovery only replays post-save changes.
 
-Transactions use transaction state tracking, MVCC-aware reads, and snapshot rollback semantics.
-`BEGIN` captures the active database state, active-transaction reads route through the table MVCC
-read APIs, `COMMIT` releases the snapshot, and `ROLLBACK` restores it.
+Transactions use transaction state tracking, MVCC-aware reads, and undo-log rollback for DML.
+`BEGIN` opens a transaction and an empty undo log, active-transaction reads route through the table
+MVCC read APIs, mutating `INSERT`/`UPDATE`/`DELETE` append compensating undo records, `COMMIT`
+discards the log, and `ROLLBACK` applies it LIFO on the same database instance. Schema changes,
+`CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active. Logical WAL records
+are not yet transaction-atomic.
 
 ## Types
 

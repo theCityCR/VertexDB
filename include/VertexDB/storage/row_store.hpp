@@ -20,6 +20,8 @@ class RowStore {
     [[nodiscard]] virtual RowId append(Row row) = 0;
     [[nodiscard]] virtual bool erase(RowId rowId) = 0;
     [[nodiscard]] virtual bool update(RowId rowId, Row row) = 0;
+    // Restore a free/tombstoned row id with the given payload (undo of erase).
+    [[nodiscard]] virtual bool revive(RowId rowId, Row row) = 0;
     [[nodiscard]] virtual const Row *get(RowId rowId) const = 0;
     [[nodiscard]] virtual std::vector<Row> snapshot() const = 0;
     [[nodiscard]] virtual std::vector<std::pair<RowId, Row>> liveEntries() const = 0;
@@ -37,6 +39,7 @@ class VectorRowStore final : public RowStore {
     [[nodiscard]] RowId append(Row row) override;
     [[nodiscard]] bool erase(RowId rowId) override;
     [[nodiscard]] bool update(RowId rowId, Row row) override;
+    [[nodiscard]] bool revive(RowId rowId, Row row) override;
     [[nodiscard]] const Row *get(RowId rowId) const override;
     [[nodiscard]] std::vector<Row> snapshot() const override;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const override;
@@ -61,6 +64,7 @@ class PageRowStore final : public RowStore {
     [[nodiscard]] RowId append(Row row) override;
     [[nodiscard]] bool erase(RowId rowId) override;
     [[nodiscard]] bool update(RowId rowId, Row row) override;
+    [[nodiscard]] bool revive(RowId rowId, Row row) override;
     [[nodiscard]] const Row *get(RowId rowId) const override;
     [[nodiscard]] std::vector<Row> snapshot() const override;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const override;
