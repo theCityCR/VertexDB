@@ -202,12 +202,14 @@ TEST(StorageTests, SaveLoadPreservesSparseIndexesAndFreeListReuse) {
     auto table = loaded->table("Employees");
     ASSERT_NE(table, nullptr);
     ASSERT_TRUE(table->hasIndex("id"));
-    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3).value_or(std::vector<RowId>{})}),
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3)})
+                  .value_or(std::vector<RowId>{}),
               std::vector<RowId>{keptId});
     const auto reused =
         table->insert({Value{static_cast<std::int64_t>(4)}, Value{std::string{"Dana"}}});
     EXPECT_EQ(reused, deletedId);
-    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(4).value_or(std::vector<RowId>{})}),
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(4)})
+                  .value_or(std::vector<RowId>{}),
               std::vector<RowId>{deletedId});
 
     std::filesystem::remove_all(root);
