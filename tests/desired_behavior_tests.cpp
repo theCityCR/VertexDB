@@ -1,6 +1,7 @@
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/persistence/physical_redo.hpp"
 #include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
@@ -346,7 +347,7 @@ TEST(DesiredBehaviorTests, PageRowStoreReadsLiveRowsFromPagePayloadBytes) {
 }
 
 TEST(DesiredBehaviorTests, SaveLoadPersistsPageDirectoryPayloadBytes) {
-    // Desired: snapshots write PageRowStore directory bytes verbatim (format v3), not sparse rows.
+    // Desired: snapshots write PageRowStore directory bytes verbatim (format v3+), not sparse rows.
     const auto root =
         std::filesystem::temp_directory_path() /
         ("vertexdb-desired-page-payload-save-" +
@@ -393,6 +394,108 @@ TEST(DesiredBehaviorTests, SaveLoadPersistsPageDirectoryPayloadBytes) {
     const auto reused =
         table->insert({Value{static_cast<std::int64_t>(4)}, Value{std::string{"Dana"}}});
     EXPECT_EQ(reused, deletedId);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, SaveLoadPersistsBTreeAndHashIndexPagesWithoutRebuild) {
+    // Desired (v4): index pages round-trip; B-tree nodesSnapshot and hash lookups match pre-save.
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("vertexdb-desired-index-pages-v4-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(root);
+    StorageManager storage{root};
+
+    std::vector<BTreeNode> beforeNodes;
+    {
+        Database database{"company"};
+        ASSERT_TRUE(database.createTable(
+            "Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}));
+        auto table = database.table("Employees");
+        ASSERT_TRUE(table->createIndex("idx_id", "id"));
+        for (int i = 1; i <= 20; ++i) {
+            (void)table->insert(
+                {Value{static_cast<std::int64_t>(i)}, Value{"E" + std::to_string(i)}});
+        }
+        ASSERT_TRUE(table->erase(5));
+        ASSERT_TRUE(table->erase(12));
+        beforeNodes = table->orderedIndexNodesSnapshot("idx_id").value_or(std::vector<BTreeNode>{});
+        ASSERT_FALSE(beforeNodes.empty());
+        storage.saveDatabase(database);
+    }
+
+    auto loaded = storage.loadDatabase("company");
+    auto table = loaded->table("Employees");
+    ASSERT_NE(table, nullptr);
+    const auto afterNodes =
+        table->orderedIndexNodesSnapshot("idx_id").value_or(std::vector<BTreeNode>{});
+    ASSERT_EQ(afterNodes.size(), beforeNodes.size());
+    for (std::size_t i = 0; i < beforeNodes.size(); ++i) {
+        EXPECT_EQ(afterNodes[i].pageId, beforeNodes[i].pageId);
+        EXPECT_EQ(afterNodes[i].leaf, beforeNodes[i].leaf);
+        EXPECT_EQ(afterNodes[i].keys, beforeNodes[i].keys);
+        EXPECT_EQ(afterNodes[i].rowIds, beforeNodes[i].rowIds);
+        EXPECT_EQ(afterNodes[i].children, beforeNodes[i].children);
+        EXPECT_EQ(afterNodes[i].nextLeaf, beforeNodes[i].nextLeaf);
+    }
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3)})
+                  .value_or(std::vector<RowId>{}),
+              std::vector<RowId>{2});
+    EXPECT_TRUE(table->indexedLookup("id", Value{static_cast<std::int64_t>(6)})
+                    .value_or(std::vector<RowId>{})
+                    .empty());
+    EXPECT_EQ(table->orderedLookup("id", ComparisonOperator::Less, Value{static_cast<std::int64_t>(4)})
+                  .value_or(std::vector<RowId>{})
+                  .size(),
+              3U);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, IndexPageRoundTripAfterDeletesAndSplits) {
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("vertexdb-desired-index-split-roundtrip-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(root);
+    StorageManager storage{root};
+
+    std::vector<BTreeNode> beforeNodes;
+    {
+        // Force splits with a tiny fanout via direct BTreeIndex, then through Table save/load with
+        // default fanout after enough keys — assert nodesSnapshot equality on the table index.
+        Database database{"company"};
+        ASSERT_TRUE(database.createTable("Keys", {{"id", ColumnType::Int}}));
+        auto table = database.table("Keys");
+        ASSERT_TRUE(table->createIndex("idx_id", "id"));
+        for (int i = 1; i <= 200; ++i) {
+            (void)table->insert({Value{static_cast<std::int64_t>(i)}});
+        }
+        for (int i = 1; i <= 200; i += 3) {
+            ASSERT_TRUE(table->erase(static_cast<RowId>(i - 1)));
+        }
+        beforeNodes = table->orderedIndexNodesSnapshot("idx_id").value_or(std::vector<BTreeNode>{});
+        ASSERT_GT(beforeNodes.size(), 1U);
+        storage.saveDatabase(database);
+    }
+
+    auto loaded = storage.loadDatabase("company");
+    auto table = loaded->table("Keys");
+    ASSERT_NE(table, nullptr);
+    const auto afterNodes =
+        table->orderedIndexNodesSnapshot("idx_id").value_or(std::vector<BTreeNode>{});
+    ASSERT_EQ(afterNodes.size(), beforeNodes.size());
+    for (std::size_t i = 0; i < beforeNodes.size(); ++i) {
+        EXPECT_EQ(afterNodes[i].pageId, beforeNodes[i].pageId);
+        EXPECT_EQ(afterNodes[i].keys, beforeNodes[i].keys);
+        EXPECT_EQ(afterNodes[i].rowIds, beforeNodes[i].rowIds);
+        EXPECT_EQ(afterNodes[i].children, beforeNodes[i].children);
+        EXPECT_EQ(afterNodes[i].nextLeaf, beforeNodes[i].nextLeaf);
+    }
+    EXPECT_FALSE(table->indexedLookup("id", Value{static_cast<std::int64_t>(2)})
+                     .value_or(std::vector<RowId>{})
+                     .empty());
 
     std::filesystem::remove_all(root);
 }
@@ -818,7 +921,7 @@ TEST(DesiredBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
     ASSERT_EQ(records.size(), 3U);
     EXPECT_EQ(records[0].operation, WalOperation::CreateDatabase);
     EXPECT_EQ(records[1].operation, WalOperation::CreateTable);
-    EXPECT_EQ(records[2].operation, WalOperation::PhysicalRedo);
+    EXPECT_EQ(records[2].operation, WalOperation::PageImageRedo);
 
     QueryExecutor recovered{root};
     auto result =
@@ -833,9 +936,9 @@ TEST(DesiredBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
 
 // --- Physical WAL redo and crash/partial-write recovery -------------------
 
-TEST(DesiredBehaviorTests, PhysicalRedoRecoversInsertUpdateDeleteWithoutSqlPayload) {
+TEST(DesiredBehaviorTests, PageImageRedoRecoversInsertUpdateDeleteWithoutSqlPayload) {
     const auto root =
-        std::filesystem::temp_directory_path() / "vertexdb-desired-physical-redo-recover";
+        std::filesystem::temp_directory_path() / "vertexdb-desired-page-image-redo-recover";
     std::filesystem::remove_all(root);
     Parser parser;
 
@@ -859,21 +962,59 @@ TEST(DesiredBehaviorTests, PhysicalRedoRecoversInsertUpdateDeleteWithoutSqlPaylo
 
     const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
     ASSERT_GE(records.size(), 4U);
-    std::size_t physicalCount = 0;
+    std::size_t pageImageCount = 0;
     for (const auto &record : records) {
-        if (record.operation == WalOperation::PhysicalRedo) {
-            ++physicalCount;
-            // Physical payloads are binary row images, not SQL text.
+        if (record.operation == WalOperation::PageImageRedo) {
+            ++pageImageCount;
             EXPECT_EQ(record.payload.find("INSERT"), std::string::npos);
             EXPECT_EQ(record.payload.find("UPDATE"), std::string::npos);
             EXPECT_EQ(record.payload.find("DELETE"), std::string::npos);
         } else if (record.operation == WalOperation::Insert ||
                    record.operation == WalOperation::Update ||
                    record.operation == WalOperation::Delete) {
-            ADD_FAILURE() << "DML should use PhysicalRedo, not legacy logical SQL ops";
+            ADD_FAILURE() << "DML should use PageImageRedo, not legacy logical SQL ops";
         }
     }
-    EXPECT_EQ(physicalCount, 4U);
+    EXPECT_EQ(pageImageCount, 4U);
+
+    QueryExecutor recovered{root};
+    auto result =
+        recovered.execute(parser.parse("SELECT id, name, salary FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[0][1], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][2], Value{150000.0});
+    std::filesystem::remove_all(root);
+}
+
+// Keep the older PhysicalRedo recovery path for legacy WAL files.
+TEST(DesiredBehaviorTests, PhysicalRedoRecoversInsertUpdateDeleteWithoutSqlPayload) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-physical-redo-recover";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    WriteAheadLog wal{root / "VertexDB.wal"};
+    wal.reset();
+    (void)wal.append(WalOperation::CreateDatabase, "company");
+    (void)wal.append(WalOperation::CreateTable,
+                     "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);");
+    const auto upsert1 = encodePhysicalRedo(PhysicalRedoRecord{
+        PhysicalRedoKind::Upsert, "Employees", 0,
+        Row{Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}}});
+    const auto upsert2 = encodePhysicalRedo(PhysicalRedoRecord{
+        PhysicalRedoKind::Upsert, "Employees", 1,
+        Row{Value{static_cast<std::int64_t>(2)}, Value{"Bob"}, Value{90000.0}}});
+    const auto update1 = encodePhysicalRedo(PhysicalRedoRecord{
+        PhysicalRedoKind::Upsert, "Employees", 0,
+        Row{Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{150000.0}}});
+    const auto erase2 =
+        encodePhysicalRedo(PhysicalRedoRecord{PhysicalRedoKind::Erase, "Employees", 1, {}});
+    (void)wal.append(WalOperation::PhysicalRedo, upsert1);
+    (void)wal.append(WalOperation::PhysicalRedo, upsert2);
+    (void)wal.append(WalOperation::PhysicalRedo, update1);
+    (void)wal.append(WalOperation::PhysicalRedo, erase2);
 
     QueryExecutor recovered{root};
     auto result =
@@ -929,7 +1070,7 @@ TEST(DesiredBehaviorTests, TruncatedTrailingWalRecordIsIgnoredDuringRecovery) {
     std::filesystem::remove_all(root);
 }
 
-TEST(DesiredBehaviorTests, TruncatedWalPayloadKeepsPriorPhysicalRedo) {
+TEST(DesiredBehaviorTests, TruncatedWalPayloadKeepsPriorPageImageRedo) {
     const auto root =
         std::filesystem::temp_directory_path() / "vertexdb-desired-wal-torn-payload";
     std::filesystem::remove_all(root);
@@ -952,7 +1093,7 @@ TEST(DesiredBehaviorTests, TruncatedWalPayloadKeepsPriorPhysicalRedo) {
         const std::uint32_t magic = 0x54435741;
         const std::uint32_t version = 1;
         const std::uint64_t lsn = 99;
-        const std::uint8_t op = static_cast<std::uint8_t>(WalOperation::PhysicalRedo);
+        const std::uint8_t op = static_cast<std::uint8_t>(WalOperation::PageImageRedo);
         const std::uint64_t claimedPayload = 1024;
         out.write(reinterpret_cast<const char *>(&magic), sizeof(magic));
         out.write(reinterpret_cast<const char *>(&version), sizeof(version));
@@ -994,7 +1135,7 @@ TEST(DesiredBehaviorTests, TornTransactionBatchDoesNotPartiallyApply) {
     const auto walPath = root / "VertexDB.wal";
     auto records = WriteAheadLog{walPath}.readAll();
     ASSERT_EQ(records.size(), 4U);
-    EXPECT_EQ(records[3].operation, WalOperation::PhysicalRedo);
+    EXPECT_EQ(records[3].operation, WalOperation::PageImageRedo);
     ASSERT_GT(records[3].payload.size(), 8U);
 
     // Truncate the durable transaction batch mid-payload (crash during COMMIT flush).

@@ -53,8 +53,8 @@ CLI
 - `execution`: `QueryExecutor` façade for command dispatch; helpers for predicate evaluation,
   SELECT projection/ORDER BY/LIMIT, SQL/WAL literal formatting, and startup recovery.
 - `indexing`: hash indexes and ordered B+ tree index APIs with explicit node/page layout metadata.
-- `persistence`: binary serialization (`.tcrdb` snapshots), versioning, save/load, and logical WAL
-  recovery.
+- `persistence`: binary serialization (`.tcrdb` snapshots v1–v4), versioning, save/load, and WAL
+  recovery (page-image redo plus legacy physical/logical records).
 - `concurrency`: executor-level reader/writer synchronization via `LockManager`.
 - `transaction`: commit sequences, MVCC row versions, and per-transaction undo-log rollback.
 
@@ -66,14 +66,16 @@ in-memory page directory are the source of truth, and the LRU `BufferPool` is th
 (fill-on-miss). Reads deserialize live row slots from those page bytes. Each page holds a fixed
 number of row slots; serialized page byte lengths vary with row content. Both row-store
 implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
-inserts reuse freed IDs before growing capacity. Snapshots persist `rowsPerPage`, capacity, free-list
-order, and serialized page-directory payloads so IDs and page bytes survive save/load. `VectorRowStore`
-remains available as a simple in-memory implementation for focused tests or future comparisons.
+inserts reuse freed IDs before growing capacity. Snapshots (format v4) persist `rowsPerPage`,
+capacity, free-list order, serialized page-directory payloads, and index pages (B+ tree nodes and
+hash buckets) so IDs, page bytes, and indexes survive save/load. `VectorRowStore` remains available
+as a simple in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata
 with page ids, leaf links, internal children, separator keys, and row-id payloads in leaves. Inserts
 and deletes split and merge nodes incrementally; point lookups descend from the root and range scans
-follow linked leaves.
+follow linked leaves. `exportPages` / `replaceFromPages` round-trip that layout for snapshots and
+page-image redo.
 
 `Table` exposes transaction-aware snapshots through `rowsSnapshot(ReadSnapshot, TransactionManager)`
 and `rowsById(..., ReadSnapshot, TransactionManager)`. The executor stamps DML with SQL transaction
@@ -82,16 +84,14 @@ MVCC (including dirty-read prevention for concurrent autocommit readers). `BEGIN
 still use a per-transaction undo log for abort: DML records compensating actions, `ROLLBACK` applies
 them LIFO on the same `Database` instance, and `COMMIT` discards the log.
 
-On `LOAD`, indexes are registered on each table before page payloads (or legacy sparse/dense rows)
-are reloaded so `replaceFromPages` / `replaceSparse` / `replaceRows` rebuilds index entries from the
-restored row set.
+On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
+pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered before rows so
+`replaceFromPages` / `replaceSparse` / `replaceRows` rebuilds index entries from the restored row set.
 
 ## Current Limitations
 
-- Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows.
-- WAL recovery applies physical row-image redo for DML (DDL remains logical SQL); trailing torn
-  WAL records are skipped. Page-image redo is the next persistence step now that snapshots store
-  page payloads.
+- WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
+  logical DML remain replayable. Trailing torn WAL records are skipped.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
   DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped on `ROLLBACK`.
 

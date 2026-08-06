@@ -31,9 +31,16 @@ BTreeIndex::BTreeIndex(std::size_t maxKeysPerNode) : maxKeysPerNode_(maxKeysPerN
     root.pageId = rootPageId_;
     root.leaf = true;
     nodes_.emplace(rootPageId_, std::move(root));
+    clearDirtyPages();
+}
+
+void BTreeIndex::markDirty(BTreePageId pageId) {
+    dirtyPages_[pageId] = true;
+    metadataDirty_ = true;
 }
 
 BTreePageId BTreeIndex::allocatePage() {
+    metadataDirty_ = true;
     if (!freePageIds_.empty()) {
         const auto id = freePageIds_.back();
         freePageIds_.pop_back();
@@ -45,9 +52,15 @@ BTreePageId BTreeIndex::allocatePage() {
 void BTreeIndex::freePage(BTreePageId pageId) {
     nodes_.erase(pageId);
     freePageIds_.push_back(pageId);
+    dirtyPages_.erase(pageId);
+    metadataDirty_ = true;
+    fullReplaceDirty_ = true; // freed pages require a full node set on redo
 }
 
-BTreeNode &BTreeIndex::node(BTreePageId pageId) { return nodes_.at(pageId); }
+BTreeNode &BTreeIndex::node(BTreePageId pageId) {
+    markDirty(pageId);
+    return nodes_.at(pageId);
+}
 
 const BTreeNode &BTreeIndex::node(BTreePageId pageId) const { return nodes_.at(pageId); }
 
@@ -402,6 +415,9 @@ void BTreeIndex::clear() {
     root.pageId = rootPageId_;
     root.leaf = true;
     nodes_.emplace(rootPageId_, std::move(root));
+    dirtyPages_.clear();
+    fullReplaceDirty_ = true;
+    metadataDirty_ = true;
 }
 
 std::vector<RowId> BTreeIndex::find(const Value &key) const {
@@ -501,6 +517,69 @@ std::vector<BTreeNode> BTreeIndex::nodesSnapshot() const {
         }
     }
     return snapshot;
+}
+
+BTreeIndexSnapshot BTreeIndex::exportPages() const {
+    BTreeIndexSnapshot snapshot;
+    snapshot.maxKeysPerNode = maxKeysPerNode_;
+    snapshot.rootPageId = rootPageId_;
+    snapshot.nextPageId = nextPageId_;
+    snapshot.freePageIds = freePageIds_;
+    snapshot.keyCount = keyCount_;
+    snapshot.nodes.reserve(nodes_.size());
+    for (const auto &[_, page] : nodes_) {
+        snapshot.nodes.push_back(page);
+    }
+    std::sort(snapshot.nodes.begin(), snapshot.nodes.end(),
+              [](const BTreeNode &lhs, const BTreeNode &rhs) { return lhs.pageId < rhs.pageId; });
+    return snapshot;
+}
+
+void BTreeIndex::replaceFromPages(BTreeIndexSnapshot snapshot) {
+    if (snapshot.maxKeysPerNode < 2) {
+        throw std::invalid_argument("B+ tree node capacity must be at least 2");
+    }
+    maxKeysPerNode_ = snapshot.maxKeysPerNode;
+    rootPageId_ = snapshot.rootPageId;
+    nextPageId_ = snapshot.nextPageId;
+    freePageIds_ = std::move(snapshot.freePageIds);
+    keyCount_ = snapshot.keyCount;
+    nodes_.clear();
+    for (auto &page : snapshot.nodes) {
+        const auto pageId = page.pageId;
+        nodes_.emplace(pageId, std::move(page));
+    }
+    if (!nodes_.contains(rootPageId_)) {
+        throw std::invalid_argument("B+ tree snapshot is missing the root page");
+    }
+    clearDirtyPages();
+}
+
+void BTreeIndex::clearDirtyPages() noexcept {
+    dirtyPages_.clear();
+    metadataDirty_ = false;
+    fullReplaceDirty_ = false;
+}
+
+bool BTreeIndex::hasDirtyPages() const noexcept {
+    return fullReplaceDirty_ || metadataDirty_ || !dirtyPages_.empty();
+}
+
+BTreeIndexSnapshot BTreeIndex::takeDirtyPages() {
+    if (!hasDirtyPages()) {
+        return {};
+    }
+    // Always ship a complete live node set so redo can install without merging frees.
+    auto snapshot = exportPages();
+    clearDirtyPages();
+    return snapshot;
+}
+
+void BTreeIndex::applyDirtyPages(const BTreeIndexSnapshot &dirty) {
+    if (dirty.nodes.empty() && dirty.keyCount == 0 && dirty.rootPageId == 0) {
+        return;
+    }
+    replaceFromPages(dirty);
 }
 
 } // namespace VertexDB

@@ -19,7 +19,12 @@ std::size_t HashIndex::ValueHash::operator()(const Value &value) const {
     return 0;
 }
 
-void HashIndex::insert(const Value &key, RowId rowId) { entries_[key].push_back(rowId); }
+void HashIndex::markDirty(const Value &key) { dirtyKeys_[key] = true; }
+
+void HashIndex::insert(const Value &key, RowId rowId) {
+    entries_[key].push_back(rowId);
+    markDirty(key);
+}
 
 void HashIndex::remove(const Value &key, RowId rowId) {
     auto it = entries_.find(key);
@@ -28,12 +33,17 @@ void HashIndex::remove(const Value &key, RowId rowId) {
     }
     auto &rowIds = it->second;
     std::erase(rowIds, rowId);
+    markDirty(key);
     if (rowIds.empty()) {
         entries_.erase(it);
     }
 }
 
-void HashIndex::clear() { entries_.clear(); }
+void HashIndex::clear() {
+    entries_.clear();
+    dirtyKeys_.clear();
+    fullReplaceDirty_ = true;
+}
 
 std::vector<RowId> HashIndex::find(const Value &key) const {
     auto it = entries_.find(key);
@@ -44,5 +54,68 @@ std::vector<RowId> HashIndex::find(const Value &key) const {
 }
 
 std::size_t HashIndex::size() const { return entries_.size(); }
+
+HashIndexSnapshot HashIndex::exportBuckets() const {
+    HashIndexSnapshot snapshot;
+    snapshot.buckets.reserve(entries_.size());
+    for (const auto &[key, rowIds] : entries_) {
+        snapshot.buckets.emplace_back(key, rowIds);
+    }
+    return snapshot;
+}
+
+void HashIndex::replaceFromBuckets(HashIndexSnapshot snapshot) {
+    entries_.clear();
+    for (auto &[key, rowIds] : snapshot.buckets) {
+        entries_.emplace(std::move(key), std::move(rowIds));
+    }
+    clearDirtyPages();
+}
+
+void HashIndex::clearDirtyPages() noexcept {
+    dirtyKeys_.clear();
+    fullReplaceDirty_ = false;
+}
+
+bool HashIndex::hasDirtyPages() const noexcept {
+    return fullReplaceDirty_ || !dirtyKeys_.empty();
+}
+
+HashIndexSnapshot HashIndex::takeDirtyBuckets() {
+    HashIndexSnapshot snapshot;
+    snapshot.replaceAll = fullReplaceDirty_;
+    if (fullReplaceDirty_) {
+        snapshot.buckets = exportBuckets().buckets;
+    } else {
+        snapshot.buckets.reserve(dirtyKeys_.size());
+        for (const auto &[key, _] : dirtyKeys_) {
+            auto it = entries_.find(key);
+            if (it == entries_.end()) {
+                snapshot.buckets.emplace_back(key, std::vector<RowId>{});
+            } else {
+                snapshot.buckets.emplace_back(it->first, it->second);
+            }
+        }
+    }
+    clearDirtyPages();
+    return snapshot;
+}
+
+void HashIndex::applyDirtyBuckets(const HashIndexSnapshot &dirty) {
+    if (dirty.replaceAll) {
+        HashIndexSnapshot copy = dirty;
+        copy.replaceAll = false;
+        replaceFromBuckets(std::move(copy));
+        return;
+    }
+    for (const auto &[key, rowIds] : dirty.buckets) {
+        if (rowIds.empty()) {
+            entries_.erase(key);
+        } else {
+            entries_[key] = rowIds;
+        }
+    }
+    clearDirtyPages();
+}
 
 } // namespace VertexDB

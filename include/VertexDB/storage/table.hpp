@@ -19,6 +19,25 @@
 
 namespace VertexDB {
 
+struct IndexStoreSnapshot {
+    std::string name;
+    std::string column;
+    BTreeIndexSnapshot btree;
+    HashIndexSnapshot hash;
+};
+
+struct TableIndexStoreSnapshot {
+    std::vector<IndexStoreSnapshot> indexes;
+};
+
+struct PageImageCapture {
+    std::size_t capacity{};
+    std::vector<RowId> freeList;
+    std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages;
+    std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes;
+    std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes;
+};
+
 class Table {
   public:
     Table(std::string name, std::vector<Column> schema);
@@ -51,6 +70,9 @@ class Table {
     [[nodiscard]] std::vector<std::pair<std::string, std::string>> indexDefinitions() const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
     void validateRow(const Row &row) const;
+    // Observability for tests: ordered index node layout for a named index.
+    [[nodiscard]] std::optional<std::vector<BTreeNode>>
+    orderedIndexNodesSnapshot(std::string_view indexName) const;
 
     RowId insert(Row row, TransactionId writerId = kSystemTransactionId);
     bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId);
@@ -63,17 +85,31 @@ class Table {
     // Apply a physical redo after-image or erase during WAL recovery.
     bool applyPhysicalUpsert(RowId rowId, Row row);
     bool applyPhysicalErase(RowId rowId);
+    // Apply page-image redo (heap pages + index pages) during WAL recovery.
+    void applyPageImageRedo(bool hasHeapMeta, std::size_t capacity, std::vector<RowId> freeList,
+                            std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages,
+                            std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes,
+                            std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes);
     [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     bool createIndex(std::string name, std::string column);
+    // Register index metadata without rebuilding (snapshot v4 restore path).
+    bool createIndexWithoutRebuild(std::string name, std::string column);
     void replaceRows(std::vector<Row> rows);
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries);
     [[nodiscard]] PageStoreSnapshot exportPageStore() const;
     void replaceFromPages(PageStoreSnapshot snapshot);
+    void replaceFromPages(PageStoreSnapshot snapshot, bool rebuildIndexesAfter);
+    [[nodiscard]] TableIndexStoreSnapshot exportIndexPages() const;
+    void replaceIndexPages(TableIndexStoreSnapshot snapshot);
+    void clearDirtyTracking();
+    // Capture dirty heap/index pages after DML for PageImageRedo WAL payloads.
+    [[nodiscard]] PageImageCapture takePageImageCapture();
 
   private:
     void addRowToIndexes(RowId rowId);
     void rebuildIndexes();
+    void refreshVersionsFromStore();
 
     std::string name_;
     std::vector<Column> schema_;

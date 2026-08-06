@@ -12,32 +12,28 @@ The B+ tree exposes an ordered index API:
 Internally it maintains explicit B+ tree layout metadata: leaf page ids, linked leaves, internal
 children, separator keys, and row-id payloads in leaves. Inserts and deletes split and merge leaf
 and internal nodes incrementally (fanout defaults to 64; capacity must be at least 2). Point lookups
-descend from the root; range scans follow `nextLeaf` links.
-
-Next step: persist index pages with the on-disk snapshot format (indexes are still rebuilt from row
-data on load).
+descend from the root; range scans follow `nextLeaf` links. Snapshot format v4 persists B+ tree
+pages via `exportPages` / `replaceFromPages` so SAVE/LOAD does not rebuild ordered indexes from rows.
 
 ## Write-Ahead Log
 
 The WAL records durable operations before they must survive process restart:
 
 - create database/table/index (logical SQL or name payloads)
-- physical DML redo (row after-images / erases at explicit row ids)
+- page-image DML redo (dirty heap pages + touched index pages; optional free-list/capacity metadata)
 - drop/rename table
 - save
 
 The WAL persists append-only binary log records with a versioned header per record. Mutating
-executor DML writes `PhysicalRedo` payloads (typed row images, not SQL text). Inside an open
-transaction, those records are buffered in the executor and flushed on `COMMIT` as a single batch
-record (dropped on `ROLLBACK`) so a torn commit cannot partially apply the transaction. Autocommit
-DML and DDL still append immediately. Startup recovery loads the latest saved snapshot, then
-replays WAL records after the last save checkpoint. `readAll` returns only complete records and
-ignores a truncated trailing write (crash mid-append). If no saved snapshot exists, recovery
-replays the WAL from the beginning. Successful saves are written through a temporary snapshot file
-and then checkpoint the WAL. Legacy logical `Insert`/`Update`/`Delete` SQL records remain
-replayable for older WAL files.
-
-Next step: evolve redo toward page images now that snapshots persist page payloads.
+executor DML writes `PageImageRedo` payloads. Inside an open transaction, those records are buffered
+in the executor and flushed on `COMMIT` as a single batch record (dropped on `ROLLBACK`) so a torn
+commit cannot partially apply the transaction. Autocommit DML and DDL still append immediately.
+Startup recovery loads the latest saved snapshot, then replays WAL records after the last save
+checkpoint. `readAll` returns only complete records and ignores a truncated trailing write (crash
+mid-append). If no saved snapshot exists, recovery replays the WAL from the beginning. Successful
+saves are written through a temporary snapshot file and then checkpoint the WAL. Legacy
+`PhysicalRedo` row after-images and logical `Insert`/`Update`/`Delete` SQL records remain replayable
+for older WAL files.
 
 ## Prepared Statements
 
@@ -65,10 +61,9 @@ commit-aware snapshot reads. DML stamps `createdBy`/`deletedBy` with the active 
 `maxCommitSeq`); SELECTs always evaluate visibility through that snapshot so readers see only
 committed creators/deleters at or before the watermark, plus their own uncommitted writes. User-facing
 rollback still applies a per-transaction undo log against the live database without cloning it.
-Logical DML WAL records are replaced by physical row-image redo: buffered while a transaction is
-active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`.
-
-Next step: evolve redo toward page images now that snapshots persist page payloads.
+Logical DML WAL records are replaced by page-image redo: buffered while a transaction is active,
+flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`. Legacy physical row-image redo remains
+replayable.
 
 ## Buffer Pool
 
@@ -78,11 +73,10 @@ width). `Table` delegates physical row storage through a `RowStore` interface an
 page bytes in an in-memory page directory are the source of truth; the buffer pool caches those
 pages and fills on miss so reads deserialize live slots from page payloads. Both `PageRowStore` and
 `VectorRowStore` keep stable row IDs with tombstones and LIFO free-list reuse: deletes leave holes,
-and inserts reuse freed IDs before allocating new capacity. Database snapshots persist
-`rowsPerPage`, capacity, free-list order, and the serialized page-directory payloads so row IDs and
-page bytes survive save/load. Legacy sparse v2 and dense v1 snapshots remain readable.
-
-Next step: persist index pages with the on-disk snapshot format and move redo toward page images.
+and inserts reuse freed IDs before allocating new capacity. Database snapshots (format v4) persist
+`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and index pages
+(B+ tree nodes + hash buckets) so row IDs, page bytes, and indexes survive save/load without an
+index rebuild. Legacy page-payload v3, sparse v2, and dense v1 snapshots remain readable.
 
 ## Query Planner
 

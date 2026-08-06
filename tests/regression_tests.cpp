@@ -56,7 +56,7 @@ TEST(RegressionTests, SaveCheckpointsWalBeforePostSaveMutations) {
 
     const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
     ASSERT_EQ(records.size(), 1U);
-    EXPECT_EQ(records.front().operation, WalOperation::PhysicalRedo);
+    EXPECT_EQ(records.front().operation, WalOperation::PageImageRedo);
 
     QueryExecutor recovered{root};
     auto result = recovered.execute(parser.parse("SELECT * FROM Events ORDER BY id ASC;"));
@@ -170,7 +170,7 @@ TEST(RegressionTests, WalDoubleLiteralsRoundTripThroughRecovery) {
 
     const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
     ASSERT_EQ(records.size(), 3U);
-    EXPECT_EQ(records[2].operation, WalOperation::PhysicalRedo);
+    EXPECT_EQ(records[2].operation, WalOperation::PageImageRedo);
 
     QueryExecutor recovered{root};
     auto result = recovered.execute(parser.parse("SELECT amount FROM Prices WHERE id = 1;"));

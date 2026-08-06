@@ -4,7 +4,6 @@
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/parser/parser.hpp"
-#include "VertexDB/persistence/physical_redo.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 
 #include <map>
@@ -158,17 +157,12 @@ QueryResult QueryExecutor::executeInsert(const Insert &command) {
     }
     const auto writerId = writeTransactionId();
     for (const auto &row : command.rows) {
+        table->clearDirtyTracking();
         const RowId rowId = table->insert(row, writerId);
         if (transactionActive()) {
             undoLog_.push(UndoRecord{command.table, UndoKind::Insert, rowId, std::nullopt});
         }
-        const auto after = table->getRow(rowId);
-        if (!after) {
-            throw std::runtime_error("inserted row missing after image");
-        }
-        appendWal(WalOperation::PhysicalRedo,
-                  encodePhysicalRedo(PhysicalRedoRecord{PhysicalRedoKind::Upsert, command.table,
-                                                        rowId, *after}));
+        appendPageImageRedo(*table, command.table);
     }
     return messageResult(true, "inserted " + std::to_string(command.rows.size()) + " row(s)");
 }
@@ -241,18 +235,13 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
             continue;
         }
         const Row beforeImage = row;
+        table->clearDirtyTracking();
         if (table->update(rowId, *target, command.value, writerId)) {
             if (transactionActive()) {
                 undoLog_.push(
                     UndoRecord{command.table, UndoKind::Update, rowId, std::move(beforeImage)});
             }
-            const auto after = table->getRow(rowId);
-            if (!after) {
-                throw std::runtime_error("updated row missing after image");
-            }
-            appendWal(WalOperation::PhysicalRedo,
-                      encodePhysicalRedo(PhysicalRedoRecord{PhysicalRedoKind::Upsert, command.table,
-                                                            rowId, *after}));
+            appendPageImageRedo(*table, command.table);
             ++count;
         }
     }
@@ -269,14 +258,13 @@ QueryResult QueryExecutor::executeDelete(const Delete &command) {
             continue;
         }
         const Row beforeImage = row;
+        table->clearDirtyTracking();
         if (table->erase(rowId, writerId)) {
             if (transactionActive()) {
                 undoLog_.push(
                     UndoRecord{command.table, UndoKind::Delete, rowId, std::move(beforeImage)});
             }
-            appendWal(WalOperation::PhysicalRedo,
-                      encodePhysicalRedo(PhysicalRedoRecord{PhysicalRedoKind::Erase, command.table,
-                                                            rowId, {}}));
+            appendPageImageRedo(*table, command.table);
             ++count;
         }
     }

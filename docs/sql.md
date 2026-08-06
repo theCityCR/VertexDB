@@ -78,25 +78,26 @@ Prepared statements store a SQL string containing `?` placeholders. `EXECUTE nam
 binds values positionally, reparses the bound statement, and executes it through the normal engine.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
-page-payload format v3, extension `.tcrdb`) under the executor's storage root. Current snapshots
-store schemas, indexes, `rowsPerPage`, capacity, free-list order, and serialized page-directory
-payloads so sparse IDs and page bytes survive checkpoints; older sparse v2 and dense v1 snapshots
-remain readable. On load, indexes are registered before rows are reloaded so index rebuilds populate
-from the restored row set. `LOAD DATABASE` without a name
+page-payload + index-pages format v4, extension `.tcrdb`) under the executor's storage root. Current
+snapshots store schemas, index definitions, `rowsPerPage`, capacity, free-list order, serialized
+page-directory payloads, and durable B+ tree / hash index pages so sparse IDs, page bytes, and
+indexes survive checkpoints without an index rebuild. Older page-payload v3, sparse v2, and dense v1
+snapshots remain readable (v1–v3 still rebuild indexes after rows). `LOAD DATABASE` without a name
 reloads the active database when one exists, otherwise it loads the first saved database file.
 Query executors also recover automatically on startup by loading the latest saved snapshot and
-replaying WAL records after that checkpoint. DML redo uses physical row after-images; DDL uses
-logical SQL. Incomplete trailing WAL records from a crash mid-append are ignored. If no snapshot
-exists, startup recovery replays the WAL from the beginning. Successful saves checkpoint the WAL so
-future recovery only replays post-save changes.
+replaying WAL records after that checkpoint. DML redo uses page images (`PageImageRedo`); DDL uses
+logical SQL. Legacy `PhysicalRedo` row after-images remain replayable. Incomplete trailing WAL
+records from a crash mid-append are ignored. If no snapshot exists, startup recovery replays the WAL
+from the beginning. Successful saves checkpoint the WAL so future recovery only replays post-save
+changes.
 
 Transactions use transaction state tracking, commit-aware MVCC snapshot reads, and undo-log rollback
 for DML. `BEGIN` opens a transaction, captures a commit-seq read snapshot, and clears the undo log
 and any deferred WAL buffer; SELECTs use that snapshot (plus read-your-writes) so concurrent
 uncommitted or post-`BEGIN` commits stay invisible; mutating `INSERT`/`UPDATE`/`DELETE` stamp SQL
-transaction ids, append compensating undo records, and buffer physical redo records; `COMMIT` flushes
-deferred redo as one atomic WAL batch then marks the transaction committed and discards the undo
-log; `ROLLBACK` applies the undo log LIFO on the same database instance and drops deferred WAL.
+transaction ids, append compensating undo records, and buffer page-image redo records; `COMMIT`
+flushes deferred redo as one atomic WAL batch then marks the transaction committed and discards the
+undo log; `ROLLBACK` applies the undo log LIFO on the same database instance and drops deferred WAL.
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
 `CREATE INDEX`, `SAVE DATABASE`, and `LOAD DATABASE` are rejected.
 

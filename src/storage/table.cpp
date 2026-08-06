@@ -146,6 +146,16 @@ std::vector<std::pair<std::string, std::string>> Table::indexDefinitions() const
     return definitions;
 }
 
+std::optional<std::vector<BTreeNode>>
+Table::orderedIndexNodesSnapshot(std::string_view indexName) const {
+    std::shared_lock lock{mutex_};
+    auto it = orderedIndexes_.find(std::string{indexName});
+    if (it == orderedIndexes_.end()) {
+        return std::nullopt;
+    }
+    return it->second.nodesSnapshot();
+}
+
 std::size_t Table::versionCount(RowId rowId) const {
     std::shared_lock lock{mutex_};
     return versions_.versionCount(rowId);
@@ -264,6 +274,40 @@ bool Table::applyPhysicalErase(RowId rowId) {
     return true;
 }
 
+void Table::applyPageImageRedo(
+    bool hasHeapMeta, std::size_t capacity, std::vector<RowId> freeList,
+    std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages,
+    std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes,
+    std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes) {
+    std::unique_lock lock{mutex_};
+    auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get());
+    if (pageStore == nullptr) {
+        throw std::runtime_error("table row store does not support page image redo");
+    }
+    std::optional<std::size_t> capacityOpt;
+    std::optional<std::vector<RowId>> freeListOpt;
+    if (hasHeapMeta) {
+        capacityOpt = capacity;
+        freeListOpt = std::move(freeList);
+    }
+    pageStore->applyPageImages(capacityOpt, std::move(freeListOpt), std::move(heapPages));
+    for (auto &[name, snapshot] : btreeIndexes) {
+        auto it = orderedIndexes_.find(name);
+        if (it == orderedIndexes_.end()) {
+            throw std::runtime_error("page image redo references unknown btree index " + name);
+        }
+        it->second.applyDirtyPages(snapshot);
+    }
+    for (auto &[name, snapshot] : hashIndexes) {
+        auto it = indexes_.find(name);
+        if (it == indexes_.end()) {
+            throw std::runtime_error("page image redo references unknown hash index " + name);
+        }
+        it->second.applyDirtyBuckets(snapshot);
+    }
+    refreshVersionsFromStore();
+}
+
 std::optional<Row> Table::getRow(RowId rowId) const {
     std::shared_lock lock{mutex_};
     const auto *row = rowStore_->get(rowId);
@@ -288,6 +332,22 @@ bool Table::createIndex(std::string name, std::string column) {
     orderedIndexes_.try_emplace(name);
     // One rebuild path for CREATE INDEX and snapshot restore.
     rebuildIndexes();
+    return true;
+}
+
+bool Table::createIndexWithoutRebuild(std::string name, std::string column) {
+    auto indexColumn = columnIndex(column);
+    if (!indexColumn) {
+        return false;
+    }
+
+    std::unique_lock lock{mutex_};
+    if (indexes_.contains(name) || indexColumns_.contains(name)) {
+        return false;
+    }
+    indexColumns_.emplace(name, *indexColumn);
+    indexes_.try_emplace(name);
+    orderedIndexes_.try_emplace(name);
     return true;
 }
 
@@ -336,6 +396,10 @@ PageStoreSnapshot Table::exportPageStore() const {
 }
 
 void Table::replaceFromPages(PageStoreSnapshot snapshot) {
+    replaceFromPages(std::move(snapshot), true);
+}
+
+void Table::replaceFromPages(PageStoreSnapshot snapshot, bool rebuildIndexesAfter) {
     validatePageStoreLayout(snapshot);
     for (const auto &[_, bytes] : snapshot.pages) {
         for (const auto &row : PageRowStore::decodePage(bytes)) {
@@ -351,6 +415,77 @@ void Table::replaceFromPages(PageStoreSnapshot snapshot) {
         throw std::runtime_error("table row store does not support page payload restore");
     }
     pageStore->replaceFromPages(std::move(snapshot));
+    refreshVersionsFromStore();
+    if (rebuildIndexesAfter) {
+        rebuildIndexes();
+    }
+}
+
+TableIndexStoreSnapshot Table::exportIndexPages() const {
+    std::shared_lock lock{mutex_};
+    TableIndexStoreSnapshot snapshot;
+    snapshot.indexes.reserve(indexColumns_.size());
+    for (const auto &[name, columnIndex] : indexColumns_) {
+        IndexStoreSnapshot entry;
+        entry.name = name;
+        entry.column = schema_.at(columnIndex).name;
+        entry.btree = orderedIndexes_.at(name).exportPages();
+        entry.hash = indexes_.at(name).exportBuckets();
+        snapshot.indexes.push_back(std::move(entry));
+    }
+    return snapshot;
+}
+
+void Table::replaceIndexPages(TableIndexStoreSnapshot snapshot) {
+    std::unique_lock lock{mutex_};
+    for (auto &entry : snapshot.indexes) {
+        auto hashIt = indexes_.find(entry.name);
+        auto btreeIt = orderedIndexes_.find(entry.name);
+        if (hashIt == indexes_.end() || btreeIt == orderedIndexes_.end()) {
+            throw std::runtime_error("index page restore references unknown index " + entry.name);
+        }
+        btreeIt->second.replaceFromPages(std::move(entry.btree));
+        hashIt->second.replaceFromBuckets(std::move(entry.hash));
+    }
+}
+
+void Table::clearDirtyTracking() {
+    std::unique_lock lock{mutex_};
+    if (auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get()); pageStore != nullptr) {
+        pageStore->clearDirtyPages();
+    }
+    for (auto &[_, index] : indexes_) {
+        index.clearDirtyPages();
+    }
+    for (auto &[_, index] : orderedIndexes_) {
+        index.clearDirtyPages();
+    }
+}
+
+PageImageCapture Table::takePageImageCapture() {
+    std::unique_lock lock{mutex_};
+    PageImageCapture capture;
+    capture.capacity = rowStore_->capacity();
+    capture.freeList = rowStore_->freeList();
+    auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get());
+    if (pageStore == nullptr) {
+        throw std::runtime_error("table row store does not support page image capture");
+    }
+    capture.heapPages = pageStore->takeDirtyPages();
+    for (auto &[name, index] : orderedIndexes_) {
+        if (index.hasDirtyPages()) {
+            capture.btreeIndexes.emplace_back(name, index.takeDirtyPages());
+        }
+    }
+    for (auto &[name, index] : indexes_) {
+        if (index.hasDirtyPages()) {
+            capture.hashIndexes.emplace_back(name, index.takeDirtyBuckets());
+        }
+    }
+    return capture;
+}
+
+void Table::refreshVersionsFromStore() {
     versions_.clear();
     for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
         const auto *row = rowStore_->get(rowId);
@@ -359,7 +494,6 @@ void Table::replaceFromPages(PageStoreSnapshot snapshot) {
         }
         versions_.write(rowId, *row, kSystemTransactionId);
     }
-    rebuildIndexes();
 }
 
 void Table::validateRow(const Row &row) const {

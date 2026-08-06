@@ -3,6 +3,7 @@
 #include "VertexDB/concurrency/lock_manager.hpp"
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/parser/ast.hpp"
+#include "VertexDB/persistence/page_image_redo.hpp"
 #include "VertexDB/persistence/physical_redo.hpp"
 #include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
@@ -74,9 +75,11 @@ class QueryExecutor {
     [[nodiscard]] QueryResult rejectIfTransactionActive(std::string_view action) const;
     void applyUndoRecord(const UndoRecord &record);
     void applyPhysicalRedo(const PhysicalRedoRecord &redo);
+    void applyPageImageRedo(const PageImageRedoRecord &redo);
     void recoverFromStorage();
     void recoverFromWal(bool loadedSnapshot);
     void appendWal(WalOperation operation, std::string payload);
+    void appendPageImageRedo(Table &table, std::string tableName);
     void flushPendingWal();
     void clearPendingWal() noexcept;
 

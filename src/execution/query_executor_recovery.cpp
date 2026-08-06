@@ -1,6 +1,7 @@
 #include "VertexDB/execution/query_executor.hpp"
 
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/persistence/page_image_redo.hpp"
 #include "VertexDB/persistence/physical_redo.hpp"
 
 #include <stdexcept>
@@ -58,6 +59,18 @@ void QueryExecutor::applyPhysicalRedo(const PhysicalRedoRecord &redo) {
     }
 }
 
+void QueryExecutor::applyPageImageRedo(const PageImageRedoRecord &redo) {
+    auto table = requireTable(redo.tableName);
+    std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages;
+    heapPages.reserve(redo.heapPages.size());
+    for (const auto &page : redo.heapPages) {
+        heapPages.emplace_back(page.pageId, page.bytes);
+    }
+    table->applyPageImageRedo(redo.hasHeapMeta, static_cast<std::size_t>(redo.capacity),
+                              redo.freeList, std::move(heapPages), redo.btreeIndexes,
+                              redo.hashIndexes);
+}
+
 void QueryExecutor::recoverFromWal(bool loadedSnapshot) {
     const auto records = wal_.readAll();
     if (records.empty()) {
@@ -87,6 +100,12 @@ void QueryExecutor::recoverFromWal(bool loadedSnapshot) {
                 }
                 continue;
             }
+            if (record.operation == WalOperation::PageImageRedo) {
+                for (const auto &redo : decodePageImageRedos(record.payload)) {
+                    applyPageImageRedo(redo);
+                }
+                continue;
+            }
             if (record.operation == WalOperation::CreateDatabase &&
                 record.payload.find(' ') == std::string::npos) {
                 database_ = std::make_shared<Database>(record.payload);
@@ -112,25 +131,51 @@ void QueryExecutor::appendWal(WalOperation operation, std::string payload) {
     (void)wal_.append(operation, std::move(payload));
 }
 
+void QueryExecutor::appendPageImageRedo(Table &table, std::string tableName) {
+    auto capture = table.takePageImageCapture();
+    PageImageRedoRecord record;
+    record.tableName = std::move(tableName);
+    record.hasHeapMeta = true;
+    record.capacity = capture.capacity;
+    record.freeList = std::move(capture.freeList);
+    record.heapPages.reserve(capture.heapPages.size());
+    for (auto &[pageId, bytes] : capture.heapPages) {
+        record.heapPages.push_back(HeapPageImage{pageId, std::move(bytes)});
+    }
+    record.btreeIndexes = std::move(capture.btreeIndexes);
+    record.hashIndexes = std::move(capture.hashIndexes);
+    appendWal(WalOperation::PageImageRedo, encodePageImageRedo(record));
+}
+
 void QueryExecutor::flushPendingWal() {
     if (pendingWal_.empty()) {
         return;
     }
 
-    // Collapse a transaction's physical redo records into one WAL append so a torn write cannot
-    // partially durable-commit the transaction.
-    std::vector<PhysicalRedoRecord> batch;
+    // Collapse a transaction's page-image (and legacy physical) redo records into one WAL append
+    // per redo kind so a torn write cannot partially durable-commit the transaction.
+    std::vector<PageImageRedoRecord> pageBatch;
+    std::vector<PhysicalRedoRecord> physicalBatch;
     for (auto &record : pendingWal_) {
-        if (record.operation != WalOperation::PhysicalRedo) {
-            (void)wal_.append(record.operation, std::move(record.payload));
+        if (record.operation == WalOperation::PageImageRedo) {
+            for (auto &redo : decodePageImageRedos(record.payload)) {
+                pageBatch.push_back(std::move(redo));
+            }
             continue;
         }
-        for (auto &redo : decodePhysicalRedos(record.payload)) {
-            batch.push_back(std::move(redo));
+        if (record.operation == WalOperation::PhysicalRedo) {
+            for (auto &redo : decodePhysicalRedos(record.payload)) {
+                physicalBatch.push_back(std::move(redo));
+            }
+            continue;
         }
+        (void)wal_.append(record.operation, std::move(record.payload));
     }
-    if (!batch.empty()) {
-        (void)wal_.append(WalOperation::PhysicalRedo, encodePhysicalRedos(batch));
+    if (!pageBatch.empty()) {
+        (void)wal_.append(WalOperation::PageImageRedo, encodePageImageRedos(pageBatch));
+    }
+    if (!physicalBatch.empty()) {
+        (void)wal_.append(WalOperation::PhysicalRedo, encodePhysicalRedos(physicalBatch));
     }
     pendingWal_.clear();
 }

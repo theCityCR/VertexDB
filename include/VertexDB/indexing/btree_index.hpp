@@ -21,6 +21,15 @@ struct BTreeNode {
     std::optional<BTreePageId> nextLeaf;
 };
 
+struct BTreeIndexSnapshot {
+    std::size_t maxKeysPerNode{64};
+    BTreePageId rootPageId{1};
+    BTreePageId nextPageId{2};
+    std::vector<BTreePageId> freePageIds;
+    std::size_t keyCount{0};
+    std::vector<BTreeNode> nodes;
+};
+
 class BTreeIndex {
   public:
     explicit BTreeIndex(std::size_t maxKeysPerNode = 64);
@@ -36,10 +45,18 @@ class BTreeIndex {
     [[nodiscard]] std::size_t height() const;
     [[nodiscard]] std::size_t leafPageCount() const;
     [[nodiscard]] std::vector<BTreeNode> nodesSnapshot() const;
+    [[nodiscard]] BTreeIndexSnapshot exportPages() const;
+    void replaceFromPages(BTreeIndexSnapshot snapshot);
+    void clearDirtyPages() noexcept;
+    [[nodiscard]] bool hasDirtyPages() const noexcept;
+    // Dirty nodes plus metadata needed to rebuild root/free/next/keyCount on redo apply.
+    [[nodiscard]] BTreeIndexSnapshot takeDirtyPages();
+    void applyDirtyPages(const BTreeIndexSnapshot &dirty);
 
   private:
     [[nodiscard]] BTreePageId allocatePage();
     void freePage(BTreePageId pageId);
+    void markDirty(BTreePageId pageId);
     [[nodiscard]] BTreeNode &node(BTreePageId pageId);
     [[nodiscard]] const BTreeNode &node(BTreePageId pageId) const;
     [[nodiscard]] BTreePageId childFor(const BTreeNode &internal, const Value &key) const;
@@ -72,6 +89,9 @@ class BTreeIndex {
     BTreePageId rootPageId_{1};
     BTreePageId nextPageId_{2};
     std::size_t keyCount_{0};
+    std::unordered_map<BTreePageId, bool> dirtyPages_;
+    bool metadataDirty_{false};
+    bool fullReplaceDirty_{false};
 };
 
 } // namespace VertexDB

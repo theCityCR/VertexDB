@@ -17,16 +17,17 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup, plus hash index `IN` multi-lookup
-- Persistence: versioned binary snapshots (current page-payload v3; sparse v2 and dense v1 still
-  readable) for database schemas, page directory bytes, free-list state, and index definitions
-  under `.tcrdb` files
-- WAL and recovery: append-only WAL with physical row-image redo for DML, logical SQL for DDL,
-  truncated-trailing-record tolerance, startup replay, save checkpoints, and crash-simulation tests
+- Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
+  sparse v2, and dense v1 still readable) for database schemas, page directory bytes, free-list
+  state, index definitions, and durable B+ tree / hash index pages under `.tcrdb` files
+- WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
+  still replayable), logical SQL for DDL, truncated-trailing-record tolerance, startup replay, save
+  checkpoints, and crash-simulation tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
 - Transactions: transaction manager with commit sequences, per-transaction undo-log rollback for DML,
   MVCC row-version store stamped with SQL transaction ids, commit-aware snapshot reads
   (including dirty-read prevention and snapshot isolation across concurrent statements), and
-  transaction-batched physical WAL flush on `COMMIT`
+  transaction-batched page-image WAL flush on `COMMIT`
 - Planner: cheapest indexable conjunct selection from `AND` trees using row-count and index
   distinct-key statistics, residual filters, CTE rewrite notes, join algorithm selection
   (hash vs nested-loop index probe), and `EXPLAIN` text with `est_rows` / `cost`
@@ -59,24 +60,24 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   outer predicates can hit base-table indexes. CTE/derived bodies may include a single equi-join.
   `IN (SELECT …)` subqueries are planned/executed for their values, then probed via index when
   possible.
-- Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v3) that store
-  `rowsPerPage`, capacity, free-list order, and serialized page-directory payloads. On load, indexes
-  are created before rows are reloaded so index rebuilds see the restored data. Sparse v2 and dense
-  v1 snapshots remain readable. WAL recovery replays logical SQL / physical redo payloads after the
-  latest save checkpoint.
+- Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v4) that store
+  `rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and per-index B+ tree
+  nodes plus hash buckets. On v4 load, heap pages are restored then index pages are installed without
+  `rebuildIndexes()`. v3 loads page payloads and rebuilds indexes; sparse v2 and dense v1 remain
+  readable. WAL recovery replays page-image / legacy physical / logical SQL payloads after the latest
+  save checkpoint.
 - Transactions use transaction state tracking, MVCC read APIs, and an undo log that reverses DML on
   `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
   ids; `BEGIN` captures a commit-seq snapshot for isolation. While a transaction is active, the
   executor rejects `CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE INDEX`, and
-  `SAVE`/`LOAD`. DML physical redo records are deferred until `COMMIT` (flushed as one atomic batch)
+  `SAVE`/`LOAD`. DML page-image redo records are deferred until `COMMIT` (flushed as one atomic batch)
   and dropped on `ROLLBACK`.
 
 ## Known Limitations
 
-- Index pages are not persisted in snapshots; SAVE/LOAD rebuilds indexes from restored rows.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
-- DML WAL redo stores physical row after-images (not raw page images yet); DDL still uses logical
-  SQL payloads. Legacy logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
+- DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
+  `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
 - Planner costs use live \(N\) and index distinct keys \(D\) without histograms; there is no
   multi-index AND intersection or top-level `OR` index union yet.
 - Top-level `OR` predicates are not split for indexing; they force a full scan.
@@ -88,7 +89,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Persist index pages in snapshots; evolve redo toward page images.
+1. Persist index pages in snapshots; evolve redo toward page images. — **done** (v4 + `PageImageRedo`)
 2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`.
 3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins.
 4. Add histograms / `ANALYZE` and multi-index AND optimization.

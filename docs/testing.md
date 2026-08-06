@@ -12,7 +12,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 111 discovered GoogleTest cases across parser, storage, index, execution,
+The current suite contains 114 discovered GoogleTest cases across parser, storage, index, execution,
 nested SQL rewrite/`EXPLAIN`, desired-behavior coverage, deep-feature, and regression tests. The
 latest local coverage run reported 88.06% line coverage.
 

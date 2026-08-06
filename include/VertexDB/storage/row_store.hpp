@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+// std::optional used by PageRowStore::applyPageImages
+
 namespace VertexDB {
 
 class RowStore {
@@ -41,7 +43,7 @@ class RowStore {
 void validateSparseRowLayout(std::size_t capacity, const std::vector<RowId> &freeList,
                              const std::vector<std::pair<RowId, Row>> &entries);
 
-// Durable page-directory snapshot for PageRowStore (on-disk format v3).
+// Durable page-directory snapshot for PageRowStore (on-disk format v3+).
 struct PageStoreSnapshot {
     std::size_t rowsPerPage{0};
     std::size_t capacity{0};
@@ -100,6 +102,12 @@ class PageRowStore final : public RowStore {
     [[nodiscard]] std::size_t rowsPerPage() const noexcept;
     [[nodiscard]] PageStoreSnapshot exportPages() const;
     void replaceFromPages(PageStoreSnapshot snapshot);
+    void clearDirtyPages() noexcept;
+    [[nodiscard]] bool hasDirtyPages() const noexcept;
+    [[nodiscard]] std::vector<std::pair<PageId, std::vector<std::byte>>> takeDirtyPages();
+    // Install dirty heap pages and optional capacity/free-list metadata during WAL redo.
+    void applyPageImages(std::optional<std::size_t> capacity, std::optional<std::vector<RowId>> freeList,
+                         std::vector<std::pair<PageId, std::vector<std::byte>>> pages);
     void replaceRows(std::vector<Row> rows) override;
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries) override;
@@ -116,6 +124,8 @@ class PageRowStore final : public RowStore {
     void storePage(PageId pageId, const std::vector<Row> &rows);
     void ensureBuffered(PageId pageId) const;
     void invalidateDecoded(PageId pageId);
+    void markDirty(PageId pageId);
+    void rebuildSlotsFromDirectory();
 
     std::size_t rowsPerPage_;
     mutable BufferPool bufferPool_;
@@ -124,6 +134,7 @@ class PageRowStore final : public RowStore {
     std::unordered_map<PageId, std::vector<std::byte>> pageDirectory_;
     mutable std::unordered_map<RowId, Row> decodedRows_;
     std::size_t liveCount_{0};
+    std::unordered_map<PageId, bool> dirtyPages_;
 };
 
 [[nodiscard]] std::unique_ptr<RowStore> makeVectorRowStore();

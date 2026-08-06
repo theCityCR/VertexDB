@@ -19,6 +19,7 @@ enum class WalOperation : std::uint8_t {
     CreateIndex,
     SaveDatabase,
     PhysicalRedo,
+    PageImageRedo,
 };
 
 struct WalRecord {

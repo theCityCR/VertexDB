@@ -48,6 +48,7 @@ add_library(VertexDB
     src/persistence/storage_manager.cpp
     src/persistence/write_ahead_log.cpp
     src/persistence/physical_redo.cpp
+    src/persistence/page_image_redo.cpp
     src/transaction/mvcc_row_store.cpp
     src/transaction/transaction_manager.cpp
     src/transaction/undo_log.cpp

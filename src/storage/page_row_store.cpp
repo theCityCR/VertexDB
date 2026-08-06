@@ -311,6 +311,7 @@ void PageRowStore::replaceFromPages(PageStoreSnapshot snapshot) {
         pageDirectory_[pageId] = std::move(bytes);
         bufferPool_.put(Page{pageId, pageDirectory_[pageId], false});
     }
+    clearDirtyPages();
 }
 
 void PageRowStore::replaceRows(std::vector<Row> rows) {
@@ -375,11 +376,76 @@ std::vector<Row> PageRowStore::loadPageRows(PageId pageId) const {
     return decodePage(it->second);
 }
 
+void PageRowStore::markDirty(PageId pageId) { dirtyPages_[pageId] = true; }
+
 void PageRowStore::storePage(PageId pageId, const std::vector<Row> &rows) {
     auto page = serializePage(pageId, rows);
     pageDirectory_[pageId] = page.bytes;
     bufferPool_.put(std::move(page));
     invalidateDecoded(pageId);
+    markDirty(pageId);
+}
+
+void PageRowStore::clearDirtyPages() noexcept { dirtyPages_.clear(); }
+
+bool PageRowStore::hasDirtyPages() const noexcept { return !dirtyPages_.empty(); }
+
+std::vector<std::pair<PageId, std::vector<std::byte>>> PageRowStore::takeDirtyPages() {
+    std::vector<std::pair<PageId, std::vector<std::byte>>> pages;
+    pages.reserve(dirtyPages_.size());
+    for (const auto &[pageId, _] : dirtyPages_) {
+        const auto it = pageDirectory_.find(pageId);
+        if (it != pageDirectory_.end()) {
+            pages.emplace_back(pageId, it->second);
+        }
+    }
+    std::sort(pages.begin(), pages.end(),
+              [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+    dirtyPages_.clear();
+    return pages;
+}
+
+void PageRowStore::rebuildSlotsFromDirectory() {
+    std::unordered_set<RowId> freeIds(freeList_.begin(), freeList_.end());
+    const std::size_t cap = slots_.size();
+    slots_.assign(cap, Slot{});
+    liveCount_ = 0;
+    for (const auto &[pageId, bytes] : pageDirectory_) {
+        const auto pageRows = decodePage(bytes);
+        const std::size_t firstRowId = static_cast<std::size_t>(pageId - 1) * rowsPerPage_;
+        for (std::size_t offset = 0; offset < pageRows.size(); ++offset) {
+            const RowId rowId = static_cast<RowId>(firstRowId + offset);
+            if (rowId >= cap) {
+                continue;
+            }
+            const bool live = !freeIds.contains(rowId);
+            slots_[rowId] = Slot{pageId, offset, live};
+            if (live) {
+                ++liveCount_;
+            }
+        }
+    }
+}
+
+void PageRowStore::applyPageImages(std::optional<std::size_t> capacity,
+                                   std::optional<std::vector<RowId>> freeList,
+                                   std::vector<std::pair<PageId, std::vector<std::byte>>> pages) {
+    if (capacity.has_value()) {
+        if (*capacity < slots_.size()) {
+            throw std::invalid_argument("page image capacity cannot shrink below current slots");
+        }
+        slots_.resize(*capacity);
+    }
+    if (freeList.has_value()) {
+        freeList_ = std::move(*freeList);
+    }
+    for (auto &[pageId, bytes] : pages) {
+        pageDirectory_[pageId] = std::move(bytes);
+        bufferPool_.put(Page{pageId, pageDirectory_[pageId], false});
+        invalidateDecoded(pageId);
+    }
+    rebuildSlotsFromDirectory();
+    clearDirtyPages();
 }
 
 void PageRowStore::ensureBuffered(PageId pageId) const {
