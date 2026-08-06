@@ -111,10 +111,8 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 99 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 102 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
-  (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
-  behavior)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   88.06%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -130,19 +128,20 @@ Or feed an example script:
 - WAL DML redo uses physical row after-images (not page images yet); DDL remains logical SQL.
   Trailing torn WAL records are ignored so recovery replays the durable prefix
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
-- The planner is rule-based with heuristic access-path costs and does not yet collect table/index
-  statistics for costing
+- Planner costs use live row counts and index distinct-key counts (no histograms); multi-index
+  intersection and top-level `OR` index unions are not implemented
 - Nested SQL is intentionally limited: no derived tables, correlation, `JOIN` inside CTEs/`IN`
   subqueries, or expression/regex indexes
-- SQL support is intentionally focused: no aggregates, grouping, or general DDL
+- SQL support is intentionally focused: no aggregates, grouping, or general DDL; joins are single
+  equi-joins only
 
 ## Roadmap
 
 1. Persist page payloads (and later index pages) as the on-disk snapshot format; evolve redo toward
    page images
-2. Add table/index statistics and cost-based planning
-3. Extend nested SQL (derived tables, correlation) and expression indexes
-4. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support
+2. Extend nested SQL (derived tables, correlation) and expression indexes
+3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies
+4. Add histograms / `ANALYZE` and multi-index AND optimization
 
 Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)
 and [materialize vs inline comparison](docs/cte_materialize_comparison.md).

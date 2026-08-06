@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -73,7 +74,7 @@ TEST(DesiredBehaviorTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConj
     EXPECT_NE(text.find("residual: yes"), std::string::npos);
 }
 
-TEST(DesiredBehaviorTests, ExplainReportsJoinBypassesPlanner) {
+TEST(DesiredBehaviorTests, ExplainReportsJoinPlanFromCostModel) {
     Parser parser;
     auto executor = makeExecutor("explain-join");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -92,8 +93,10 @@ TEST(DesiredBehaviorTests, ExplainReportsJoinBypassesPlanner) {
         parser.parse("EXPLAIN SELECT * FROM Employees JOIN Departments ON dept_id = id;"));
     ASSERT_TRUE(explain.success);
     ASSERT_FALSE(explain.rows.empty());
-    EXPECT_NE(explain.rows.front().front().toString().find("hash join (planner bypassed for JOIN)"),
-              std::string::npos);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash join"), std::string::npos);
+    EXPECT_EQ(text.find("planner bypassed"), std::string::npos);
+    EXPECT_NE(text.find("cost="), std::string::npos);
 }
 
 TEST(DesiredBehaviorTests, NestedSqlDocumentedRefusalsAreRejected) {
@@ -889,6 +892,106 @@ TEST(DesiredBehaviorTests, LegacyLogicalInsertWalStillReplays) {
     std::filesystem::remove_all(root);
 }
 
+TEST(DesiredBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality) {
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"salary", ColumnType::Double}}};
+    for (int i = 1; i <= 100; ++i) {
+        table.insert({Value{i}, Value{i % 2}, Value{100000.0 + i}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+
+    EXPECT_EQ(table.indexDistinctCount("id"), std::optional<std::size_t>{100});
+    EXPECT_EQ(table.indexDistinctCount("dept"), std::optional<std::size_t>{2});
+
+    Predicate where{
+        Predicate::Kind::And,
+        std::make_shared<Predicate>(Predicate{"dept", ComparisonOperator::Equal, Value{1}}),
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{50}})};
+    Select query{"Employees", std::nullopt, {"*"}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.indexColumn, "id");
+    EXPECT_LT(plan.estimatedCost, 2.0);
+    ASSERT_TRUE(plan.residual.has_value());
+    EXPECT_EQ(plan.residual->column, "dept");
+}
+
+TEST(DesiredBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
+    for (int i = 1; i <= 90; ++i) {
+        table.insert({Value{i}, Value{i % 3}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+
+    Predicate where{
+        Predicate::Kind::And,
+        std::make_shared<Predicate>(
+            Predicate{"dept", std::vector<Value>{Value{0}, Value{1}, Value{2}}}),
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{7}})};
+    Select query{"Employees", std::nullopt, {"*"}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.indexColumn, "id");
+    EXPECT_LT(plan.estimatedCost, 3.0);
+}
+
+TEST(DesiredBehaviorTests, StatsDrivenJoinChoosesNestedLoopIndexProbe) {
+    Parser parser;
+    auto executor = makeExecutor("stats-join-nl");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept_id ON Departments(id);"))
+                    .success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (2, \"Bob\", 20);"))
+                    .success);
+    for (int i = 1; i <= 200; ++i) {
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Departments VALUES (" +
+                                              std::to_string(i) + ", \"D" + std::to_string(i) +
+                                              "\");"))
+                        .success);
+    }
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT Employees.name, Departments.dept FROM Employees JOIN "
+                     "Departments ON dept_id = id;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("nested loop join (index probe on Departments.id)"), std::string::npos);
+
+    auto result = executor.execute(
+        parser.parse("SELECT Employees.name, Departments.dept FROM Employees JOIN Departments ON "
+                     "dept_id = id ORDER BY Employees.id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][1], Value{"D10"});
+    EXPECT_EQ(result.rows[1][0], Value{"Bob"});
+    EXPECT_EQ(result.rows[1][1], Value{"D20"});
+}
+
+TEST(DesiredBehaviorTests, StatsDrivenJoinKeepsHashWhenNeitherSideIndexed) {
+    Table left{"Employees", {{"id", ColumnType::Int}, {"dept_id", ColumnType::Int}}};
+    Table right{"Departments", {{"id", ColumnType::Int}, {"dept", ColumnType::String}}};
+    left.insert({Value{1}, Value{10}});
+    right.insert({Value{10}, Value{"Eng"}});
+
+    JoinClause join{"Departments", "dept_id", "id"};
+    const auto plan = QueryPlanner{}.planJoin(left, right, join);
+    EXPECT_EQ(plan.algorithm, JoinAlgorithm::HashJoin);
+    EXPECT_NE(plan.explanation.find("hash join"), std::string::npos);
+}
+
 TEST(DesiredBehaviorTests, IncrementalBTreeSplitMergeMaintainsStructuralInvariants) {
     constexpr std::size_t fanout = 2;
     BTreeIndex index{fanout};
@@ -1022,11 +1125,6 @@ TEST(DesiredBehaviorTests, IncrementalBTreeSplitMergeMaintainsStructuralInvarian
     EXPECT_EQ(index.size(), 0U);
     EXPECT_EQ(index.height(), 1U);
     EXPECT_EQ(index.leafPageCount(), 1U);
-}
-
-TEST(DesiredBehaviorTests, RoadmapCostBasedJoinPlanningNotImplemented) {
-    GTEST_SKIP() << "Desired: statistics-driven join algorithm selection; joins currently bypass "
-                    "the planner with a fixed hash join.";
 }
 
 } // namespace VertexDB

@@ -39,6 +39,8 @@ class Table {
                                             const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t rowCount() const;
     [[nodiscard]] std::size_t capacity() const;
+    // On-demand stats for cost-based planning (row count + per-index distinct keys).
+    [[nodiscard]] std::optional<std::size_t> indexDistinctCount(std::string_view column) const;
     [[nodiscard]] std::optional<std::vector<RowId>> indexedLookup(std::string_view column,
                                                                   const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>

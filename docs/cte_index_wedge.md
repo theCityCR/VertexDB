@@ -34,7 +34,7 @@ Against a materializing CTE, the competing story is: build all high-salary rows,
 Do not rebuild these:
 
 1. `rewriteSelect` always inlines CTEs and AND-merges outer predicates into the body.
-2. Rule-based planner picks the cheapest indexable conjunct (heuristic costs); remaining
+2. Cost-based planner picks the cheapest indexable conjunct (row count + distinct keys); remaining
      conjuncts stay residual.
 3. `EXPLAIN` surfaces access path, residual status, and rewrite notes.
 4. Focused tests:
@@ -137,7 +137,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 ### Limitations (honest)
 
 - Single-table CTEs only (no `JOIN` / nested `WITH` inside CTE bodies).
-- Rule-based access paths with heuristic costs — not a statistics-driven optimizer.
+- Cost-based access paths using live row counts and index distinct keys (no histograms yet).
 - This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
 - `UPDATE` / `DELETE` and joins still bypass this index access-path planner.
 
@@ -158,7 +158,7 @@ Items **1–5** are done. The one-liner:
 
 ## Out of scope for this wedge
 
-- Full cost-based optimization and table statistics (separate roadmap item).
+- Histograms / `ANALYZE` and multi-index AND optimization (separate roadmap item).
 - User-facing `WITH … AS MATERIALIZED` grammar (optional later; not required to demo the win).
 - Multi-index AND, `OR` index union, expression indexes, or join access-path planning.
 - Winning only because VertexDB always picks hash lookup when Postgres sometimes does not—that is
