@@ -1,4 +1,5 @@
 #include "VertexDB/execution/query_executor.hpp"
+#include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/persistence/physical_redo.hpp"
@@ -1760,6 +1761,372 @@ TEST(DesiredBehaviorTests, TopLevelOrIndexUnionRemainsDocumentedLimitation) {
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::FullScan);
     EXPECT_NE(plan.explanation.find("OR"), std::string::npos);
+}
+
+
+TEST(DesiredBehaviorTests, AggregateAvgMinMaxAndCountColumnSkipNulls) {
+    auto executor = makeExecutor("agg-nulls-avg");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING NULL, salary DOUBLE NULL);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 100.0), (2, NULL, 200.0), "
+                        "(3, \"Cara\", NULL);"))
+                    .success);
+
+    auto empty = makeExecutor("agg-empty");
+    ASSERT_TRUE(empty.execute(parser.parse("CREATE DATABASE empty;")).success);
+    ASSERT_TRUE(empty.execute(parser.parse("CREATE TABLE T (id INT);")).success);
+    auto emptyCount = empty.execute(parser.parse("SELECT COUNT(*) FROM T;"));
+    ASSERT_TRUE(emptyCount.success);
+    ASSERT_EQ(emptyCount.rows.size(), 1U);
+    EXPECT_EQ(emptyCount.rows[0][0], Value{0});
+
+    auto result = executor.execute(
+        parser.parse("SELECT COUNT(*), COUNT(name), AVG(salary), MIN(salary), MAX(salary) "
+                     "FROM Employees;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{3});
+    EXPECT_EQ(result.rows[0][1], Value{2}); // NULL name skipped
+    EXPECT_EQ(result.rows[0][2], Value{150.0});
+    EXPECT_EQ(result.rows[0][3], Value{100.0});
+    EXPECT_EQ(result.rows[0][4], Value{200.0});
+
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT * FROM Employees GROUP BY id;")),
+                 std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, PreparedMultiParamBindAndArityRejection) {
+    auto executor = makeExecutor("prepared-arity");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE by_id_salary AS \"SELECT name FROM Employees WHERE id = ? AND "
+                        "salary = ?;\";"))
+                    .success);
+
+    const auto ast = executor.preparedAst("by_id_salary");
+    ASSERT_TRUE(ast.has_value());
+    ASSERT_TRUE(std::holds_alternative<Select>(*ast));
+    const auto &select = std::get<Select>(*ast);
+    ASSERT_TRUE(select.where.has_value());
+    EXPECT_EQ(select.where->kind, Predicate::Kind::And);
+    ASSERT_TRUE(select.where->left);
+    ASSERT_TRUE(select.where->right);
+    EXPECT_TRUE(select.where->left->value.isParameter());
+    EXPECT_TRUE(select.where->right->value.isParameter());
+    EXPECT_EQ(select.where->left->value.parameterIndex(), 0U);
+    EXPECT_EQ(select.where->right->value.parameterIndex(), 1U);
+
+    auto ok = executor.execute(parser.parse("EXECUTE by_id_salary VALUES (1, 120000.0);"));
+    ASSERT_TRUE(ok.success);
+    ASSERT_EQ(ok.rows.size(), 1U);
+    EXPECT_EQ(ok.rows[0][0], Value{std::string{"Alice"}});
+
+    EXPECT_THROW((void)executor.execute(parser.parse("EXECUTE by_id_salary VALUES (1);")),
+                 std::runtime_error);
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("EXECUTE by_id_salary VALUES (1, 120000.0, 3);")),
+        std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, AnalyzeWithoutTableNameAnalyzesAllTables) {
+    auto executor = makeExecutor("analyze-all");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE A (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE B (score INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO A VALUES (1), (2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO B VALUES (10), (20), (30);")).success);
+
+    auto result = executor.execute(parser.parse("ANALYZE;"));
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.message.find("2 table"), std::string::npos);
+
+    auto tableA = executor.currentDatabase()->table("A");
+    auto tableB = executor.currentDatabase()->table("B");
+    ASSERT_TRUE(tableA != nullptr);
+    ASSERT_TRUE(tableB != nullptr);
+    ASSERT_TRUE(tableA->columnHistogram("id").has_value());
+    ASSERT_TRUE(tableB->columnHistogram("score").has_value());
+    EXPECT_EQ(tableA->columnHistogram("id")->distinctCount, 2U);
+    EXPECT_EQ(tableB->columnHistogram("score")->distinctCount, 3U);
+}
+
+TEST(DesiredBehaviorTests, MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes) {
+    auto executor = makeExecutor("multi-index-result");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, 9, \"only-dept\"), (2, 9, 1, \"only-city\"), "
+                        "(3, 1, 1, \"both-a\"), (4, 1, 1, \"both-b\");"))
+                    .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE dept = 1 AND city = 1;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("multi-index intersect"),
+              std::string::npos);
+
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE dept = 1 AND city = 1 ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"both-a"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"both-b"}});
+}
+
+TEST(DesiredBehaviorTests, ExpressionIndexSubtractEqualityLookup) {
+    auto executor = makeExecutor("expr-subtract");
+    Parser parser;
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_id_minus ON Employees((id-1));")).success);
+
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE (id-1) = 0;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("expression hash index"),
+              std::string::npos);
+
+    auto result = executor.execute(parser.parse("SELECT name FROM Employees WHERE (id-1) = 0;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
+}
+
+TEST(DesiredBehaviorTests, GroupByOrderByLimitAppliesToAggregateGroups) {
+    auto executor = makeExecutor("agg-order-limit");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept_id INT, salary DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, 10, 100.0), (2, 10, 200.0), "
+                        "(3, 20, 50.0), (4, 30, 500.0);"))
+                    .success);
+
+    auto result = executor.execute(
+        parser.parse("SELECT dept_id, SUM(salary) FROM Employees GROUP BY dept_id "
+                     "ORDER BY dept_id DESC LIMIT 2;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{30});
+    EXPECT_EQ(result.rows[0][1], Value{500.0});
+    EXPECT_EQ(result.rows[1][0], Value{20});
+    EXPECT_EQ(result.rows[1][1], Value{50.0});
+}
+
+
+TEST(DesiredBehaviorTests, MixedNumericAggregatesAndEmptySumAvg) {
+    auto executor = makeExecutor("mixed-numeric-agg");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Metrics (id INT, score INT, weight DOUBLE NULL);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Metrics VALUES (1, 10, 1.5), (2, 20, 2.5), (3, 30, NULL);"))
+                    .success);
+
+    auto mixed = executor.execute(
+        parser.parse("SELECT SUM(score), AVG(score), SUM(weight), AVG(weight) FROM Metrics;"));
+    ASSERT_TRUE(mixed.success);
+    ASSERT_EQ(mixed.rows.size(), 1U);
+    EXPECT_EQ(mixed.rows[0][0], Value{60});
+    EXPECT_EQ(mixed.rows[0][1], Value{20.0});
+    EXPECT_EQ(mixed.rows[0][2], Value{4.0});
+    EXPECT_EQ(mixed.rows[0][3], Value{2.0});
+
+    auto filtered = executor.execute(
+        parser.parse("SELECT COUNT(*), SUM(weight) FROM Metrics WHERE id > 100;"));
+    ASSERT_TRUE(filtered.success);
+    ASSERT_EQ(filtered.rows.size(), 1U);
+    EXPECT_EQ(filtered.rows[0][0], Value{0});
+    EXPECT_TRUE(filtered.rows[0][1].isNull());
+}
+
+TEST(DesiredBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
+    auto executor = makeExecutor("double-expr-hist");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Prices (id INT, amount DOUBLE);")).success);
+    for (int i = 1; i <= 40; ++i) {
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Prices VALUES (" + std::to_string(i) +
+                                              ", " + std::to_string(i) + ".5);"))
+                        .success);
+    }
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_neg_amt ON Prices((-amount));")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_amt ON Prices(amount);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ANALYZE TABLE Prices;")).success);
+
+    auto expr = executor.execute(
+        parser.parse("EXPLAIN SELECT id FROM Prices WHERE (-amount) = -10.5;"));
+    ASSERT_TRUE(expr.success);
+    EXPECT_NE(expr.rows.front().front().toString().find("expression"), std::string::npos);
+
+    auto lessExplain =
+        executor.execute(parser.parse("EXPLAIN SELECT id FROM Prices WHERE amount < 5.5;"));
+    ASSERT_TRUE(lessExplain.success);
+    EXPECT_NE(lessExplain.rows.front().front().toString().find("ordered index range"),
+              std::string::npos);
+
+    Table table{"Scores", {{"id", ColumnType::Int}, {"score", ColumnType::Double}}};
+    for (int i = 1; i <= 64; ++i) {
+        table.insert({Value{i}, Value{static_cast<double>(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_score", "score"));
+    table.analyze();
+    Predicate where{"score", ComparisonOperator::Less, Value{10.0}};
+    Select query{"Scores", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::OrderedIndexRange);
+    EXPECT_LT(plan.estimatedCost, 64.0 / 3.0);
+}
+
+TEST(DesiredBehaviorTests, PreparedInListAndUpdateParameters) {
+    auto executor = makeExecutor("prepared-in-update");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 100.0), (2, \"Bob\", 200.0), "
+                        "(3, \"Cara\", 300.0);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE by_name AS \"SELECT id FROM Employees WHERE name = ?;\";"))
+                    .success);
+    auto selected = executor.execute(parser.parse("EXECUTE by_name VALUES (\"Bob\");"));
+    ASSERT_TRUE(selected.success);
+    ASSERT_EQ(selected.rows.size(), 1U);
+    EXPECT_EQ(selected.rows[0][0], Value{2});
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE bump AS \"UPDATE Employees SET salary = ? WHERE id = ?;\";"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("EXECUTE bump VALUES (999.0, 2);")).success);
+    auto bob = executor.execute(parser.parse("SELECT salary FROM Employees WHERE id = 2;"));
+    ASSERT_TRUE(bob.success);
+    ASSERT_EQ(bob.rows.size(), 1U);
+    EXPECT_EQ(bob.rows[0][0], Value{999.0});
+
+    EXPECT_THROW((void)executor.execute(parser.parse("EXECUTE missing VALUES (1);")),
+                 std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, NestedWithAndJoinInSubqueryDocumentedRefusals) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT name FROM Employees WHERE id IN (WITH t AS (SELECT id FROM Employees) "
+                     "SELECT id FROM t);"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT name FROM Employees WHERE id IN (SELECT Employees.id FROM Employees "
+                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
+                 std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, LoadDatabaseWithoutNameReloadsActiveDatabase) {
+    auto executor = makeExecutor("load-active");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (2, \"Bob\");")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE;")).success);
+    auto result = executor.execute(parser.parse("SELECT id FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{1});
+}
+
+TEST(DesiredBehaviorTests, SiblingCtesInlineRecursively) {
+    auto executor = makeExecutor("sibling-ctes");
+    Parser parser;
+    seedEmployees(executor, parser, true, false);
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0), "
+        "picked AS (SELECT name FROM high WHERE id = 1) SELECT name FROM picked;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+    auto result = executor.execute(parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0), "
+        "picked AS (SELECT name FROM high WHERE id = 1) SELECT name FROM picked;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
+}
+
+
+TEST(DesiredBehaviorTests, SqlLiteralHelpersCoverNullDoubleAndEscapes) {
+    EXPECT_EQ(sqlLiteral(Value{}), "NULL");
+    EXPECT_EQ(sqlLiteral(Value{42}), "42");
+    EXPECT_EQ(sqlLiteral(Value{3.0}), "3.0");
+    EXPECT_EQ(sqlLiteral(Value{std::string{"a\"b\\c"}}), "\"a\\\"b\\\\c\"");
+
+    Predicate comparison{"id", ComparisonOperator::Equal, Value{1}};
+    EXPECT_NE(predicateLiteral(comparison).find("id"), std::string::npos);
+
+    Predicate inList{"id", {Value{1}, Value{2}}};
+    const auto inText = predicateLiteral(inList);
+    EXPECT_NE(inText.find("IN"), std::string::npos);
+
+    Predicate both{Predicate::Kind::And, std::make_shared<Predicate>(comparison),
+                   std::make_shared<Predicate>(inList)};
+    EXPECT_NE(predicateLiteral(both).find("AND"), std::string::npos);
+
+    CreateIndex index{"idx_id", "Employees", "id"};
+    EXPECT_NE(createIndexSql(index).find("CREATE INDEX"), std::string::npos);
+
+    IndexExpression expr;
+    expr.kind = IndexExpression::Kind::Negate;
+    expr.column = "salary";
+    CreateIndex exprIndex{"idx_neg", "Employees", {}};
+    exprIndex.expression = expr;
+    EXPECT_NE(createIndexSql(exprIndex).find("-salary"), std::string::npos);
 }
 
 } // namespace VertexDB

@@ -181,4 +181,63 @@ TEST(RegressionTests, WalDoubleLiteralsRoundTripThroughRecovery) {
     std::filesystem::remove_all(root);
 }
 
+
+TEST(RegressionTests, SelectStarWithAggregatesOrGroupByIsRejected) {
+    const auto root = testRoot("star_agg_reject");
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");")).success);
+
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT * FROM Employees GROUP BY id;")),
+                 std::runtime_error);
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT *, COUNT(*) FROM Employees;")),
+                 std::runtime_error);
+    std::filesystem::remove_all(root);
+}
+
+TEST(RegressionTests, UnknownGroupByColumnIsRejectedWithoutPartialResult) {
+    const auto root = testRoot("groupby_unknown");
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");")).success);
+
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("SELECT id, COUNT(*) FROM Employees GROUP BY missing;")),
+        std::runtime_error);
+    std::filesystem::remove_all(root);
+}
+
+TEST(RegressionTests, PageImageRedoTxnBatchIsSingleWalRecord) {
+    const auto root = testRoot("page_image_txn_batch");
+    Parser parser;
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"A\");")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Employees VALUES (2, \"B\");")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+    const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
+    ASSERT_EQ(records.size(), 3U);
+    EXPECT_EQ(records[2].operation, WalOperation::PageImageRedo);
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB

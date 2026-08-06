@@ -449,4 +449,70 @@ TEST(NestedSqlTests, CteBodyMultiJoinAndAggregateProjection) {
     EXPECT_EQ(result.rows[0][1], Value{200000.0});
 }
 
+
+TEST(NestedSqlTests, CorrelatedExistsReturnsEmptyWhenNoMatch) {
+    Parser parser;
+    auto executor = makeExecutor();
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    // Only Bob has a bonus; Alice should be filtered out by EXISTS.
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (2, 1000.0);")).success);
+
+    auto existsResult = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE emp_id = "
+        "Employees.id) ORDER BY name;"));
+    ASSERT_TRUE(existsResult.success);
+    ASSERT_EQ(existsResult.rows.size(), 1U);
+    EXPECT_EQ(existsResult.rows[0][0], Value{"Bob"});
+
+    auto none = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE emp_id = 999);"));
+    ASSERT_TRUE(none.success);
+    EXPECT_TRUE(none.rows.empty());
+}
+
+TEST(NestedSqlTests, InlinedCteOuterExpressionPredicateUsesExpressionIndex) {
+    Parser parser;
+    auto executor = makeExecutor();
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0), (3, \"Cara\", 110000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_neg_salary ON Employees((-salary));"))
+            .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE id > 0) "
+        "SELECT name FROM high WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("inlined CTE high"), std::string::npos);
+    EXPECT_NE(text.find("expression hash index"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE id > 0) "
+        "SELECT name FROM high WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
 } // namespace VertexDB

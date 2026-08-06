@@ -113,12 +113,12 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 134 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
+- 152 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
   (materialized CTEs, correlated `IN`/`EXISTS`, expression indexes), desired-behavior gaps,
   persistence (snapshot v4 index pages, histograms, and page-image WAL), WAL recovery, concurrency,
   transactions, and regressions
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
-  88.06%)
+  85.19%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
   and MATERIALIZED baselines, page vs vector row-store, B+ range, transaction snapshot/rollback,
