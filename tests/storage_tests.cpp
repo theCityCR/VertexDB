@@ -41,14 +41,14 @@ TEST(StorageTests, MaintainsIndexesAcrossInsertUpdateAndDelete) {
 
     const auto first = table.insert({Value{1}, Value{std::string{"Alice"}}});
     table.insert({Value{2}, Value{std::string{"Bob"}}});
-    EXPECT_EQ(table.findIndexed("id", Value{1}), std::vector<RowId>{first});
+    EXPECT_EQ(table.indexedLookup("id", Value{1}).value_or(std::vector<RowId>{}), std::vector<RowId>{first});
 
     ASSERT_TRUE(table.update(first, 0, Value{3}));
-    EXPECT_TRUE(table.findIndexed("id", Value{1}).empty());
-    EXPECT_EQ(table.findIndexed("id", Value{3}), std::vector<RowId>{first});
+    EXPECT_TRUE(table.indexedLookup("id", Value{1}).value_or(std::vector<RowId>{}).empty());
+    EXPECT_EQ(table.indexedLookup("id", Value{3}).value_or(std::vector<RowId>{}), std::vector<RowId>{first});
 
     ASSERT_TRUE(table.erase(first));
-    EXPECT_TRUE(table.findIndexed("id", Value{3}).empty());
+    EXPECT_TRUE(table.indexedLookup("id", Value{3}).value_or(std::vector<RowId>{}).empty());
 }
 
 TEST(StorageTests, TracksRowVersionsAcrossTableMutations) {
@@ -162,13 +162,13 @@ TEST(StorageTests, TableIndexesTrackStableRowIdsAfterMiddleDelete) {
     ASSERT_TRUE(table.erase(second));
     EXPECT_EQ(table.rowCount(), 2U);
     EXPECT_EQ(table.capacity(), 3U);
-    EXPECT_TRUE(table.findIndexed("id", Value{2}).empty());
-    EXPECT_EQ(table.findIndexed("id", Value{1}), std::vector<RowId>{first});
-    EXPECT_EQ(table.findIndexed("id", Value{3}), std::vector<RowId>{third});
+    EXPECT_TRUE(table.indexedLookup("id", Value{2}).value_or(std::vector<RowId>{}).empty());
+    EXPECT_EQ(table.indexedLookup("id", Value{1}).value_or(std::vector<RowId>{}), std::vector<RowId>{first});
+    EXPECT_EQ(table.indexedLookup("id", Value{3}).value_or(std::vector<RowId>{}), std::vector<RowId>{third});
 
     const auto reused = table.insert({Value{4}, Value{std::string{"Dana"}}});
     EXPECT_EQ(reused, second);
-    EXPECT_EQ(table.findIndexed("id", Value{4}), std::vector<RowId>{reused});
+    EXPECT_EQ(table.indexedLookup("id", Value{4}).value_or(std::vector<RowId>{}), std::vector<RowId>{reused});
 }
 
 TEST(StorageTests, SaveLoadPreservesSparseIndexesAndFreeListReuse) {
@@ -202,12 +202,12 @@ TEST(StorageTests, SaveLoadPreservesSparseIndexesAndFreeListReuse) {
     auto table = loaded->table("Employees");
     ASSERT_NE(table, nullptr);
     ASSERT_TRUE(table->hasIndex("id"));
-    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(3)}),
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3).value_or(std::vector<RowId>{})}),
               std::vector<RowId>{keptId});
     const auto reused =
         table->insert({Value{static_cast<std::int64_t>(4)}, Value{std::string{"Dana"}}});
     EXPECT_EQ(reused, deletedId);
-    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(4)}),
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(4).value_or(std::vector<RowId>{})}),
               std::vector<RowId>{deletedId});
 
     std::filesystem::remove_all(root);

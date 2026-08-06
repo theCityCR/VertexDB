@@ -79,14 +79,6 @@ std::size_t Table::capacity() const {
     return rowStore_->capacity();
 }
 
-std::vector<RowId> Table::findIndexed(std::string_view column, const Value &value) const {
-    auto result = indexedLookup(column, value);
-    if (!result) {
-        return {};
-    }
-    return *result;
-}
-
 std::optional<std::vector<RowId>> Table::indexedLookup(std::string_view column,
                                                        const Value &value) const {
     std::shared_lock lock{mutex_};
@@ -123,8 +115,6 @@ bool Table::hasIndex(std::string_view column) const {
     return std::ranges::any_of(
         indexColumns_, [&](const auto &item) { return schema_[item.second].name == column; });
 }
-
-bool Table::hasOrderedIndex(std::string_view column) const { return hasIndex(column); }
 
 std::vector<std::string> Table::listIndexes() const {
     std::shared_lock lock{mutex_};

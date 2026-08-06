@@ -39,13 +39,12 @@ class Table {
                                             const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t rowCount() const;
     [[nodiscard]] std::size_t capacity() const;
-    [[nodiscard]] std::vector<RowId> findIndexed(std::string_view column, const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>> indexedLookup(std::string_view column,
                                                                   const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
     orderedLookup(std::string_view column, ComparisonOperator op, const Value &value) const;
+    // True when the column has a maintained index (hash equality + ordered range today).
     [[nodiscard]] bool hasIndex(std::string_view column) const;
-    [[nodiscard]] bool hasOrderedIndex(std::string_view column) const;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
     [[nodiscard]] std::vector<std::pair<std::string, std::string>> indexDefinitions() const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;

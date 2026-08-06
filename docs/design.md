@@ -38,8 +38,12 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   deserializing row slots from page bytes.
 - `VectorRowStore` remains available as a simple in-memory implementation for focused tests and
   comparisons.
-- Hash indexes provide fast equality lookup. `BTreeIndex` provides ordered lookup APIs and maintains
-  an incremental B+ tree (leaf/internal split and merge) with explicit node/page metadata.
+- Hash indexes provide fast equality lookup via `Table::indexedLookup`. `BTreeIndex` provides
+  ordered lookup via `Table::orderedLookup` and maintains an incremental B+ tree (leaf/internal
+  split and merge) with explicit node/page metadata. `hasIndex` reports whether a column has a
+  maintained index (hash + ordered today).
+- Execution is split for navigation: `QueryExecutor` dispatches commands; predicate evaluation,
+  SELECT helpers, SQL/WAL literals, and recovery live in dedicated translation units.
 - The executor uses a rule-based planner that picks the cheapest indexable conjunct from `AND`
   trees (heuristic costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value count) and selects a full scan,
   hash index equality lookup, ordered index range lookup, or hash index `IN` lookup, with residual

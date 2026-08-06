@@ -197,12 +197,12 @@ TEST(ExecutionTests, SaveLoadPreservesSparseRowIdsAndFreeListReuse) {
         EXPECT_EQ(definitions.front().first, "idx_id");
         EXPECT_EQ(definitions.front().second, "id");
     }
-    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(3)}),
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3).value_or(std::vector<RowId>{})}),
               std::vector<RowId>{keptId});
 
     ASSERT_TRUE(
         loaded.execute(parser.parse("INSERT INTO Employees VALUES (4, \"Dana\");")).success);
-    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(4)}),
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(4).value_or(std::vector<RowId>{})}),
               std::vector<RowId>{deletedId});
 
     std::filesystem::remove_all(root);

@@ -31,8 +31,12 @@ class RowStore {
     [[nodiscard]] virtual std::size_t capacity() const noexcept = 0;
     virtual void replaceRows(std::vector<Row> rows) = 0;
     virtual void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
-                               std::vector<std::pair<RowId, Row>> entries) = 0;
+                       std::vector<std::pair<RowId, Row>> entries) = 0;
 };
+
+// Shared by VectorRowStore and PageRowStore replaceSparse implementations.
+void validateSparseRowLayout(std::size_t capacity, const std::vector<RowId> &freeList,
+                             const std::vector<std::pair<RowId, Row>> &entries);
 
 class VectorRowStore final : public RowStore {
   public:

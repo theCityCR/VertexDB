@@ -25,10 +25,15 @@ include(GNUInstallDirs)
 add_library(VertexDB
     src/common/value.cpp
     src/parser/parser.cpp
+    src/parser/parser_ddl.cpp
+    src/parser/parser_dml.cpp
+    src/parser/parser_predicate.cpp
     src/parser/tokenizer.cpp
     src/storage/database.cpp
     src/storage/buffer_pool.cpp
-    src/storage/row_store.cpp
+    src/storage/row_store_shared.cpp
+    src/storage/vector_row_store.cpp
+    src/storage/page_row_store.cpp
     src/storage/table.cpp
     src/indexing/btree_index.cpp
     src/indexing/hash_index.cpp

@@ -40,12 +40,16 @@ CLI
 
 ## Module Responsibilities
 
-- `common`: shared value types, column metadata, and low-level utilities.
-- `parser`: tokenization, AST construction, and SQL grammar validation.
+- `common`: shared value types, column metadata, string helpers (`equalsIgnoreCase`), and binary
+  POD I/O (`writePod` / `readPod` for streams and byte spans).
+- `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
+  predicate parsing live in focused translation units behind one `Parser` type).
 - `planner`: CTE/`IN` rewrite and rule-based access-path selection with residual filters.
 - `storage`: database/table ownership, row storage boundaries, schema validation, and page cache
-  abstractions.
-- `execution`: command dispatch, predicate evaluation, projection, and result construction.
+  abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
+  validation).
+- `execution`: `QueryExecutor` façade for command dispatch; helpers for predicate evaluation,
+  SELECT projection/ORDER BY/LIMIT, SQL/WAL literal formatting, and startup recovery.
 - `indexing`: hash indexes and ordered B+ tree index APIs with explicit node/page layout metadata.
 - `persistence`: binary serialization (`.tcrdb` snapshots), versioning, save/load, and logical WAL
   recovery.

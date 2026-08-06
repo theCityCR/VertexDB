@@ -31,7 +31,7 @@ void BM_IndexedPointLookup(benchmark::State &state) {
     table.createIndex("idx_id", "id");
 
     for (auto _ : state) {
-        auto rows = table.findIndexed("id", Value{static_cast<std::int64_t>(state.range(0) / 2)});
+        auto rows = table.indexedLookup("id", Value{static_cast<std::int64_t>(state.range(0).value_or(std::vector<RowId>{}) / 2)});
         benchmark::DoNotOptimize(rows);
     }
 }

@@ -41,7 +41,7 @@ bool isIndexableComparison(const Predicate &predicate, const Table &table, Acces
     }
     if ((predicate.op == ComparisonOperator::Greater ||
          predicate.op == ComparisonOperator::Less) &&
-        table.hasOrderedIndex(predicate.column)) {
+        table.hasIndex(predicate.column)) {
         path = AccessPath::OrderedIndexRange;
         cost = static_cast<double>(std::max<std::size_t>(rowCount / 3, 1));
         return true;
