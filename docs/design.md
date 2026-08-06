@@ -26,8 +26,9 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   MVCC row-version store stamped with SQL transaction ids, commit-aware snapshot reads
   (including dirty-read prevention and snapshot isolation across concurrent statements), and
   transaction-batched physical WAL flush on `COMMIT`
-- Planner: cheapest indexable conjunct selection from `AND` trees (heuristic costs), residual
-  filters, CTE rewrite notes, and `EXPLAIN` text
+- Planner: cheapest indexable conjunct selection from `AND` trees using row-count and index
+  distinct-key statistics, residual filters, CTE rewrite notes, join algorithm selection
+  (hash vs nested-loop index probe), and `EXPLAIN` text with `est_rows` / `cost`
 - Quality: GoogleTest coverage, regression tests, sanitizer script, coverage script, benchmark
   target, and multi-platform CI
 
@@ -46,11 +47,13 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   maintained index (hash + ordered today).
 - Execution is split for navigation: `QueryExecutor` dispatches commands; predicate evaluation,
   SELECT helpers, SQL/WAL literals, and recovery live in dedicated translation units.
-- The executor uses a rule-based planner that picks the cheapest indexable conjunct from `AND`
-  trees (heuristic costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value count) and selects a full scan,
-  hash index equality lookup, ordered index range lookup, or hash index `IN` lookup, with residual
-  filters for remaining conjuncts. Top-level `OR` predicates are not split and force a full scan;
-  nested `OR` under `AND` may remain as a residual while another conjunct uses an index.
+- The executor uses a cost-based planner that picks the cheapest indexable conjunct from `AND`
+  trees using live row counts and index distinct-key counts (equality ≈ \(N/D\), range ≈ \(N/3\),
+  `IN` ≈ \(K\cdot N/D\)) and selects a full scan, hash index equality lookup, ordered index range
+  lookup, or hash index `IN` lookup, with residual filters for remaining conjuncts. Top-level `OR`
+  predicates are not split and force a full scan; nested `OR` under `AND` may remain as a residual
+  while another conjunct uses an index. Equi-joins choose hash join or nested-loop index probe from
+  the same statistics.
 - `WITH` CTEs are always inlined before planning so outer predicates can hit base-table indexes.
   `IN (SELECT …)` subqueries are planned/executed for their values, then probed via index when
   possible.
@@ -72,19 +75,20 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - DML WAL redo stores physical row after-images (not raw page images yet); DDL still uses logical
   SQL payloads. Legacy logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
-- The planner uses hardcoded heuristic costs and does not collect table/index statistics or perform
-  cost-based multi-index optimization.
+- Planner costs use live \(N\) and index distinct keys \(D\) without histograms; there is no
+  multi-index AND intersection or top-level `OR` index union yet.
 - Top-level `OR` predicates are not split for indexing; they force a full scan.
 - Nested SQL is limited: no derived tables, no correlated subqueries, no `JOIN` / nested `WITH`
   inside CTE bodies or `IN` subqueries, and no expression/regex indexes.
 - SQL support is intentionally limited and does not include aggregation, grouping, or general DDL.
+  Joins are single equi-joins only.
 
 ## Next Engineering Plan
 
 1. Persist page payloads (and later index pages) in snapshots; evolve redo toward page images.
-2. Add statistics to tables and indexes, then evolve the planner toward a cost model.
-3. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
-4. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
+2. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
+3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins.
+4. Add histograms / `ANALYZE` and multi-index AND optimization.
 5. Turn benchmark output into documented reports and trend comparisons.
 
 ### CTE index wedge (parallel track) — first milestone shipped

@@ -44,7 +44,8 @@ CLI
   POD I/O (`writePod` / `readPod` for streams and byte spans).
 - `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
   predicate parsing live in focused translation units behind one `Parser` type).
-- `planner`: CTE/`IN` rewrite and rule-based access-path selection with residual filters.
+- `planner`: CTE/`IN` rewrite and cost-based access-path / join selection using table and index
+  statistics (row counts and distinct keys), with residual filters.
 - `storage`: database/table ownership, row storage boundaries, schema validation, and page cache
   abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
   validation).

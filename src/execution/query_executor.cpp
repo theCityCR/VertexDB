@@ -202,11 +202,14 @@ QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(command.query, rewrite);
     if (prepared.join) {
+        auto leftTable = requireTable(prepared.table);
+        auto rightTable = requireTable(prepared.join->table);
+        const auto joinPlan = planner_.planJoin(*leftTable, *rightTable, *prepared.join);
         QueryResult result;
         result.success = true;
         result.message = "explain";
         result.columns = {"plan"};
-        result.rows.push_back({Value{"hash join (planner bypassed for JOIN)"}});
+        result.rows.push_back({Value{formatJoinPlanExplanation(joinPlan)}});
         for (const auto &note : rewrite.notes) {
             result.rows.push_back({Value{note}});
         }
@@ -486,32 +489,61 @@ QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
         }
     }
 
-    const auto leftRows = rowsSnapshotForRead(*leftTable);
-    const auto rightRows = rowsSnapshotForRead(*rightTable);
-    std::map<Value, std::vector<Row>> rightRowsByKey;
-    for (const auto &row : rightRows) {
-        rightRowsByKey[row[*rightJoinColumn]].push_back(row);
-    }
-
     const ColumnLookup joinLookup = [&](std::string_view column) {
         return resolveResultColumn(joinedColumns, column);
     };
 
+    const auto joinPlan = planner_.planJoin(*leftTable, *rightTable, *command.join);
     std::vector<Row> joinedRows;
-    for (const auto &leftRow : leftRows) {
-        auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
-        if (matchingRightRows == rightRowsByKey.end()) {
-            continue;
+
+    auto appendJoined = [&](const Row &leftRow, const Row &rightRow) {
+        Row joined;
+        joined.reserve(leftRow.size() + rightRow.size());
+        joined.insert(joined.end(), leftRow.begin(), leftRow.end());
+        joined.insert(joined.end(), rightRow.begin(), rightRow.end());
+        if (command.where && !evalPredicate(*command.where, joined, joinLookup)) {
+            return;
         }
-        for (const auto &rightRow : matchingRightRows->second) {
-            Row joined;
-            joined.reserve(leftRow.size() + rightRow.size());
-            joined.insert(joined.end(), leftRow.begin(), leftRow.end());
-            joined.insert(joined.end(), rightRow.begin(), rightRow.end());
-            if (command.where && !evalPredicate(*command.where, joined, joinLookup)) {
+        joinedRows.push_back(std::move(joined));
+    };
+
+    if (joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe) {
+        if (joinPlan.outerIsLeft) {
+            const auto outerRows = rowsSnapshotForRead(*leftTable);
+            for (const auto &leftRow : outerRows) {
+                if (auto rowIds =
+                        rightTable->indexedLookup(command.join->rightColumn, leftRow[*leftJoinColumn])) {
+                    for (const auto &rightRow : rowsByIdForRead(*rightTable, *rowIds)) {
+                        appendJoined(leftRow, rightRow);
+                    }
+                }
+            }
+        } else {
+            const auto outerRows = rowsSnapshotForRead(*rightTable);
+            for (const auto &rightRow : outerRows) {
+                if (auto rowIds =
+                        leftTable->indexedLookup(command.join->leftColumn, rightRow[*rightJoinColumn])) {
+                    for (const auto &leftRow : rowsByIdForRead(*leftTable, *rowIds)) {
+                        appendJoined(leftRow, rightRow);
+                    }
+                }
+            }
+        }
+    } else {
+        const auto leftRows = rowsSnapshotForRead(*leftTable);
+        const auto rightRows = rowsSnapshotForRead(*rightTable);
+        std::map<Value, std::vector<Row>> rightRowsByKey;
+        for (const auto &row : rightRows) {
+            rightRowsByKey[row[*rightJoinColumn]].push_back(row);
+        }
+        for (const auto &leftRow : leftRows) {
+            auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
+            if (matchingRightRows == rightRowsByKey.end()) {
                 continue;
             }
-            joinedRows.push_back(std::move(joined));
+            for (const auto &rightRow : matchingRightRows->second) {
+                appendJoined(leftRow, rightRow);
+            }
         }
     }
 

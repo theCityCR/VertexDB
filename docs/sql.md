@@ -46,10 +46,10 @@ EXIT;
 `CREATE INDEX` builds maintained hash and ordered index structures for the target column. Equality
 predicates can use hash index lookup. Less-than and greater-than predicates can use ordered index
 range lookup when the filtered column is indexed. Compound `AND` predicates select the cheapest
-indexable conjunct for an access path (heuristic costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value
-count) and evaluate the remaining conjuncts as a residual filter. Top-level `OR` predicates still
-force a full scan; an `OR` nested under `AND` may remain as a residual while another conjunct uses
-an index.
+indexable conjunct for an access path using live row counts and index distinct-key statistics
+(equality ≈ \(N/D\), range ≈ \(N/3\), `IN` ≈ \(K\cdot N/D\)) and evaluate the remaining conjuncts as
+a residual filter. Top-level `OR` predicates still force a full scan; an `OR` nested under `AND`
+may remain as a residual while another conjunct uses an index.
 
 `WITH` CTEs are always inlined into the outer `SELECT` (no materialization fence), so outer filters
 can use base-table indexes. `WHERE col IN (SELECT …)` materializes the subquery (which itself may
@@ -58,13 +58,12 @@ indexed. CTE bodies and `IN` subqueries are single-table in this version (no nes
 `JOIN` inside them). Correlated subqueries are not supported.
 
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
-the access path, CTE inlining notes, and whether a residual filter remains.
+the access path or join algorithm, CTE inlining notes, residual status, and `est_rows` / `cost`.
 
 `JOIN` supports a single equi-join. Joined result columns are qualified as `LeftTable.column` and
 `RightTable.column`. Projection, `WHERE`, `ORDER BY`, and `LIMIT` can reference qualified columns;
-unqualified references are allowed when the column name is not ambiguous. Join execution uses a
-fixed in-memory hash join and does not go through the index access-path planner; `EXPLAIN` reports
-that bypass.
+unqualified references are allowed when the column name is not ambiguous. The planner chooses
+between an in-memory hash join and a nested-loop index probe when a join key is indexed and cheaper.
 
 `UPDATE` and `DELETE` evaluate their `WHERE` clause with a full scan of live rows. They do not yet
 use the planner's index access paths (intentional v1 limitation).

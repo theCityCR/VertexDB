@@ -79,6 +79,16 @@ std::size_t Table::capacity() const {
     return rowStore_->capacity();
 }
 
+std::optional<std::size_t> Table::indexDistinctCount(std::string_view column) const {
+    std::shared_lock lock{mutex_};
+    for (const auto &[indexName, columnIndex] : indexColumns_) {
+        if (schema_[columnIndex].name == column) {
+            return indexes_.at(indexName).size();
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<std::vector<RowId>> Table::indexedLookup(std::string_view column,
                                                        const Value &value) const {
     std::shared_lock lock{mutex_};

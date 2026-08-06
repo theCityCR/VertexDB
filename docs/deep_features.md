@@ -51,11 +51,11 @@ Next step: store prepared ASTs with typed parameter slots instead of reparsing b
 ## Joins
 
 Joins support a single equi-join with projected or `SELECT *` output, qualified output column names,
-joined `WHERE`, `ORDER BY`, and `LIMIT`. Execution builds an in-memory lookup over the right side
-and scans the left side. Later planner work can choose between nested-loop and hash join variants
-using table statistics.
+joined `WHERE`, `ORDER BY`, and `LIMIT`. The planner chooses between an in-memory hash join (build
+the right side) and a nested-loop index probe when a join key is indexed and the estimated probe
+cost is cheaper. `EXPLAIN` reports the chosen algorithm and cost.
 
-Next step: add planner-selected join algorithms and support multiple joins.
+Next step: support multiple joins and additional join strategies.
 
 ## MVCC
 
@@ -93,12 +93,19 @@ The planner chooses between:
 - ordered index range lookup
 - hash index `IN` multi-lookup
 
-For `AND` predicates it selects the cheapest indexable conjunct for the access path (heuristic
-costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value count, with tie-breaks preferring any index over a
-full scan and equality over range/`IN`) and keeps the rest as a residual filter evaluated after the
-index fetch. Top-level `OR` predicates remain full scans; an `OR` nested under `AND` may stay as a
-residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path, residual status,
-and rewrite notes such as CTE inlining.
+Costs use live table row counts and per-index distinct-key counts (`Table::indexDistinctCount`):
+
+- equality ≈ \(N / D\) (average rows per key)
+- range ≈ \(N / 3\) (no histograms yet)
+- `IN` ≈ \(K \cdot (N / D)\)
+
+Tie-breaks still prefer any index over a full scan and equality over range/`IN` when costs match.
+For `AND` predicates the cheapest indexable conjunct drives the access path; remaining conjuncts
+become a residual filter. Top-level `OR` predicates remain full scans; an `OR` nested under `AND`
+may stay as a residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path,
+residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
+
+Equi-joins are planned with the same statistics: hash join versus nested-loop index probe.
 
 A rewriter always inlines `WITH` CTEs into the outer `SELECT` and materializes `IN (SELECT …)`
 subqueries into value lists before planning, so nested SQL can still use base-table indexes.
@@ -118,4 +125,4 @@ base-table `id` index for the outer filter. Full write-up, limitations, and comp
 [cte_index_wedge.md](cte_index_wedge.md) (Demo) and
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
 
-Next step: collect table/index statistics and use them for cost-based access-path selection.
+Next step: histograms / `ANALYZE` and multi-index AND optimization.
