@@ -50,6 +50,8 @@ SELECT Employees.name, Departments.dept FROM joined;
 EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
+ANALYZE;
+ANALYZE TABLE Employees;
 UPDATE Employees SET salary = 150000.0 WHERE id = 1;
 DELETE FROM Employees WHERE id = 5;
 CREATE INDEX idx_salary ON Employees(salary);
@@ -70,10 +72,14 @@ EXIT;
 `CREATE INDEX` builds maintained hash and ordered index structures for the target column or
 expression. Equality predicates can use hash index lookup. Less-than and greater-than predicates can
 use ordered index range lookup when the filtered column (or matching expression) is indexed.
-Compound `AND` predicates select the cheapest indexable conjunct for an access path using live row
-counts and index distinct-key statistics (equality ≈ \(N/D\), range ≈ \(N/3\), `IN` ≈ \(K\cdot N/D\))
-and evaluate the remaining conjuncts as a residual filter. Top-level `OR` predicates still force a
-full scan; an `OR` nested under `AND` may remain as a residual while another conjunct uses an index.
+Compound `AND` predicates select the cheapest indexable access path using live row counts, index
+distinct-key statistics, and optional `ANALYZE` histograms (equality ≈ \(N/D\), range ≈ histogram
+selectivity or \(N/3\), `IN` ≈ histogram ndistinct or \(K\cdot N/D\)). When ≥2 equality (or
+expression-equality) conjuncts are indexed and their estimated intersection is cheaper than a single
+index + residual, the planner chooses a multi-index intersect of sorted `RowId` lists; `EXPLAIN`
+lists the intersected columns. Remaining conjuncts evaluate as a residual filter. Top-level `OR`
+predicates still force a full scan (no index union); an `OR` nested under `AND` may remain as a
+residual while another conjunct uses an index.
 
 `WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use
 base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into an ephemeral table
@@ -92,6 +98,11 @@ CTE/derived alias, and `JOIN` inside `IN`/`EXISTS` subqueries are not supported.
 or `(expr) >/< const` can use the expression index; `EXPLAIN` reports expression hash/ordered
 access. Expression metadata is stored with index definitions in snapshot v4 (`expr:…` encoding) so
 SAVE/LOAD restores expression indexes without losing keys.
+
+`ANALYZE` / `ANALYZE TABLE name` scans live rows and builds per-column equi-height histograms
+(default 32 buckets) plus distinct counts. Histograms feed range/`IN` selectivity in the planner.
+Histogram blobs are persisted in snapshot v4 after index pages (`VDBHIST1`); older v4 files without
+the section load with empty stats until the next `ANALYZE`.
 
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
 the access path or each join algorithm in a left-deep chain, CTE inlining/materialization notes,
@@ -119,8 +130,9 @@ re-tokenizing or reparsing.
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
 page-payload + index-pages format v4, extension `.tcrdb`) under the executor's storage root. Current
 snapshots store schemas, index definitions (column or `expr:`-prefixed expression metadata),
-`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and durable B+ tree /
-hash index pages so sparse IDs, page bytes, and indexes survive checkpoints without an index rebuild.
+`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, durable B+ tree /
+hash index pages, and optional per-column histogram blobs so sparse IDs, page bytes, indexes, and
+`ANALYZE` stats survive checkpoints without an index rebuild.
 Older page-payload v3, sparse v2, and dense v1 snapshots remain readable (v1–v3 still rebuild indexes
 after rows). `LOAD DATABASE` without a name reloads the active database when one exists, otherwise it
 loads the first saved database file.

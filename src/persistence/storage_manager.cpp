@@ -327,6 +327,70 @@ void loadIndexPages(Table &table, std::istream &in) {
     table.replaceIndexPages(std::move(snapshot));
 }
 
+constexpr std::string_view kHistogramMagic = "VDBHIST1";
+
+void writeHistogramBucket(std::ostream &out, const HistogramBucket &bucket) {
+    writeValue(out, bucket.lower);
+    writeValue(out, bucket.upper);
+    writePodDb(out, bucket.rowCount);
+    writePodDb(out, bucket.distinctCount);
+}
+
+HistogramBucket readHistogramBucket(std::istream &in) {
+    HistogramBucket bucket;
+    bucket.lower = readValue(in);
+    bucket.upper = readValue(in);
+    bucket.rowCount = readPodDb<std::uint64_t>(in);
+    bucket.distinctCount = readPodDb<std::uint64_t>(in);
+    return bucket;
+}
+
+void writeColumnHistograms(std::ostream &out, const Table &table) {
+    writeBytesDb(out, kHistogramMagic.data(), kHistogramMagic.size());
+    const auto histograms = table.columnHistograms();
+    writePodDb(out, static_cast<std::uint64_t>(histograms.size()));
+    for (const auto &histogram : histograms) {
+        writeString(out, histogram.column);
+        writePodDb(out, histogram.rowCount);
+        writePodDb(out, histogram.distinctCount);
+        writePodDb(out, static_cast<std::uint64_t>(histogram.buckets.size()));
+        for (const auto &bucket : histogram.buckets) {
+            writeHistogramBucket(out, bucket);
+        }
+    }
+}
+
+bool tryLoadColumnHistograms(Table &table, std::istream &in) {
+    if (!in.good() || in.peek() == std::char_traits<char>::eof()) {
+        return false;
+    }
+    const auto pos = in.tellg();
+    std::string magic(kHistogramMagic.size(), '\0');
+    in.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+    if (!in || magic != kHistogramMagic) {
+        in.clear();
+        in.seekg(pos);
+        return false;
+    }
+    const auto histogramCount = readPodDb<std::uint64_t>(in);
+    std::vector<ColumnHistogram> histograms;
+    histograms.reserve(static_cast<std::size_t>(histogramCount));
+    for (std::uint64_t i = 0; i < histogramCount; ++i) {
+        ColumnHistogram histogram;
+        histogram.column = readString(in);
+        histogram.rowCount = readPodDb<std::uint64_t>(in);
+        histogram.distinctCount = readPodDb<std::uint64_t>(in);
+        const auto bucketCount = readPodDb<std::uint64_t>(in);
+        histogram.buckets.reserve(static_cast<std::size_t>(bucketCount));
+        for (std::uint64_t b = 0; b < bucketCount; ++b) {
+            histogram.buckets.push_back(readHistogramBucket(in));
+        }
+        histograms.push_back(std::move(histogram));
+    }
+    table.replaceColumnHistograms(std::move(histograms));
+    return true;
+}
+
 } // namespace
 
 StorageManager::StorageManager(std::filesystem::path root) : root_(std::move(root)) {}
@@ -366,6 +430,7 @@ void StorageManager::saveDatabase(const Database &database) const {
 
             writePagePayloadRows(out, *table);
             writeIndexPages(out, *table);
+            writeColumnHistograms(out, *table);
         }
     }
 
@@ -458,6 +523,7 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
             loadPagePayloadRows(*table, in, !restoreIndexPages);
             if (restoreIndexPages) {
                 loadIndexPages(*table, in);
+                (void)tryLoadColumnHistograms(*table, in);
             }
         }
     }

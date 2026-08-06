@@ -1,11 +1,13 @@
 #include "VertexDB/planner/query_planner.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/storage/histogram.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <sstream>
+#include <string>
 #include <utility>
 
 namespace VertexDB {
@@ -44,6 +46,9 @@ std::optional<Predicate> buildAndTree(const std::vector<const Predicate *> &conj
     if (const auto distinct = table.indexDistinctCount(column)) {
         return std::max<std::size_t>(*distinct, 1);
     }
+    if (const auto histogram = table.columnHistogram(column)) {
+        return std::max<std::size_t>(static_cast<std::size_t>(histogram->distinctCount), 1);
+    }
     return 1;
 }
 
@@ -52,6 +57,24 @@ std::optional<Predicate> buildAndTree(const std::vector<const Predicate *> &conj
         return std::max<std::size_t>(*distinct, 1);
     }
     return 1;
+}
+
+[[nodiscard]] double rangeCost(const Table &table, std::string_view column, ComparisonOperator op,
+                               const Value &value, std::size_t rowCount) {
+    if (const auto histogram = table.columnHistogram(column)) {
+        const double selectivity = histogramRangeSelectivity(*histogram, op, value);
+        return std::max(selectivity * static_cast<double>(std::max<std::size_t>(rowCount, 1)), 1.0);
+    }
+    return std::max(static_cast<double>(rowCount) / 3.0, 1.0);
+}
+
+[[nodiscard]] double inCost(const Table &table, std::string_view column,
+                            const std::vector<Value> &values, std::size_t rowCount) {
+    if (const auto histogram = table.columnHistogram(column)) {
+        const double selectivity = histogramInSelectivity(*histogram, values);
+        return std::max(selectivity * static_cast<double>(std::max<std::size_t>(rowCount, 1)), 1.0);
+    }
+    return static_cast<double>(values.size()) * averageRowsPerKey(rowCount, distinctOrOne(table, column));
 }
 
 bool isIndexableComparison(const Predicate &predicate, const Table &table, AccessPath &path,
@@ -71,6 +94,7 @@ bool isIndexableComparison(const Predicate &predicate, const Table &table, Acces
         if (predicate.op == ComparisonOperator::Greater ||
             predicate.op == ComparisonOperator::Less) {
             path = AccessPath::OrderedIndexRange;
+            // Expression indexes have no column histogram; keep the N/3 fallback.
             cost = std::max(static_cast<double>(rowCount) / 3.0, 1.0);
             return true;
         }
@@ -85,8 +109,7 @@ bool isIndexableComparison(const Predicate &predicate, const Table &table, Acces
          predicate.op == ComparisonOperator::Less) &&
         table.hasIndex(predicate.column)) {
         path = AccessPath::OrderedIndexRange;
-        // Without histograms, estimate one-third of the table; still prefer equality when cheaper.
-        cost = std::max(static_cast<double>(rowCount) / 3.0, 1.0);
+        cost = rangeCost(table, predicate.column, predicate.op, predicate.value, rowCount);
         return true;
     }
     return false;
@@ -100,9 +123,37 @@ bool isIndexableInList(const Predicate &predicate, const Table &table, double &c
     if (!table.hasIndex(predicate.column) || predicate.inValues.empty()) {
         return false;
     }
-    cost = static_cast<double>(predicate.inValues.size()) *
-           averageRowsPerKey(rowCount, distinctOrOne(table, predicate.column));
+    cost = inCost(table, predicate.column, predicate.inValues, rowCount);
     return true;
+}
+
+bool isEqualityIndexProbe(const Predicate &predicate, const Table &table) {
+    if (predicate.kind != Predicate::Kind::Comparison || predicate.rhsColumn) {
+        return false;
+    }
+    if (predicate.op != ComparisonOperator::Equal) {
+        return false;
+    }
+    if (predicate.expression) {
+        return table.hasExpressionIndex(*predicate.expression);
+    }
+    return table.hasIndex(predicate.column);
+}
+
+[[nodiscard]] IndexEqualityProbe makeEqualityProbe(const Predicate &predicate) {
+    IndexEqualityProbe probe;
+    probe.column = predicate.column;
+    probe.expression = predicate.expression;
+    probe.value = predicate.value;
+    return probe;
+}
+
+[[nodiscard]] double equalityFanout(const Predicate &predicate, const Table &table,
+                                    std::size_t rowCount) {
+    if (predicate.expression) {
+        return averageRowsPerKey(rowCount, distinctOrOne(table, *predicate.expression));
+    }
+    return averageRowsPerKey(rowCount, distinctOrOne(table, predicate.column));
 }
 
 [[nodiscard]] std::size_t rowsFromCost(double cost, std::size_t rowCount) {
@@ -110,6 +161,13 @@ bool isIndexableInList(const Predicate &predicate, const Table &table, double &c
         return 0;
     }
     return std::min(rowCount, static_cast<std::size_t>(std::max(std::llround(cost), 1LL)));
+}
+
+[[nodiscard]] std::string probeLabel(const IndexEqualityProbe &probe) {
+    if (probe.expression) {
+        return "(" + indexExpressionToString(*probe.expression) + ")";
+    }
+    return probe.column;
 }
 
 } // namespace
@@ -159,14 +217,70 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
         if (isIndexableComparison(*conjuncts[i], table, path, comparisonCost, plan.estimatedRows)) {
             consider(i, path, comparisonCost);
         }
-        double inCost = bestCost;
-        if (isIndexableInList(*conjuncts[i], table, inCost, plan.estimatedRows)) {
-            consider(i, AccessPath::HashIndexInLookup, inCost);
+        double inListCost = bestCost;
+        if (isIndexableInList(*conjuncts[i], table, inListCost, plan.estimatedRows)) {
+            consider(i, AccessPath::HashIndexInLookup, inListCost);
         }
     }
 
-    if (bestIndex == conjuncts.size()) {
+    std::vector<std::size_t> equalityIndexes;
+    for (std::size_t i = 0; i < conjuncts.size(); ++i) {
+        if (isEqualityIndexProbe(*conjuncts[i], table)) {
+            equalityIndexes.push_back(i);
+        }
+    }
+
+    bool choseIntersect = false;
+    double intersectCost = bestCost;
+    double intersectRows = 0.0;
+    if (equalityIndexes.size() >= 2) {
+        // Independence: N * Π(1/D_i). Cheaper than the best single index when combination is more
+        // selective than any one conjunct alone.
+        intersectRows = static_cast<double>(std::max<std::size_t>(plan.estimatedRows, 1));
+        for (const auto index : equalityIndexes) {
+            const double fanout = equalityFanout(*conjuncts[index], table, plan.estimatedRows);
+            const double selectivity =
+                fanout / static_cast<double>(std::max<std::size_t>(plan.estimatedRows, 1));
+            intersectRows *= std::clamp(selectivity, 0.0, 1.0);
+        }
+        intersectCost = std::max(intersectRows, 1.0);
+        if (intersectCost < bestCost) {
+            choseIntersect = true;
+        }
+    }
+
+    if (!choseIntersect && bestIndex == conjuncts.size()) {
         plan.residual = query.where;
+        return plan;
+    }
+
+    if (choseIntersect) {
+        plan.accessPath = AccessPath::MultiIndexIntersect;
+        plan.estimatedCost = intersectCost;
+        plan.estimatedRows = rowsFromCost(intersectCost, table.rowCount());
+        plan.intersectProbes.reserve(equalityIndexes.size());
+        std::ostringstream labels;
+        std::vector<const Predicate *> residualConjuncts;
+        residualConjuncts.reserve(conjuncts.size());
+        for (std::size_t i = 0; i < conjuncts.size(); ++i) {
+            const bool used =
+                std::find(equalityIndexes.begin(), equalityIndexes.end(), i) != equalityIndexes.end();
+            if (used) {
+                auto probe = makeEqualityProbe(*conjuncts[i]);
+                if (!labels.str().empty()) {
+                    labels << ", ";
+                }
+                labels << probeLabel(probe);
+                plan.intersectProbes.push_back(std::move(probe));
+            } else {
+                residualConjuncts.push_back(conjuncts[i]);
+            }
+        }
+        plan.explanation = "multi-index intersect on " + labels.str();
+        plan.residual = buildAndTree(residualConjuncts);
+        if (plan.residual) {
+            plan.notes.push_back("residual filter applied after index lookup");
+        }
         return plan;
     }
 

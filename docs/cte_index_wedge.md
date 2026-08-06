@@ -139,7 +139,8 @@ inline path so nested SQL does not silently drop indexes. Details:
 - Nested `WITH`, outer `JOIN` against a CTE/derived alias, and multi-level correlated subqueries are
   unsupported; `IN` subqueries remain without inner joins. CTE/derived bodies may include left-deep
   equi-join chains.
-- Cost-based access paths using live row counts and index distinct keys (no histograms yet).
+- Cost-based access paths using live row counts, index distinct keys, and optional `ANALYZE`
+  histograms; multi-index AND intersection when cheaper than a single index + residual.
 - This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
 - `UPDATE` / `DELETE` and joins still bypass this index access-path planner.
 
@@ -160,7 +161,7 @@ Items **1–5** are done. The one-liner:
 
 ## Out of scope for this wedge
 
-- Histograms / `ANALYZE` and multi-index AND optimization (separate roadmap item).
+- Top-level `OR` index unions remain out of scope (full scan).
 - Multi-level correlated subqueries or regex/substring indexes.
 - Winning only because VertexDB always picks hash lookup when Postgres sometimes does not—that is
   a heuristic quirk, not a product story.

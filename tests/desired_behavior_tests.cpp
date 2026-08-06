@@ -1611,4 +1611,155 @@ TEST(DesiredBehaviorTests, PreparedStatementStoresTypedAstWithoutReparse) {
     EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
 }
 
+TEST(DesiredBehaviorTests, AnalyzeBuildsEquiHeightHistogramsWithDistinctCounts) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
+    for (int i = 1; i <= 64; ++i) {
+        table.insert({Value{i}, Value{i % 4}});
+    }
+    table.analyze();
+    const auto idHist = table.columnHistogram("id");
+    ASSERT_TRUE(idHist.has_value());
+    EXPECT_EQ(idHist->rowCount, 64U);
+    EXPECT_EQ(idHist->distinctCount, 64U);
+    EXPECT_EQ(idHist->buckets.size(), kDefaultHistogramBuckets);
+    const auto deptHist = table.columnHistogram("dept");
+    ASSERT_TRUE(deptHist.has_value());
+    EXPECT_EQ(deptHist->distinctCount, 4U);
+    EXPECT_FALSE(deptHist->buckets.empty());
+}
+
+TEST(DesiredBehaviorTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"score", ColumnType::Int}}};
+    for (int i = 1; i <= 90; ++i) {
+        table.insert({Value{i}, Value{i}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_score", "score"));
+
+    Predicate where{"score", ComparisonOperator::Greater, Value{80}};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+
+    const auto before = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(before.accessPath, AccessPath::OrderedIndexRange);
+    EXPECT_NEAR(before.estimatedCost, 30.0, 0.5); // N/3 fallback
+
+    table.analyze();
+    const auto after = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(after.accessPath, AccessPath::OrderedIndexRange);
+    EXPECT_LT(after.estimatedCost, before.estimatedCost);
+    EXPECT_LE(after.estimatedCost, 15.0);
+}
+
+TEST(DesiredBehaviorTests, MultiIndexIntersectChosenWhenCheaperThanSingleIndexResidual) {
+    Parser parser;
+    auto executor = makeExecutor("multi-index-intersect");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+
+    for (int i = 1; i <= 100; ++i) {
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Employees VALUES (" +
+                                              std::to_string(i) + ", " + std::to_string(i % 2) +
+                                              ", " + std::to_string(i % 2) + ", \"n" +
+                                              std::to_string(i) + "\");"))
+                        .success);
+    }
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE dept = 1 AND city = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(text.find("dept"), std::string::npos);
+    EXPECT_NE(text.find("city"), std::string::npos);
+
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE dept = 1 AND city = 1 ORDER BY id LIMIT 3;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 3U);
+}
+
+TEST(DesiredBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
+    Table table{"Employees", {{"a", ColumnType::Int}, {"b", ColumnType::Int}, {"name", ColumnType::String}}};
+    for (int i = 1; i <= 100; ++i) {
+        table.insert({Value{i % 2}, Value{i % 2}, Value{"n" + std::to_string(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_a", "a"));
+    IndexExpression bPlus;
+    bPlus.kind = IndexExpression::Kind::Add;
+    bPlus.column = "b";
+    bPlus.literal = Value{0};
+    ASSERT_TRUE(table.createIndex("idx_b_plus", bPlus));
+
+    Predicate where{
+        Predicate::Kind::And,
+        std::make_shared<Predicate>(Predicate{"a", ComparisonOperator::Equal, Value{1}}),
+        std::make_shared<Predicate>(
+            Predicate::makeExpressionComparison(bPlus, ComparisonOperator::Equal, Value{1}))};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::MultiIndexIntersect);
+    ASSERT_EQ(plan.intersectProbes.size(), 2U);
+    EXPECT_NE(plan.explanation.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(plan.explanation.find("a"), std::string::npos);
+    EXPECT_NE(plan.explanation.find("b"), std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, HistogramStatsPersistInSnapshotV4) {
+    Parser parser;
+    auto executor = makeExecutor("hist-persist-v4");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, score INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_score ON Employees(score);")).success);
+    for (int i = 1; i <= 60; ++i) {
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Employees VALUES (" +
+                                              std::to_string(i) + ", " + std::to_string(i) + ");"))
+                        .success);
+    }
+    ASSERT_TRUE(executor.execute(parser.parse("ANALYZE TABLE Employees;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-hist-persist-v4";
+    QueryExecutor loaded{root};
+    ASSERT_TRUE(loaded.execute(parser.parse("LOAD DATABASE company;")).success);
+    auto table = loaded.currentDatabase()->table("Employees");
+    ASSERT_TRUE(table != nullptr);
+    const auto hist = table->columnHistogram("score");
+    ASSERT_TRUE(hist.has_value());
+    EXPECT_EQ(hist->rowCount, 60U);
+    EXPECT_EQ(hist->distinctCount, 60U);
+    EXPECT_FALSE(hist->buckets.empty());
+
+    auto explain =
+        loaded.execute(parser.parse("EXPLAIN SELECT id FROM Employees WHERE score > 50;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("ordered index range"),
+              std::string::npos);
+}
+
+TEST(DesiredBehaviorTests, TopLevelOrIndexUnionRemainsDocumentedLimitation) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
+    for (int i = 1; i <= 20; ++i) {
+        table.insert({Value{i}, Value{i % 2}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+
+    Predicate where{
+        Predicate::Kind::Or,
+        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{1}}),
+        std::make_shared<Predicate>(Predicate{"dept", ComparisonOperator::Equal, Value{0}})};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath, AccessPath::FullScan);
+    EXPECT_NE(plan.explanation.find("OR"), std::string::npos);
+}
+
 } // namespace VertexDB

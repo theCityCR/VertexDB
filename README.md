@@ -113,10 +113,10 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 128 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
+- 134 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
   (materialized CTEs, correlated `IN`/`EXISTS`, expression indexes), desired-behavior gaps,
-  persistence (snapshot v4 index pages and page-image WAL), WAL recovery, concurrency, transactions,
-  and regressions
+  persistence (snapshot v4 index pages, histograms, and page-image WAL), WAL recovery, concurrency,
+  transactions, and regressions
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   88.06%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -131,8 +131,9 @@ Or feed an example script:
   row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
   durable prefix
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
-- Planner costs use live row counts and index distinct-key counts (no histograms); multi-index
-  intersection and top-level `OR` index unions are not implemented
+- Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
+  for range/`IN` selectivity; multi-index AND intersection is supported. Top-level `OR` index
+  unions are not implemented
 - Nested SQL is intentionally limited: no nested `WITH`, multi-level correlation, outer `JOIN`
   against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS` subqueries; expression indexes cover
   column / unary minus / `+/-` literal only (no regex/substring indexes)
@@ -146,7 +147,7 @@ Or feed an example script:
 2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED` — **done**
 3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies —
    **done**
-4. Add histograms / `ANALYZE` and multi-index AND optimization
+4. Add histograms / `ANALYZE` and multi-index AND optimization — **done**
 5. Turn benchmark output into documented reports and trend comparisons
 
 Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)

@@ -253,12 +253,16 @@ struct ExecutePrepared {
 struct ExplainQuery {
     Select query;
 };
+struct Analyze {
+    // Empty means analyze every table in the active database.
+    std::optional<std::string> table;
+};
 struct Exit {};
 
 using Query =
     std::variant<CreateDatabase, CreateTable, DropTable, RenameTable, ListTables, Insert, Select,
                  Update, Delete, CreateIndex, SaveDatabase, LoadDatabase, BeginTransaction,
                  CommitTransaction, RollbackTransaction, PrepareStatement, ExecutePrepared,
-                 ExplainQuery, Exit>;
+                 ExplainQuery, Analyze, Exit>;
 
 } // namespace VertexDB

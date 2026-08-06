@@ -45,11 +45,11 @@ CLI
 - `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
   predicate parsing live in focused translation units behind one `Parser` type).
 - `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
-  cost-based access-path / join selection using table and index statistics (row counts and distinct
-  keys), with residual filters.
-- `storage`: database/table ownership, row storage boundaries, schema validation, and page cache
-  abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
-  validation).
+  cost-based access-path / join selection using table/index statistics and optional `ANALYZE`
+  histograms, including multi-index AND intersect, with residual filters.
+- `storage`: database/table ownership, row storage boundaries, schema validation, column histograms,
+  and page cache abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing
+  sparse-layout validation).
 - `execution`: `QueryExecutor` façade for command dispatch; helpers for predicate evaluation,
   SELECT projection/ORDER BY/LIMIT, hash aggregation, prepared-parameter binding, SQL/WAL literal
   formatting, and startup recovery.
@@ -69,7 +69,9 @@ number of row slots; serialized page byte lengths vary with row content. Both ro
 implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
 inserts reuse freed IDs before growing capacity. Snapshots (format v4) persist `rowsPerPage`,
 capacity, free-list order, serialized page-directory payloads, and index pages (B+ tree nodes and
-hash buckets) so IDs, page bytes, and indexes survive save/load. `VectorRowStore` remains available
+hash buckets) so IDs, page bytes, and indexes survive save/load. Per-column equi-height histograms
+from `ANALYZE` are persisted after index pages in v4 (optional `VDBHIST1` section). `VectorRowStore`
+remains available
 as a simple in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata

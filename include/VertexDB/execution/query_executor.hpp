@@ -43,6 +43,7 @@ class QueryExecutor {
     [[nodiscard]] QueryResult executeUpdate(const Update &command);
     [[nodiscard]] QueryResult executeDelete(const Delete &command);
     [[nodiscard]] QueryResult executeCreateIndex(const CreateIndex &command);
+    [[nodiscard]] QueryResult executeAnalyze(const Analyze &command);
     [[nodiscard]] QueryResult executeSaveDatabase();
     [[nodiscard]] QueryResult executeLoadDatabase(const LoadDatabase &command);
     [[nodiscard]] QueryResult executeBegin();

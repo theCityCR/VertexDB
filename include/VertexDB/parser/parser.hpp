@@ -34,6 +34,7 @@ class Parser {
     [[nodiscard]] PrepareStatement parsePrepare();
     [[nodiscard]] ExecutePrepared parseExecutePrepared();
     [[nodiscard]] ExplainQuery parseExplain();
+    [[nodiscard]] Analyze parseAnalyze();
     [[nodiscard]] Predicate parsePredicate();
     [[nodiscard]] Predicate parseOrPredicate();
     [[nodiscard]] Predicate parseAndPredicate();

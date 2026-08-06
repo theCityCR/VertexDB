@@ -53,13 +53,14 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   maintained index (hash + ordered today).
 - Execution is split for navigation: `QueryExecutor` dispatches commands; predicate evaluation,
   SELECT helpers, SQL/WAL literals, and recovery live in dedicated translation units.
-- The executor uses a cost-based planner that picks the cheapest indexable conjunct from `AND`
-  trees using live row counts and index distinct-key counts (equality ≈ \(N/D\), range ≈ \(N/3\),
-  `IN` ≈ \(K\cdot N/D\)) and selects a full scan, hash index equality lookup, ordered index range
-  lookup, or hash index `IN` lookup, with residual filters for remaining conjuncts. Top-level `OR`
-  predicates are not split and force a full scan; nested `OR` under `AND` may remain as a residual
-  while another conjunct uses an index. Equi-joins choose hash join or nested-loop index probe from
-  the same statistics.
+- The executor uses a cost-based planner that picks the cheapest indexable access path from `AND`
+  trees using live row counts, index distinct-key counts, and optional `ANALYZE` histograms
+  (equality ≈ \(N/D\), range ≈ histogram selectivity or \(N/3\), `IN` ≈ histogram or \(K\cdot N/D\)).
+  Paths include full scan, hash equality, ordered range, hash `IN`, and multi-index equality
+  intersect when ≥2 equality probes are cheaper than a single index + residual. Remaining conjuncts
+  become residual filters. Top-level `OR` predicates are not split and force a full scan (no index
+  union yet); nested `OR` under `AND` may remain as a residual while another conjunct uses an index.
+  Equi-joins choose hash join or nested-loop index probe from the same statistics.
 - `WITH` CTEs default to inlining (and `AS NOT MATERIALIZED` is explicit inline); `AS MATERIALIZED`
   executes the body into an ephemeral indexed table before planning the outer query. Derived tables
   `FROM (SELECT …) [AS] alias` always inline. `IN (SELECT …)` subqueries are planned/executed for
@@ -68,11 +69,12 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   `GROUP BY` run after filter/join. Prepared statements store a typed AST with parameter slots.
 - Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v4) that store
   `rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and per-index B+ tree
-  nodes plus hash buckets. Index definitions encode expression indexes as `expr:…` alongside column
-  names. On v4 load, heap pages are restored then index pages are installed without
-  `rebuildIndexes()`. v3 loads page payloads and rebuilds indexes; sparse v2 and dense v1 remain
-  readable. WAL recovery replays page-image / legacy physical / logical SQL payloads after the latest
-  save checkpoint.
+  nodes plus hash buckets. Optional per-column equi-height histogram blobs follow index pages
+  (`VDBHIST1` marker; absent on older v4 files). Index definitions encode expression indexes as
+  `expr:…` alongside column names. On v4 load, heap pages are restored then index pages are installed
+  without `rebuildIndexes()`, and histograms are restored when present. v3 loads page payloads and
+  rebuilds indexes; sparse v2 and dense v1 remain readable. WAL recovery replays page-image / legacy
+  physical / logical SQL payloads after the latest save checkpoint.
 - Transactions use transaction state tracking, MVCC read APIs, and an undo log that reverses DML on
   `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
   ids; `BEGIN` captures a commit-seq snapshot for isolation. While a transaction is active, the
@@ -85,8 +87,10 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
   `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
-- Planner costs use live \(N\) and index distinct keys \(D\) without histograms; there is no
-  multi-index AND intersection or top-level `OR` index union yet.
+- Planner costs use live \(N\), index distinct keys \(D\), and optional equi-height histograms from
+  `ANALYZE` for range/`IN` selectivity. Multi-index AND intersection of equality probes is
+  supported when cheaper than a single index + residual. Top-level `OR` index union is not
+  implemented yet.
 - Top-level `OR` predicates are not split for indexing; they force a full scan.
 - Nested SQL is limited: no nested `WITH`, no multi-level correlated subqueries, no outer `JOIN`
   against a CTE/derived alias, no `JOIN` inside `IN`/`EXISTS` subqueries, and no regex/substring
@@ -100,7 +104,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 1. Persist index pages in snapshots; evolve redo toward page images. — **done** (v4 + `PageImageRedo`)
 2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`. — **done**
 3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins. — **done**
-4. Add histograms / `ANALYZE` and multi-index AND optimization.
+4. Add histograms / `ANALYZE` and multi-index AND optimization. — **done**
 5. Turn benchmark output into documented reports and trend comparisons.
 
 ### CTE index wedge (parallel track) — first milestone shipped

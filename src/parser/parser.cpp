@@ -55,6 +55,9 @@ Query Parser::parse(std::span<const Token> tokens) {
     if (match(TokenType::Identifier, "EXPLAIN")) {
         return finish(parseExplain());
     }
+    if (match(TokenType::Identifier, "ANALYZE")) {
+        return finish(parseAnalyze());
+    }
     if (match(TokenType::Identifier, "UPDATE")) {
         return finish(parseUpdate());
     }

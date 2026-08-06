@@ -5,6 +5,7 @@
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/indexing/hash_index.hpp"
 #include "VertexDB/parser/ast.hpp"
+#include "VertexDB/storage/histogram.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/row_store.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
@@ -69,6 +70,12 @@ class Table {
     [[nodiscard]] std::optional<std::size_t> indexDistinctCount(std::string_view column) const;
     [[nodiscard]] std::optional<std::size_t>
     indexDistinctCount(const IndexExpression &expression) const;
+    // ANALYZE builds equi-height per-column histograms (+ distinct counts) from live rows.
+    void analyze(std::size_t maxBuckets = kDefaultHistogramBuckets);
+    [[nodiscard]] std::optional<ColumnHistogram> columnHistogram(std::string_view column) const;
+    [[nodiscard]] std::vector<ColumnHistogram> columnHistograms() const;
+    void replaceColumnHistograms(std::vector<ColumnHistogram> histograms);
+    void clearColumnHistograms();
     [[nodiscard]] std::optional<std::vector<RowId>> indexedLookup(std::string_view column,
                                                                   const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
@@ -138,6 +145,7 @@ class Table {
     std::map<std::string, IndexExpression> indexExpressions_;
     std::map<std::string, HashIndex> indexes_;
     std::map<std::string, BTreeIndex> orderedIndexes_;
+    std::map<std::string, ColumnHistogram> histograms_;
     MVCCRowStore versions_;
     mutable std::shared_mutex mutex_;
 };

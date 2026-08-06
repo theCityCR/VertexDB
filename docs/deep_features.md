@@ -89,18 +89,23 @@ The planner chooses between:
 - hash index equality lookup
 - ordered index range lookup
 - hash index `IN` multi-lookup
+- multi-index equality intersect (sorted `RowId` intersection of ≥2 equality/expression probes)
 
-Costs use live table row counts and per-index distinct-key counts (`Table::indexDistinctCount`):
+Costs use live table row counts and per-index distinct-key counts (`Table::indexDistinctCount`),
+plus optional equi-height histograms from `ANALYZE` (`Table::columnHistogram`):
 
 - equality ≈ \(N / D\) (average rows per key)
-- range ≈ \(N / 3\) (no histograms yet)
-- `IN` ≈ \(K \cdot (N / D)\)
+- range ≈ histogram bucket selectivity when present, otherwise \(N / 3\)
+- `IN` ≈ histogram ndistinct when present, otherwise \(K \cdot (N / D)\)
 
-Tie-breaks still prefer any index over a full scan and equality over range/`IN` when costs match.
-For `AND` predicates the cheapest indexable conjunct drives the access path; remaining conjuncts
-become a residual filter. Top-level `OR` predicates remain full scans; an `OR` nested under `AND`
-may stay as a residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path,
-residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
+When ≥2 indexable equality conjuncts exist, the planner estimates intersection under independence
+(\(N \cdot \prod 1/D_i\)) and chooses `MultiIndexIntersect` when that cost beats the best single
+index path. Tie-breaks still prefer any index over a full scan and equality over range/`IN` when
+costs match. For non-intersect `AND` plans the cheapest indexable conjunct drives the access path;
+remaining conjuncts become a residual filter. Top-level `OR` predicates remain full scans (no index
+union); an `OR` nested under `AND` may stay as a residual while another conjunct uses an index.
+`EXPLAIN` surfaces the chosen path (including intersected columns), residual status, `est_rows` /
+`cost`, and rewrite notes such as CTE inlining.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe, including
 per-join planning for left-deep multi-join chains.
@@ -128,4 +133,4 @@ against the temp result (fencing the base-table `id` index). Full write-up, limi
 comparison artifacts: [cte_index_wedge.md](cte_index_wedge.md) (Demo) and
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
 
-Next step: histograms / `ANALYZE` and multi-index AND optimization.
+Next step: documented benchmark reports and trend comparisons.

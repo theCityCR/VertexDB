@@ -104,6 +104,58 @@ std::optional<std::size_t> Table::indexDistinctCount(const IndexExpression &expr
     return std::nullopt;
 }
 
+void Table::analyze(std::size_t maxBuckets) {
+    std::unique_lock lock{mutex_};
+    histograms_.clear();
+    const auto entries = rowStore_->liveEntries();
+    for (std::size_t columnIndex = 0; columnIndex < schema_.size(); ++columnIndex) {
+        std::vector<Value> values;
+        values.reserve(entries.size());
+        for (const auto &[rowId, row] : entries) {
+            (void)rowId;
+            if (columnIndex < row.size() && !row[columnIndex].isNull()) {
+                values.push_back(row[columnIndex]);
+            }
+        }
+        std::sort(values.begin(), values.end());
+        auto histogram =
+            buildEquiHeightHistogram(schema_[columnIndex].name, std::move(values), maxBuckets);
+        histograms_.emplace(histogram.column, std::move(histogram));
+    }
+}
+
+std::optional<ColumnHistogram> Table::columnHistogram(std::string_view column) const {
+    std::shared_lock lock{mutex_};
+    auto it = histograms_.find(std::string{column});
+    if (it == histograms_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::vector<ColumnHistogram> Table::columnHistograms() const {
+    std::shared_lock lock{mutex_};
+    std::vector<ColumnHistogram> out;
+    out.reserve(histograms_.size());
+    for (const auto &[_, histogram] : histograms_) {
+        out.push_back(histogram);
+    }
+    return out;
+}
+
+void Table::replaceColumnHistograms(std::vector<ColumnHistogram> histograms) {
+    std::unique_lock lock{mutex_};
+    histograms_.clear();
+    for (auto &histogram : histograms) {
+        histograms_.emplace(histogram.column, std::move(histogram));
+    }
+}
+
+void Table::clearColumnHistograms() {
+    std::unique_lock lock{mutex_};
+    histograms_.clear();
+}
+
 std::optional<std::vector<RowId>> Table::indexedLookup(std::string_view column,
                                                        const Value &value) const {
     std::shared_lock lock{mutex_};

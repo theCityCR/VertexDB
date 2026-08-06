@@ -7,7 +7,9 @@
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 
+#include <algorithm>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -63,6 +65,8 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
                 return executeDelete(command);
             } else if constexpr (std::is_same_v<Command, CreateIndex>) {
                 return executeCreateIndex(command);
+            } else if constexpr (std::is_same_v<Command, Analyze>) {
+                return executeAnalyze(command);
             } else if constexpr (std::is_same_v<Command, SaveDatabase>) {
                 return executeSaveDatabase();
             } else if constexpr (std::is_same_v<Command, LoadDatabase>) {
@@ -300,6 +304,22 @@ QueryResult QueryExecutor::executeCreateIndex(const CreateIndex &command) {
                          created ? "created index " + command.name : "index creation failed");
 }
 
+QueryResult QueryExecutor::executeAnalyze(const Analyze &command) {
+    if (!database_) {
+        return messageResult(false, "no active database");
+    }
+    if (command.table) {
+        auto table = requireTable(*command.table);
+        table->analyze();
+        return messageResult(true, "analyzed table " + *command.table);
+    }
+    const auto tables = database_->tables();
+    for (const auto &table : tables) {
+        table->analyze();
+    }
+    return messageResult(true, "analyzed " + std::to_string(tables.size()) + " table(s)");
+}
+
 QueryResult QueryExecutor::executeSaveDatabase() {
     if (const auto rejected = rejectIfTransactionActive("SAVE DATABASE"); !rejected.success) {
         return rejected;
@@ -489,6 +509,37 @@ std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &
             }
         }
         return applyResidual(rowsByIdForRead(table, combined));
+    }
+    if (plan.accessPath == AccessPath::MultiIndexIntersect) {
+        if (plan.intersectProbes.empty()) {
+            return {};
+        }
+        std::optional<std::vector<RowId>> intersection;
+        for (const auto &probe : plan.intersectProbes) {
+            std::optional<std::vector<RowId>> rowIds;
+            if (probe.expression) {
+                rowIds = table.indexedLookup(*probe.expression, probe.value);
+            } else {
+                rowIds = table.indexedLookup(probe.column, probe.value);
+            }
+            if (!rowIds) {
+                return {};
+            }
+            std::sort(rowIds->begin(), rowIds->end());
+            if (!intersection) {
+                intersection = std::move(*rowIds);
+                continue;
+            }
+            std::vector<RowId> next;
+            next.reserve(std::min(intersection->size(), rowIds->size()));
+            std::set_intersection(intersection->begin(), intersection->end(), rowIds->begin(),
+                                  rowIds->end(), std::back_inserter(next));
+            intersection = std::move(next);
+            if (intersection->empty()) {
+                return {};
+            }
+        }
+        return applyResidual(rowsByIdForRead(table, *intersection));
     }
 
     std::vector<Row> rows;

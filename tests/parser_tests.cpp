@@ -128,6 +128,11 @@ TEST(ParserTests, ParsesJoinAndPreparedStatements) {
     auto execute = parser.parse("EXECUTE by_id VALUES (1);");
     ASSERT_TRUE(std::holds_alternative<ExecutePrepared>(execute));
     EXPECT_EQ(std::get<ExecutePrepared>(execute).parameters.size(), 1U);
+
+    EXPECT_TRUE(std::holds_alternative<Analyze>(parser.parse("ANALYZE;")));
+    auto analyzeTable = parser.parse("ANALYZE TABLE Employees;");
+    ASSERT_TRUE(std::holds_alternative<Analyze>(analyzeTable));
+    EXPECT_EQ(std::get<Analyze>(analyzeTable).table, std::optional<std::string>{"Employees"});
 }
 
 } // namespace VertexDB

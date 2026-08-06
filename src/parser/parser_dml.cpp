@@ -233,6 +233,18 @@ ExplainQuery Parser::parseExplain() {
     return ExplainQuery{parseSelectAfterSelectKeyword()};
 }
 
+Analyze Parser::parseAnalyze() {
+    Analyze command;
+    if (match(TokenType::Identifier, "TABLE")) {
+        const auto &table = advance();
+        if (table.type != TokenType::Identifier) {
+            throw std::runtime_error("expected table name after ANALYZE TABLE");
+        }
+        command.table = table.lexeme;
+    }
+    return command;
+}
+
 Update Parser::parseUpdate() {
     const auto table = advance();
     if (table.type != TokenType::Identifier) {

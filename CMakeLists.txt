@@ -36,6 +36,7 @@ add_library(VertexDB
     src/storage/vector_row_store.cpp
     src/storage/page_row_store.cpp
     src/storage/table.cpp
+    src/storage/histogram.cpp
     src/indexing/btree_index.cpp
     src/indexing/hash_index.cpp
     src/execution/query_executor.cpp

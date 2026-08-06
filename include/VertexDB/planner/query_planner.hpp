@@ -15,11 +15,18 @@ enum class AccessPath : std::uint8_t {
     HashIndexLookup,
     OrderedIndexRange,
     HashIndexInLookup,
+    MultiIndexIntersect,
 };
 
 enum class JoinAlgorithm : std::uint8_t {
     HashJoin,
     NestedLoopIndexProbe,
+};
+
+struct IndexEqualityProbe {
+    std::string column;
+    std::optional<IndexExpression> expression;
+    Value value;
 };
 
 struct QueryPlan {
@@ -30,6 +37,7 @@ struct QueryPlan {
     ComparisonOperator indexOp{ComparisonOperator::Equal};
     Value indexValue;
     std::vector<Value> indexValues;
+    std::vector<IndexEqualityProbe> intersectProbes;
     std::size_t estimatedRows{};
     double estimatedCost{};
     std::string explanation{"full table scan"};
