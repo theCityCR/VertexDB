@@ -233,14 +233,24 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
 TEST(DeepFeatureTests, MVCCTracksTransactionVisibility) {
     TransactionManager transactions;
     const auto writer = transactions.begin();
-    const auto reader = transactions.begin();
-
     MVCCRowStore store;
     store.write(1, {Value{10}}, writer.id);
-    EXPECT_TRUE(store.read(1, reader.id).has_value());
 
-    store.erase(1, reader.id);
-    EXPECT_FALSE(store.read(1, reader.id).has_value());
+    const auto dirtyReader = transactions.currentSnapshot();
+    EXPECT_FALSE(store.read(1, dirtyReader, transactions).has_value());
+
+    transactions.commit(writer.id);
+    const auto afterCommit = transactions.currentSnapshot();
+    ASSERT_TRUE(store.read(1, afterCommit, transactions).has_value());
+    EXPECT_EQ(*store.read(1, afterCommit, transactions), (Row{Value{10}}));
+
+    const auto deleter = transactions.begin();
+    store.erase(1, deleter.id);
+    EXPECT_TRUE(store.read(1, afterCommit, transactions).has_value());
+    EXPECT_FALSE(store.read(1, transactions.currentSnapshot(deleter.id), transactions).has_value());
+
+    transactions.commit(deleter.id);
+    EXPECT_FALSE(store.read(1, transactions.currentSnapshot(), transactions).has_value());
     EXPECT_EQ(store.versionCount(1), 1U);
 }
 
@@ -249,13 +259,23 @@ TEST(DeepFeatureTests, TransactionManagerTracksCommitRollbackAndInvalidTransitio
     const auto first = transactions.begin();
     const auto second = transactions.begin();
 
+    EXPECT_EQ(transactions.currentCommitSeq(), 0U);
     transactions.commit(first.id);
     ASSERT_TRUE(transactions.find(first.id).has_value());
     EXPECT_EQ(transactions.find(first.id)->state, TransactionState::Committed);
+    ASSERT_TRUE(transactions.find(first.id)->commitSeq.has_value());
+    EXPECT_EQ(*transactions.find(first.id)->commitSeq, 1U);
+    EXPECT_EQ(transactions.currentCommitSeq(), 1U);
+
+    const auto autocommit = transactions.beginCommitted();
+    ASSERT_TRUE(transactions.find(autocommit).has_value());
+    EXPECT_EQ(transactions.find(autocommit)->state, TransactionState::Committed);
+    EXPECT_EQ(transactions.currentCommitSeq(), 2U);
 
     transactions.rollback(second.id);
     ASSERT_TRUE(transactions.find(second.id).has_value());
     EXPECT_EQ(transactions.find(second.id)->state, TransactionState::RolledBack);
+    EXPECT_FALSE(transactions.find(second.id)->commitSeq.has_value());
 
     EXPECT_FALSE(transactions.find(999).has_value());
     EXPECT_THROW(transactions.commit(first.id), std::runtime_error);

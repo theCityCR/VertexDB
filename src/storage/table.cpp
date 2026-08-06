@@ -35,14 +35,22 @@ std::vector<Row> Table::rowsSnapshot() const {
     return rowStore_->snapshot();
 }
 
-std::vector<Row> Table::rowsSnapshot(TransactionId readerId) const {
+std::vector<Row> Table::rowsSnapshot(const ReadSnapshot &snapshot,
+                                     const TransactionManager &transactions) const {
     std::shared_lock lock{mutex_};
-    return versions_.visibleRows(readerId);
+    return versions_.visibleRows(snapshot, transactions);
 }
 
 std::vector<std::pair<RowId, Row>> Table::liveEntries() const {
     std::shared_lock lock{mutex_};
     return rowStore_->liveEntries();
+}
+
+std::vector<std::pair<RowId, Row>>
+Table::visibleEntries(const ReadSnapshot &snapshot,
+                      const TransactionManager &transactions) const {
+    std::shared_lock lock{mutex_};
+    return versions_.visibleEntries(snapshot, transactions);
 }
 
 std::vector<RowId> Table::freeList() const {
@@ -55,9 +63,10 @@ std::vector<Row> Table::rowsById(std::span<const RowId> rowIds) const {
     return rowStore_->rowsById(rowIds);
 }
 
-std::vector<Row> Table::rowsById(std::span<const RowId> rowIds, TransactionId readerId) const {
+std::vector<Row> Table::rowsById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
+                                 const TransactionManager &transactions) const {
     std::shared_lock lock{mutex_};
-    return versions_.visibleRowsById(rowIds, readerId);
+    return versions_.visibleRowsById(rowIds, snapshot, transactions);
 }
 
 std::size_t Table::rowCount() const {
@@ -142,21 +151,21 @@ std::size_t Table::versionCount(RowId rowId) const {
     return versions_.versionCount(rowId);
 }
 
-RowId Table::insert(Row row) {
+RowId Table::insert(Row row, TransactionId writerId) {
     validateRow(row);
     std::unique_lock lock{mutex_};
     const RowId rowId = rowStore_->append(std::move(row));
-    versions_.write(rowId, *rowStore_->get(rowId), nextVersionTransactionId_++);
+    versions_.write(rowId, *rowStore_->get(rowId), writerId);
     addRowToIndexes(rowId);
     return rowId;
 }
 
-bool Table::erase(RowId rowId) {
+bool Table::erase(RowId rowId, TransactionId writerId) {
     std::unique_lock lock{mutex_};
     if (rowStore_->get(rowId) == nullptr) {
         return false;
     }
-    versions_.erase(rowId, nextVersionTransactionId_++);
+    versions_.erase(rowId, writerId);
     const bool erased = rowStore_->erase(rowId);
     if (!erased) {
         return false;
@@ -165,7 +174,7 @@ bool Table::erase(RowId rowId) {
     return true;
 }
 
-bool Table::update(RowId rowId, std::size_t index, Value value) {
+bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId writerId) {
     std::unique_lock lock{mutex_};
     if (rowStore_->get(rowId) == nullptr || index >= schema_.size()) {
         return false;
@@ -179,11 +188,11 @@ bool Table::update(RowId rowId, std::size_t index, Value value) {
     }
     auto updated = *rowStore_->get(rowId);
     updated[index] = std::move(value);
-    const bool updatedRow = rowStore_->update(rowId, updated);
-    if (!updatedRow) {
+    const bool updatedOk = rowStore_->update(rowId, updated);
+    if (!updatedOk) {
         return false;
     }
-    versions_.write(rowId, *rowStore_->get(rowId), nextVersionTransactionId_++);
+    versions_.write(rowId, *rowStore_->get(rowId), writerId);
     rebuildIndexes();
     return true;
 }
@@ -266,13 +275,12 @@ void Table::replaceRows(std::vector<Row> rows) {
     std::unique_lock lock{mutex_};
     rowStore_->replaceRows(std::move(rows));
     versions_.clear();
-    nextVersionTransactionId_ = 1;
     for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
         const auto *row = rowStore_->get(rowId);
         if (row == nullptr) {
             continue;
         }
-        versions_.write(rowId, *row, nextVersionTransactionId_++);
+        versions_.write(rowId, *row, kSystemTransactionId);
     }
     rebuildIndexes();
 }
@@ -285,13 +293,12 @@ void Table::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
     std::unique_lock lock{mutex_};
     rowStore_->replaceSparse(capacity, std::move(freeList), std::move(entries));
     versions_.clear();
-    nextVersionTransactionId_ = 1;
     for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
         const auto *row = rowStore_->get(rowId);
         if (row == nullptr) {
             continue;
         }
-        versions_.write(rowId, *row, nextVersionTransactionId_++);
+        versions_.write(rowId, *row, kSystemTransactionId);
     }
     rebuildIndexes();
 }

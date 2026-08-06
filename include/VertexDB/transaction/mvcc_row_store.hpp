@@ -24,10 +24,15 @@ class MVCCRowStore {
     // Compensating helpers for undo-log rollback of Table mutations.
     [[nodiscard]] bool popLatestVersion(RowId rowId);
     [[nodiscard]] bool clearLatestDeletedBy(RowId rowId);
-    [[nodiscard]] std::optional<Row> read(RowId rowId, TransactionId readerId) const;
-    [[nodiscard]] std::vector<Row> visibleRows(TransactionId readerId) const;
+    [[nodiscard]] std::optional<Row> read(RowId rowId, const ReadSnapshot &snapshot,
+                                          const TransactionManager &transactions) const;
+    [[nodiscard]] std::vector<Row> visibleRows(const ReadSnapshot &snapshot,
+                                               const TransactionManager &transactions) const;
     [[nodiscard]] std::vector<Row> visibleRowsById(std::span<const RowId> rowIds,
-                                                   TransactionId readerId) const;
+                                                   const ReadSnapshot &snapshot,
+                                                   const TransactionManager &transactions) const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>>
+    visibleEntries(const ReadSnapshot &snapshot, const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
 
   private:

@@ -20,7 +20,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree-style range lookup APIs
 - Versioned binary persistence, logical WAL records, save checkpoints, and startup recovery
-- Transaction state tracking, MVCC row-version storage, and undo-log rollback for DML
+- Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, and
+  undo-log rollback for DML
 - GoogleTest suite, Google Benchmark targets, sanitizer/coverage scripts, and multi-platform CI (GCC, Clang, macOS Clang, MSVC)
 
 ## Architecture
@@ -108,7 +109,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 85 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 88 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
   (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
   behavior)
@@ -122,7 +123,7 @@ Or feed an example script:
 - Database snapshots still persist typed sparse `(rowId, row)` entries rather than raw page files
 - B+ tree layout is rebuilt lazily on read from ordered entries instead of performing incremental
   split/merge operations
-- Transactions use undo-log rollback for DML, but do not yet provide commit-aware MVCC isolation;
+- Transactions use undo-log rollback for DML and commit-aware MVCC snapshot isolation for reads;
   logical WAL records are not transaction-atomic (rolled-back DML may still appear in the WAL)
 - WAL recovery still replays logical SQL operations rather than physical page redo records
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
@@ -133,7 +134,7 @@ Or feed an example script:
 
 ## Roadmap
 
-1. Add commit-aware MVCC visibility / richer isolation on top of undo-log rollback
+1. Make logical WAL records transaction-atomic (defer DML WAL until `COMMIT`)
 2. Implement incremental B+ tree split/merge with structural invariant tests
 3. Add physical WAL redo/recovery tests, including simulated partial writes
 4. Add table/index statistics and cost-based planning

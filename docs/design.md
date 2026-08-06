@@ -21,8 +21,9 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   and index definitions
 - WAL and recovery: append-only logical WAL, startup replay, save checkpoints, and recovery tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
-- Transactions: transaction manager, transaction states, per-transaction undo-log rollback for DML,
-  MVCC row-version store, and active-transaction reads routed through MVCC table APIs
+- Transactions: transaction manager with commit sequences, per-transaction undo-log rollback for DML,
+  MVCC row-version store stamped with SQL transaction ids, and commit-aware snapshot reads
+  (including dirty-read prevention and snapshot isolation across concurrent statements)
 - Planner: sargable conjunct extraction from `AND` trees, residual filters, CTE rewrite notes, and
   `EXPLAIN` text
 - Quality: GoogleTest coverage, regression tests, sanitizer script, coverage script, benchmark
@@ -49,17 +50,17 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   `(rowId, row)` entries. WAL recovery replays logical SQL payloads after the latest save
   checkpoint.
 - Transactions use transaction state tracking, MVCC read APIs, and an undo log that reverses DML on
-  `ROLLBACK` against the live database (no full-database clone). Schema changes and save/load are
-  rejected while a transaction is active. This leaves room for commit-aware MVCC visibility and
-  transactional WAL later.
+  `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
+  ids; `BEGIN` captures a commit-seq snapshot for isolation. Schema changes and save/load are
+  rejected while a transaction is active. Transaction-atomic WAL remains future work.
 
 ## Known Limitations
 
 - Database snapshots still serialize typed sparse rows rather than persisting raw page files.
 - B+ tree insert/delete operations rebuild node layout rather than incrementally splitting and
   merging pages.
-- Transaction rollback uses undo records for DML only; commit-aware MVCC isolation and
-  transaction-atomic WAL are not implemented yet.
+- Transaction rollback uses undo records for DML; commit-aware MVCC snapshot isolation is implemented
+  for reads, but transaction-atomic WAL is not.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - WAL records are logical and replay SQL operations; there is no physical redo log yet.
 - The planner does not collect statistics or perform cost-based multi-index optimization.
@@ -70,7 +71,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Add commit-aware MVCC visibility / richer isolation on top of undo-log rollback.
+1. Make logical WAL records transaction-atomic (defer DML WAL until `COMMIT`; drop on `ROLLBACK`).
 2. Implement incremental B+ tree page split/merge logic with invariants tests.
 3. Harden recovery with physical redo records and crash-simulation regression tests.
 4. Add statistics to tables and indexes, then evolve the planner toward a cost model.

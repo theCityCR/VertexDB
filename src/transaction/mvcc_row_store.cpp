@@ -1,7 +1,5 @@
 #include "VertexDB/transaction/mvcc_row_store.hpp"
 
-#include <algorithm>
-
 namespace VertexDB {
 
 void MVCCRowStore::write(RowId rowId, Row row, TransactionId transactionId) {
@@ -41,25 +39,26 @@ bool MVCCRowStore::clearLatestDeletedBy(RowId rowId) {
 
 void MVCCRowStore::clear() { versions_.clear(); }
 
-std::optional<Row> MVCCRowStore::read(RowId rowId, TransactionId readerId) const {
+std::optional<Row> MVCCRowStore::read(RowId rowId, const ReadSnapshot &snapshot,
+                                      const TransactionManager &transactions) const {
     auto it = versions_.find(rowId);
     if (it == versions_.end()) {
         return std::nullopt;
     }
     for (auto version = it->second.rbegin(); version != it->second.rend(); ++version) {
-        if (version->createdBy <= readerId &&
-            (!version->deletedBy || *version->deletedBy > readerId)) {
+        if (transactions.isVisible(version->createdBy, version->deletedBy, snapshot)) {
             return version->row;
         }
     }
     return std::nullopt;
 }
 
-std::vector<Row> MVCCRowStore::visibleRows(TransactionId readerId) const {
+std::vector<Row> MVCCRowStore::visibleRows(const ReadSnapshot &snapshot,
+                                           const TransactionManager &transactions) const {
     std::vector<Row> rows;
     rows.reserve(versions_.size());
     for (const auto &[rowId, _] : versions_) {
-        if (auto row = read(rowId, readerId)) {
+        if (auto row = read(rowId, snapshot, transactions)) {
             rows.push_back(std::move(*row));
         }
     }
@@ -67,15 +66,29 @@ std::vector<Row> MVCCRowStore::visibleRows(TransactionId readerId) const {
 }
 
 std::vector<Row> MVCCRowStore::visibleRowsById(std::span<const RowId> rowIds,
-                                               TransactionId readerId) const {
+                                               const ReadSnapshot &snapshot,
+                                               const TransactionManager &transactions) const {
     std::vector<Row> rows;
     rows.reserve(rowIds.size());
     for (const auto rowId : rowIds) {
-        if (auto row = read(rowId, readerId)) {
+        if (auto row = read(rowId, snapshot, transactions)) {
             rows.push_back(std::move(*row));
         }
     }
     return rows;
+}
+
+std::vector<std::pair<RowId, Row>>
+MVCCRowStore::visibleEntries(const ReadSnapshot &snapshot,
+                             const TransactionManager &transactions) const {
+    std::vector<std::pair<RowId, Row>> entries;
+    entries.reserve(versions_.size());
+    for (const auto &[rowId, _] : versions_) {
+        if (auto row = read(rowId, snapshot, transactions)) {
+            entries.emplace_back(rowId, std::move(*row));
+        }
+    }
+    return entries;
 }
 
 std::size_t MVCCRowStore::versionCount(RowId rowId) const {

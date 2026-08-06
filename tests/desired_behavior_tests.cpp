@@ -12,6 +12,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace VertexDB {
 namespace {
@@ -520,6 +521,65 @@ TEST(DesiredBehaviorTests, UpdateAndDeleteUseFullScanEvenWhenPredicateColumnInde
     ASSERT_EQ(remaining.rows.size(), 2U);
     EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(1)});
     EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
+}
+
+TEST(DesiredBehaviorTests, UncommittedWritesInvisibleUntilCommit) {
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    const auto baseline = transactions.beginCommitted();
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}}, baseline);
+
+    const auto writer = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(99)}, Value{"Zed"}, Value{1.0}}, writer.id);
+
+    auto visible = table.rowsSnapshot(transactions.currentSnapshot(), transactions);
+    ASSERT_EQ(visible.size(), 1U);
+    EXPECT_EQ(visible.front()[0], Value{static_cast<std::int64_t>(1)});
+
+    transactions.commit(writer.id);
+    auto afterCommit = table.rowsSnapshot(transactions.currentSnapshot(), transactions);
+    ASSERT_EQ(afterCommit.size(), 2U);
+}
+
+TEST(DesiredBehaviorTests, SnapshotIsolationHidesCommitsAfterBegin) {
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted());
+
+    const auto reader = transactions.begin();
+    const auto snap = transactions.currentSnapshot(reader.id);
+    EXPECT_EQ(table.rowsSnapshot(snap, transactions).size(), 1U);
+
+    const auto concurrent = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(99)}, Value{"Zed"}, Value{1.0}}, concurrent.id);
+    transactions.commit(concurrent.id);
+
+    auto during = table.rowsSnapshot(snap, transactions);
+    ASSERT_EQ(during.size(), 1U);
+    EXPECT_EQ(during.front()[0], Value{static_cast<std::int64_t>(1)});
+
+    auto latest = table.rowsSnapshot(transactions.currentSnapshot(), transactions);
+    ASSERT_EQ(latest.size(), 2U);
+}
+
+TEST(DesiredBehaviorTests, TransactionReadsOwnUncommittedWrites) {
+    Parser parser;
+    auto executor = makeExecutor("read-own-writes");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (99, \"Zed\", 1.0);")).success);
+    auto own = executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 99;"));
+    ASSERT_TRUE(own.success);
+    ASSERT_EQ(own.rows.size(), 1U);
+    EXPECT_EQ(own.rows[0][0], Value{"Zed"});
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
 }
 
 // --- P3 roadmap placeholders (desired, not yet implemented) -------------
