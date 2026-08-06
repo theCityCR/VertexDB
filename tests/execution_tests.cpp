@@ -191,6 +191,12 @@ TEST(ExecutionTests, SaveLoadPreservesSparseRowIdsAndFreeListReuse) {
     EXPECT_EQ(table->freeList(), std::vector<RowId>{deletedId});
     ASSERT_TRUE(table->hasIndex("id"));
     ASSERT_EQ(table->listIndexes(), (std::vector<std::string>{"idx_id"}));
+    {
+        const auto definitions = table->indexDefinitions();
+        ASSERT_EQ(definitions.size(), 1U);
+        EXPECT_EQ(definitions.front().first, "idx_id");
+        EXPECT_EQ(definitions.front().second, "id");
+    }
     EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(3)}),
               std::vector<RowId>{keptId});
 

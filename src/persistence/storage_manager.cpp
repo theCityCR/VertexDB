@@ -1,10 +1,9 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
-#include <string>
+#include <utility>
 
 namespace VertexDB {
 namespace {
@@ -243,23 +242,22 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
         std::vector<std::pair<std::string, std::string>> indexDefinitions;
         indexDefinitions.reserve(static_cast<std::size_t>(indexCount));
         for (std::uint64_t index = 0; index < indexCount; ++index) {
-            indexDefinitions.emplace_back(readString(in), readString(in));
+            // Read sequentially: argument evaluation order for emplace_back(read(), read())
+            // is unspecified and libstdc++/MSVC evaluate right-to-left, swapping fields.
+            auto indexName = readString(in);
+            auto columnName = readString(in);
+            indexDefinitions.emplace_back(std::move(indexName), std::move(columnName));
         }
 
         // Register indexes before loading rows so replaceRows/replaceSparse rebuilds them.
-        for (const auto &[indexName, columnName] : indexDefinitions) {
-            if (table->createIndex(indexName, columnName)) {
-                continue;
+        for (const auto &definition : indexDefinitions) {
+            const auto &indexName = definition.first;
+            const auto &columnName = definition.second;
+            if (!table->createIndex(indexName, columnName)) {
+                throw std::runtime_error("failed to restore index '" + indexName +
+                                         "' on column '" + columnName + "' for table '" +
+                                         tableName + "'");
             }
-            const auto columnExists = table->columnIndex(columnName).has_value();
-            const auto indexExists = table->listIndexes().end() !=
-                                     std::find(table->listIndexes().begin(),
-                                               table->listIndexes().end(), indexName);
-            throw std::runtime_error(
-                "failed to restore index '" + indexName + "' on column '" + columnName +
-                "' for table '" + tableName + "' (columnExists=" +
-                (columnExists ? "true" : "false") +
-                ", indexExists=" + (indexExists ? "true" : "false") + ")");
         }
 
         if (version == kVersionV1) {
