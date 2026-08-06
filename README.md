@@ -109,7 +109,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 88 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 89 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
   (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
   behavior)

@@ -1,7 +1,9 @@
 #include "VertexDB/storage/database.hpp"
 #include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/persistence/storage_manager.hpp"
 
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <thread>
 #include <vector>
 
@@ -167,6 +169,48 @@ TEST(StorageTests, TableIndexesTrackStableRowIdsAfterMiddleDelete) {
     const auto reused = table.insert({Value{4}, Value{std::string{"Dana"}}});
     EXPECT_EQ(reused, second);
     EXPECT_EQ(table.findIndexed("id", Value{4}), std::vector<RowId>{reused});
+}
+
+TEST(StorageTests, SaveLoadPreservesSparseIndexesAndFreeListReuse) {
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_sparse_index_roundtrip_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(root);
+    StorageManager storage{root};
+
+    RowId keptId = 0;
+    RowId deletedId = 0;
+    {
+        Database database{"company"};
+        ASSERT_TRUE(
+            database.createTable("Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}));
+        auto table = database.table("Employees");
+        ASSERT_TRUE(table->createIndex("idx_id", "id"));
+        (void)table->insert({Value{static_cast<std::int64_t>(1)}, Value{std::string{"Alice"}}});
+        (void)table->insert({Value{static_cast<std::int64_t>(2)}, Value{std::string{"Bob"}}});
+        (void)table->insert({Value{static_cast<std::int64_t>(3)}, Value{std::string{"Cara"}}});
+        const auto beforeDelete = table->liveEntries();
+        ASSERT_EQ(beforeDelete.size(), 3U);
+        deletedId = beforeDelete[1].first;
+        keptId = beforeDelete[2].first;
+        ASSERT_TRUE(table->erase(deletedId));
+        storage.saveDatabase(database);
+    }
+
+    auto loaded = storage.loadDatabase("company");
+    auto table = loaded->table("Employees");
+    ASSERT_NE(table, nullptr);
+    ASSERT_TRUE(table->hasIndex("id"));
+    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(3)}),
+              std::vector<RowId>{keptId});
+    const auto reused =
+        table->insert({Value{static_cast<std::int64_t>(4)}, Value{std::string{"Dana"}}});
+    EXPECT_EQ(reused, deletedId);
+    EXPECT_EQ(table->findIndexed("id", Value{static_cast<std::int64_t>(4)}),
+              std::vector<RowId>{deletedId});
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(StorageTests, ReplaceSparseRestoresCapacityFreeListAndLiveIds) {

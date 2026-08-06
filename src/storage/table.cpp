@@ -257,14 +257,8 @@ bool Table::createIndex(std::string name, std::string column) {
     indexColumns_.emplace(name, *indexColumn);
     indexes_.try_emplace(name);
     orderedIndexes_.try_emplace(name);
-    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
-        const auto *row = rowStore_->get(rowId);
-        if (row == nullptr) {
-            continue;
-        }
-        indexes_.at(name).insert((*row)[*indexColumn], rowId);
-        orderedIndexes_.at(name).insert((*row)[*indexColumn], rowId);
-    }
+    // One rebuild path for CREATE INDEX and snapshot restore.
+    rebuildIndexes();
     return true;
 }
 

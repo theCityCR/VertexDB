@@ -244,13 +244,18 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
             indexDefinitions.emplace_back(readString(in), readString(in));
         }
 
+        // Register indexes before loading rows so replaceRows/replaceSparse rebuilds them.
+        for (const auto &[indexName, columnName] : indexDefinitions) {
+            if (!table->createIndex(indexName, columnName)) {
+                throw std::runtime_error("failed to restore index " + indexName + " on table " +
+                                         tableName);
+            }
+        }
+
         if (version == kVersionV1) {
             loadDenseRows(*table, in, static_cast<std::size_t>(columnCount));
         } else {
             loadSparseRows(*table, in, static_cast<std::size_t>(columnCount));
-        }
-        for (const auto &[indexName, columnName] : indexDefinitions) {
-            table->createIndex(indexName, columnName);
         }
     }
 
