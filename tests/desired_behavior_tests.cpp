@@ -130,6 +130,73 @@ TEST(DesiredBehaviorTests, CommitPersistsTransactionMutations) {
     EXPECT_FALSE(doubleCommit.success);
 }
 
+TEST(DesiredBehaviorTests, RollbackKeepsSameDatabaseInstance) {
+    Parser parser;
+    auto executor = makeExecutor("undo-identity");
+    seedEmployees(executor, parser, true, false);
+
+    const auto databaseBefore = executor.currentDatabase();
+    ASSERT_NE(databaseBefore, nullptr);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (99, \"Zed\", 1.0);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    EXPECT_EQ(executor.currentDatabase(), databaseBefore);
+    auto result = executor.execute(parser.parse("SELECT id FROM Employees WHERE id = 99;"));
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.rows.empty());
+}
+
+TEST(DesiredBehaviorTests, RollbackReversesMixedDmlAndIndexedLookups) {
+    Parser parser;
+    auto executor = makeExecutor("undo-mixed");
+    seedEmployees(executor, parser, true, false);
+
+    auto before = executor.execute(parser.parse("SELECT id, name, salary FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(before.success);
+    ASSERT_EQ(before.rows.size(), 3U);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (4, \"Dana\", 80000.0);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET name = \"Alicia\" WHERE id = 1;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 2;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto after = executor.execute(parser.parse("SELECT id, name, salary FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(after.success);
+    ASSERT_EQ(after.rows.size(), before.rows.size());
+    EXPECT_EQ(after.rows, before.rows);
+
+    auto bob = executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 2;"));
+    ASSERT_TRUE(bob.success);
+    ASSERT_EQ(bob.rows.size(), 1U);
+    EXPECT_EQ(bob.rows.front().front(), Value{std::string{"Bob"}});
+}
+
+TEST(DesiredBehaviorTests, SchemaChangesRejectedWhileTransactionActive) {
+    Parser parser;
+    auto executor = makeExecutor("undo-ddl");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    auto create = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
+    EXPECT_FALSE(create.success);
+    EXPECT_NE(create.message.find("not allowed while a transaction is active"), std::string::npos);
+
+    auto index = executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);"));
+    EXPECT_FALSE(index.success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    auto after = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
+    EXPECT_TRUE(after.success);
+}
+
 // --- P1 -----------------------------------------------------------------
 
 TEST(DesiredBehaviorTests, PageRowStoreMirrorsSerializedPagesIntoBufferPool) {

@@ -9,6 +9,7 @@
 #include <span>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace VertexDB {
@@ -256,12 +257,18 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
 std::shared_ptr<Database> QueryExecutor::currentDatabase() const noexcept { return database_; }
 
 QueryResult QueryExecutor::executeCreateDatabase(const CreateDatabase &command) {
+    if (const auto rejected = rejectIfTransactionActive("CREATE DATABASE"); !rejected.success) {
+        return rejected;
+    }
     appendWal(WalOperation::CreateDatabase, command.name);
     database_ = std::make_shared<Database>(command.name);
     return messageResult(true, "created database " + command.name);
 }
 
 QueryResult QueryExecutor::executeCreateTable(const CreateTable &command) {
+    if (const auto rejected = rejectIfTransactionActive("CREATE TABLE"); !rejected.success) {
+        return rejected;
+    }
     if (!database_) {
         return messageResult(false, "no active database");
     }
@@ -274,6 +281,9 @@ QueryResult QueryExecutor::executeCreateTable(const CreateTable &command) {
 }
 
 QueryResult QueryExecutor::executeDropTable(const DropTable &command) {
+    if (const auto rejected = rejectIfTransactionActive("DROP TABLE"); !rejected.success) {
+        return rejected;
+    }
     if (!database_) {
         return messageResult(false, "no active database");
     }
@@ -285,6 +295,9 @@ QueryResult QueryExecutor::executeDropTable(const DropTable &command) {
 }
 
 QueryResult QueryExecutor::executeRenameTable(const RenameTable &command) {
+    if (const auto rejected = rejectIfTransactionActive("RENAME TABLE"); !rejected.success) {
+        return rejected;
+    }
     if (!database_) {
         return messageResult(false, "no active database");
     }
@@ -316,7 +329,10 @@ QueryResult QueryExecutor::executeInsert(const Insert &command) {
     }
     for (const auto &row : command.rows) {
         appendWal(WalOperation::Insert, insertSql(command.table, row));
-        table->insert(row);
+        const RowId rowId = table->insert(row);
+        if (transactionActive()) {
+            undoLog_.push(UndoRecord{command.table, UndoKind::Insert, rowId, std::nullopt});
+        }
     }
     return messageResult(true, "inserted " + std::to_string(command.rows.size()) + " row(s)");
 }
@@ -400,7 +416,12 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
         if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
+        const Row beforeImage = row;
         if (table->update(rowId, *target, command.value)) {
+            if (transactionActive()) {
+                undoLog_.push(
+                    UndoRecord{command.table, UndoKind::Update, rowId, std::move(beforeImage)});
+            }
             ++count;
         }
     }
@@ -417,7 +438,12 @@ QueryResult QueryExecutor::executeDelete(const Delete &command) {
         if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
+        const Row beforeImage = row;
         if (table->erase(rowId)) {
+            if (transactionActive()) {
+                undoLog_.push(
+                    UndoRecord{command.table, UndoKind::Delete, rowId, std::move(beforeImage)});
+            }
             ++count;
         }
     }
@@ -428,6 +454,9 @@ QueryResult QueryExecutor::executeDelete(const Delete &command) {
 }
 
 QueryResult QueryExecutor::executeCreateIndex(const CreateIndex &command) {
+    if (const auto rejected = rejectIfTransactionActive("CREATE INDEX"); !rejected.success) {
+        return rejected;
+    }
     auto table = requireTable(command.table);
     const bool created = table->createIndex(command.name, command.column);
     if (created) {
@@ -438,6 +467,9 @@ QueryResult QueryExecutor::executeCreateIndex(const CreateIndex &command) {
 }
 
 QueryResult QueryExecutor::executeSaveDatabase() {
+    if (const auto rejected = rejectIfTransactionActive("SAVE DATABASE"); !rejected.success) {
+        return rejected;
+    }
     if (!database_) {
         return messageResult(false, "no active database");
     }
@@ -448,6 +480,9 @@ QueryResult QueryExecutor::executeSaveDatabase() {
 }
 
 QueryResult QueryExecutor::executeLoadDatabase(const LoadDatabase &command) {
+    if (const auto rejected = rejectIfTransactionActive("LOAD DATABASE"); !rejected.success) {
+        return rejected;
+    }
     if (command.name) {
         database_ = storageManager_.loadDatabase(*command.name);
     } else if (database_) {
@@ -455,7 +490,8 @@ QueryResult QueryExecutor::executeLoadDatabase(const LoadDatabase &command) {
     } else {
         database_ = storageManager_.loadFirstDatabase();
     }
-    transactionSnapshot_.reset();
+    undoLog_.clear();
+    activeTransaction_.reset();
     return messageResult(true, "loaded database " + database_->name());
 }
 
@@ -463,38 +499,34 @@ QueryResult QueryExecutor::executeBegin() {
     if (!database_) {
         return messageResult(false, "no active database");
     }
-    if (transactionSnapshot_) {
+    if (transactionActive()) {
         return messageResult(false, "transaction already active");
     }
     activeTransaction_ = transactionManager_.begin().id;
-    transactionSnapshot_ = database_->clone();
+    undoLog_.clear();
     return messageResult(true, "began transaction");
 }
 
 QueryResult QueryExecutor::executeCommit() {
-    if (!transactionSnapshot_) {
+    if (!transactionActive()) {
         return messageResult(false, "no active transaction");
-    }
-    if (!activeTransaction_) {
-        return messageResult(false, "transaction state is inconsistent");
     }
     transactionManager_.commit(*activeTransaction_);
     activeTransaction_.reset();
-    transactionSnapshot_.reset();
+    undoLog_.clear();
     return messageResult(true, "committed transaction");
 }
 
 QueryResult QueryExecutor::executeRollback() {
-    if (!transactionSnapshot_) {
+    if (!transactionActive()) {
         return messageResult(false, "no active transaction");
     }
-    if (!activeTransaction_) {
-        return messageResult(false, "transaction state is inconsistent");
+    while (auto record = undoLog_.pop()) {
+        applyUndoRecord(*record);
     }
     transactionManager_.rollback(*activeTransaction_);
     activeTransaction_.reset();
-    database_ = transactionSnapshot_;
-    transactionSnapshot_.reset();
+    undoLog_.clear();
     return messageResult(true, "rolled back transaction");
 }
 
@@ -862,6 +894,39 @@ std::vector<Row> QueryExecutor::rowsByIdForRead(const Table &table,
         return table.rowsById(rowIds, *version);
     }
     return table.rowsById(rowIds);
+}
+
+bool QueryExecutor::transactionActive() const noexcept { return activeTransaction_.has_value(); }
+
+QueryResult QueryExecutor::rejectIfTransactionActive(std::string_view action) const {
+    if (!transactionActive()) {
+        return messageResult(true, {});
+    }
+    return messageResult(false, std::string(action) + " is not allowed while a transaction is active");
+}
+
+void QueryExecutor::applyUndoRecord(const UndoRecord &record) {
+    auto table = database_->table(record.tableName);
+    if (!table) {
+        throw std::runtime_error("undo references unknown table " + record.tableName);
+    }
+    switch (record.kind) {
+    case UndoKind::Insert:
+        if (!table->eraseDiscardingVersion(record.rowId)) {
+            throw std::runtime_error("failed to undo insert");
+        }
+        break;
+    case UndoKind::Update:
+        if (!record.beforeImage || !table->replaceRow(record.rowId, *record.beforeImage)) {
+            throw std::runtime_error("failed to undo update");
+        }
+        break;
+    case UndoKind::Delete:
+        if (!record.beforeImage || !table->revive(record.rowId, *record.beforeImage)) {
+            throw std::runtime_error("failed to undo delete");
+        }
+        break;
+    }
 }
 
 void QueryExecutor::recoverFromStorage() {

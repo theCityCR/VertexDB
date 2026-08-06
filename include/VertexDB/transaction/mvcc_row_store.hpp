@@ -21,6 +21,9 @@ class MVCCRowStore {
     void write(RowId rowId, Row row, TransactionId transactionId);
     void erase(RowId rowId, TransactionId transactionId);
     void clear();
+    // Compensating helpers for undo-log rollback of Table mutations.
+    [[nodiscard]] bool popLatestVersion(RowId rowId);
+    [[nodiscard]] bool clearLatestDeletedBy(RowId rowId);
     [[nodiscard]] std::optional<Row> read(RowId rowId, TransactionId readerId) const;
     [[nodiscard]] std::vector<Row> visibleRows(TransactionId readerId) const;
     [[nodiscard]] std::vector<Row> visibleRowsById(std::span<const RowId> rowIds,

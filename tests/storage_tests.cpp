@@ -187,6 +187,24 @@ TEST(StorageTests, ReplaceSparseRestoresCapacityFreeListAndLiveIds) {
     }
 }
 
+TEST(StorageTests, ReviveRestoresExactRowIdFromFreeList) {
+    for (auto makeStore : {makeVectorRowStore, makePageRowStore}) {
+        auto store = makeStore();
+        const auto first = store->append({Value{1}});
+        const auto second = store->append({Value{2}});
+        ASSERT_TRUE(store->erase(first));
+        EXPECT_EQ(store->get(first), nullptr);
+
+        ASSERT_TRUE(store->revive(first, {Value{11}}));
+        ASSERT_NE(store->get(first), nullptr);
+        EXPECT_EQ((*store->get(first))[0], Value{11});
+        EXPECT_EQ(store->size(), 2U);
+        EXPECT_TRUE(store->freeList().empty());
+        EXPECT_EQ(store->get(second)->front(), Value{2});
+        EXPECT_FALSE(store->revive(second, {Value{99}}));
+    }
+}
+
 TEST(StorageTests, SupportsConcurrentInserts) {
     Table table{"Events", {{"id", ColumnType::Int}}};
     constexpr int threadCount = 4;

@@ -188,6 +188,53 @@ bool Table::update(RowId rowId, std::size_t index, Value value) {
     return true;
 }
 
+bool Table::eraseDiscardingVersion(RowId rowId) {
+    std::unique_lock lock{mutex_};
+    if (rowStore_->get(rowId) == nullptr) {
+        return false;
+    }
+    if (!rowStore_->erase(rowId)) {
+        return false;
+    }
+    (void)versions_.popLatestVersion(rowId);
+    rebuildIndexes();
+    return true;
+}
+
+bool Table::replaceRow(RowId rowId, Row row) {
+    validateRow(row);
+    std::unique_lock lock{mutex_};
+    if (rowStore_->get(rowId) == nullptr) {
+        return false;
+    }
+    if (!rowStore_->update(rowId, std::move(row))) {
+        return false;
+    }
+    (void)versions_.popLatestVersion(rowId);
+    rebuildIndexes();
+    return true;
+}
+
+bool Table::revive(RowId rowId, Row row) {
+    validateRow(row);
+    std::unique_lock lock{mutex_};
+    if (!rowStore_->revive(rowId, std::move(row))) {
+        return false;
+    }
+    (void)versions_.clearLatestDeletedBy(rowId);
+    rebuildIndexes();
+    return true;
+}
+
+std::optional<Row> Table::getRow(RowId rowId) const {
+    std::shared_lock lock{mutex_};
+    const auto *row = rowStore_->get(rowId);
+    if (row == nullptr) {
+        return std::nullopt;
+    }
+    return *row;
+}
+
 bool Table::createIndex(std::string name, std::string column) {
     auto indexColumn = columnIndex(column);
     if (!indexColumn) {

@@ -40,6 +40,7 @@ add_library(VertexDB
     src/persistence/write_ahead_log.cpp
     src/transaction/mvcc_row_store.cpp
     src/transaction/transaction_manager.cpp
+    src/transaction/undo_log.cpp
 )
 
 add_library(VertexDB::VertexDB ALIAS VertexDB)
