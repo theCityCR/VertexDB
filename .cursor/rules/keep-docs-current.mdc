@@ -1,0 +1,27 @@
+---
+description: Keep docs in sync whenever product behavior or roadmap changes
+alwaysApply: true
+---
+
+# Keep Documentation Current
+
+Whenever this project is updated, update the relevant documentation in the same change.
+
+## What to update
+
+Match docs to the change:
+
+| Kind of change | Typical docs |
+| --- | --- |
+| Features, limitations, roadmap | `README.md`, `docs/design.md`, `docs/architecture.md`, `docs/deep_features.md` |
+| SQL syntax or semantics | `docs/sql.md`, examples under `examples/` when user-facing |
+| Tests, coverage, quality gates | `docs/testing.md`, `README.md` test/coverage counts when they change |
+| Benchmarks or perf claims | `docs/benchmarks.md` |
+| Demo / wedge packaging | `docs/cte_index_wedge.md`, related comparison docs |
+
+## Rules
+
+- Do not ship behavior, API, or roadmap changes with stale docs that still describe the old design.
+- Prefer editing existing docs over adding new markdown files unless a new topic needs its own page.
+- Keep counts and status lines honest (test counts, “next step”, known limitations).
+- Documentation updates belong in the same commit as the code when practical.

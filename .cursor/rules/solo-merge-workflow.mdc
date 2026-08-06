@@ -1,16 +1,22 @@
 ---
-description: Solo workflow — merge directly, skip pull requests
+description: Solo workflow — work on main, skip branches and PRs
 alwaysApply: true
 ---
 
-# Solo Merge Workflow
+# Solo Main-Branch Workflow
 
-This is a single-maintainer project. Do not open pull requests unless explicitly asked.
+This is a single-maintainer project. Prefer the simplest git flow.
 
-When work on a feature branch is complete:
+## Branching
 
-1. Merge the branch into the default branch (`main`) locally
-2. Do not run `gh pr create` unless the user asks for a PR
-3. Do not push unless the user asks to push
+- Work and commit directly on `main` by default.
+- Do **not** create a feature branch for each change unless the user asks for one.
+- Do not open pull requests unless explicitly asked.
 
-Prefer small feature branches for isolation, then merge them into `main` when the unit of work is done.
+## When a branch already exists
+
+If work is already on a feature branch, finish it there, then merge into `main` locally. Do not leave completed work stranded on a side branch.
+
+## Pushing
+
+Do not push unless the user asks to push.
