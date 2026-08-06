@@ -51,6 +51,21 @@ bool VectorRowStore::revive(RowId rowId, Row row) {
     return true;
 }
 
+bool VectorRowStore::upsertAt(RowId rowId, Row row) {
+    if (rowId < rows_.size()) {
+        if (rows_[rowId].has_value()) {
+            return update(rowId, std::move(row));
+        }
+        return revive(rowId, std::move(row));
+    }
+    if (rowId != rows_.size()) {
+        return false;
+    }
+    rows_.push_back(std::move(row));
+    ++liveCount_;
+    return true;
+}
+
 const Row *VectorRowStore::get(RowId rowId) const {
     if (rowId >= rows_.size() || !rows_[rowId].has_value()) {
         return nullptr;

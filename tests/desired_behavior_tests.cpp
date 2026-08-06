@@ -9,7 +9,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -659,13 +662,10 @@ TEST(DesiredBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
     }
 
     const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
-    ASSERT_EQ(records.size(), 6U);
+    ASSERT_EQ(records.size(), 3U);
     EXPECT_EQ(records[0].operation, WalOperation::CreateDatabase);
     EXPECT_EQ(records[1].operation, WalOperation::CreateTable);
-    EXPECT_EQ(records[2].operation, WalOperation::Insert);
-    EXPECT_EQ(records[3].operation, WalOperation::Insert);
-    EXPECT_EQ(records[4].operation, WalOperation::Update);
-    EXPECT_EQ(records[5].operation, WalOperation::Delete);
+    EXPECT_EQ(records[2].operation, WalOperation::PhysicalRedo);
 
     QueryExecutor recovered{root};
     auto result =
@@ -678,11 +678,215 @@ TEST(DesiredBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
     std::filesystem::remove_all(root);
 }
 
-// --- P3 roadmap placeholders (desired, not yet implemented) -------------
+// --- Physical WAL redo and crash/partial-write recovery -------------------
 
-TEST(DesiredBehaviorTests, RoadmapPhysicalWalRedoNotImplemented) {
-    GTEST_SKIP() << "Desired: physical redo records and crash/partial-write recovery tests; "
-                    "current WAL is logical SQL replay only.";
+TEST(DesiredBehaviorTests, PhysicalRedoRecoversInsertUpdateDeleteWithoutSqlPayload) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-physical-redo-recover";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), "
+                            "(2, \"Bob\", 90000.0);"))
+                        .success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("UPDATE Employees SET salary = 150000.0 WHERE id = 1;"))
+                .success);
+        ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 2;")).success);
+    }
+
+    const auto records = WriteAheadLog{root / "VertexDB.wal"}.readAll();
+    ASSERT_GE(records.size(), 4U);
+    std::size_t physicalCount = 0;
+    for (const auto &record : records) {
+        if (record.operation == WalOperation::PhysicalRedo) {
+            ++physicalCount;
+            // Physical payloads are binary row images, not SQL text.
+            EXPECT_EQ(record.payload.find("INSERT"), std::string::npos);
+            EXPECT_EQ(record.payload.find("UPDATE"), std::string::npos);
+            EXPECT_EQ(record.payload.find("DELETE"), std::string::npos);
+        } else if (record.operation == WalOperation::Insert ||
+                   record.operation == WalOperation::Update ||
+                   record.operation == WalOperation::Delete) {
+            ADD_FAILURE() << "DML should use PhysicalRedo, not legacy logical SQL ops";
+        }
+    }
+    EXPECT_EQ(physicalCount, 4U);
+
+    QueryExecutor recovered{root};
+    auto result =
+        recovered.execute(parser.parse("SELECT id, name, salary FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[0][1], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][2], Value{150000.0});
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, TruncatedTrailingWalRecordIsIgnoredDuringRecovery) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-partial-write";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE TABLE Events (id INT, label STRING);")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Events VALUES (1, \"ok\");")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Events VALUES (2, \"durable\");")).success);
+    }
+
+    const auto walPath = root / "VertexDB.wal";
+    const auto complete = WriteAheadLog{walPath}.readAll();
+    ASSERT_EQ(complete.size(), 4U);
+
+    // Simulate a crash mid-append: keep complete records, then append a torn trailing fragment.
+    {
+        std::ofstream out{walPath, std::ios::binary | std::ios::app};
+        ASSERT_TRUE(out);
+        const char torn[] = {'T', 'C', 'W', 'A', '\x01', '\x00'}; // incomplete header
+        out.write(torn, sizeof(torn));
+        ASSERT_TRUE(out);
+    }
+
+    EXPECT_EQ(WriteAheadLog{walPath}.readAll().size(), complete.size());
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id, label FROM Events ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[0][1], Value{"ok"});
+    EXPECT_EQ(result.rows[1][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(result.rows[1][1], Value{"durable"});
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, TruncatedWalPayloadKeepsPriorPhysicalRedo) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-torn-payload";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Events (id INT);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Events VALUES (1);")).success);
+    }
+
+    const auto walPath = root / "VertexDB.wal";
+    ASSERT_EQ(WriteAheadLog{walPath}.readAll().size(), 3U);
+
+    // Append a record header that claims a large payload, then write only a few bytes (torn body).
+    {
+        std::ofstream out{walPath, std::ios::binary | std::ios::app};
+        ASSERT_TRUE(out);
+        const std::uint32_t magic = 0x54435741;
+        const std::uint32_t version = 1;
+        const std::uint64_t lsn = 99;
+        const std::uint8_t op = static_cast<std::uint8_t>(WalOperation::PhysicalRedo);
+        const std::uint64_t claimedPayload = 1024;
+        out.write(reinterpret_cast<const char *>(&magic), sizeof(magic));
+        out.write(reinterpret_cast<const char *>(&version), sizeof(version));
+        out.write(reinterpret_cast<const char *>(&lsn), sizeof(lsn));
+        out.write(reinterpret_cast<const char *>(&op), sizeof(op));
+        out.write(reinterpret_cast<const char *>(&claimedPayload), sizeof(claimedPayload));
+        const char fragment[] = {'x', 'y', 'z'};
+        out.write(fragment, sizeof(fragment));
+        ASSERT_TRUE(out);
+    }
+
+    EXPECT_EQ(WriteAheadLog{walPath}.readAll().size(), 3U);
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id FROM Events;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, TornTransactionBatchDoesNotPartiallyApply) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-torn-txn-batch";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Events (id INT);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Events VALUES (1);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Events VALUES (2);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Events VALUES (3);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    const auto walPath = root / "VertexDB.wal";
+    auto records = WriteAheadLog{walPath}.readAll();
+    ASSERT_EQ(records.size(), 4U);
+    EXPECT_EQ(records[3].operation, WalOperation::PhysicalRedo);
+    ASSERT_GT(records[3].payload.size(), 8U);
+
+    // Truncate the durable transaction batch mid-payload (crash during COMMIT flush).
+    {
+        std::ifstream in{walPath, std::ios::binary};
+        ASSERT_TRUE(in);
+        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        // Drop half of the final record's payload bytes while keeping prior records intact.
+        const auto keep = bytes.size() - (records[3].payload.size() / 2);
+        ASSERT_LT(keep, bytes.size());
+        std::ofstream out{walPath, std::ios::binary | std::ios::trunc};
+        ASSERT_TRUE(out);
+        out.write(bytes.data(), static_cast<std::streamsize>(keep));
+    }
+
+    EXPECT_EQ(WriteAheadLog{walPath}.readAll().size(), 3U);
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id FROM Events ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, LegacyLogicalInsertWalStillReplays) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-legacy-logical-wal";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    WriteAheadLog wal{root / "VertexDB.wal"};
+    wal.reset();
+    (void)wal.append(WalOperation::CreateDatabase, "company");
+    (void)wal.append(WalOperation::CreateTable,
+                     "CREATE TABLE Employees (id INT, name STRING);");
+    (void)wal.append(WalOperation::Insert, "INSERT INTO Employees VALUES (7, \"Legacy\");");
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id, name FROM Employees;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(7)});
+    EXPECT_EQ(result.rows[0][1], Value{"Legacy"});
+    std::filesystem::remove_all(root);
 }
 
 TEST(DesiredBehaviorTests, IncrementalBTreeSplitMergeMaintainsStructuralInvariants) {

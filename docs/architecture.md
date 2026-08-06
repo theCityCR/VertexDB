@@ -86,9 +86,10 @@ On `LOAD`, indexes are registered on each table before sparse (or legacy dense) 
 ## Current Limitations
 
 - Database snapshots persist typed sparse rows rather than raw page files on disk.
-- WAL recovery is logical SQL replay, not physical page redo.
+- WAL recovery applies physical row-image redo for DML (DDL remains logical SQL); trailing torn
+  WAL records are skipped. Page-image redo awaits page-backed snapshots.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
-  DML WAL records are deferred until `COMMIT` and dropped on `ROLLBACK`.
+  DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped on `ROLLBACK`.
 - Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows.
 
 ## Current Data Flow

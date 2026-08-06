@@ -13,11 +13,12 @@ enum class WalOperation : std::uint8_t {
     CreateTable,
     DropTable,
     RenameTable,
-    Insert,
-    Update,
-    Delete,
+    Insert,  // legacy logical SQL; new DML uses PhysicalRedo
+    Update,  // legacy logical SQL; new DML uses PhysicalRedo
+    Delete,  // legacy logical SQL; new DML uses PhysicalRedo
     CreateIndex,
     SaveDatabase,
+    PhysicalRedo,
 };
 
 struct WalRecord {

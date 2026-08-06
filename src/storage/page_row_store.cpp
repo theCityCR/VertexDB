@@ -154,6 +154,25 @@ bool PageRowStore::revive(RowId rowId, Row row) {
     return true;
 }
 
+bool PageRowStore::upsertAt(RowId rowId, Row row) {
+    if (rowId < slots_.size()) {
+        if (slots_[rowId].live) {
+            return update(rowId, std::move(row));
+        }
+        return revive(rowId, std::move(row));
+    }
+    if (rowId != slots_.size()) {
+        return false;
+    }
+    const PageId pageId = rowId / rowsPerPage_ + 1;
+    auto pageRows = loadPageRows(pageId);
+    pageRows.push_back(std::move(row));
+    slots_.push_back(Slot{pageId, pageRows.size() - 1, true});
+    storePage(pageId, pageRows);
+    ++liveCount_;
+    return true;
+}
+
 const Row *PageRowStore::get(RowId rowId) const {
     if (rowId >= slots_.size() || !slots_[rowId].live) {
         return nullptr;

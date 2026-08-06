@@ -228,6 +228,31 @@ TEST(DeepFeatureTests, WriteAheadLogContinuesLsnAfterReopen) {
     std::filesystem::remove_all(root);
 }
 
+TEST(DeepFeatureTests, WriteAheadLogIgnoresTruncatedTrailingRecord) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_wal_trunc_test_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto path = root / "test.wal";
+
+    WriteAheadLog wal{path};
+    wal.reset();
+    EXPECT_EQ(wal.append(WalOperation::CreateDatabase, "company"), 1U);
+    EXPECT_EQ(wal.append(WalOperation::PhysicalRedo, "complete"), 2U);
+
+    {
+        std::ofstream out{path, std::ios::binary | std::ios::app};
+        ASSERT_TRUE(out);
+        const char torn[] = {'T', 'C', 'W'};
+        out.write(torn, sizeof(torn));
+    }
+
+    const auto records = WriteAheadLog{path}.readAll();
+    ASSERT_EQ(records.size(), 2U);
+    EXPECT_EQ(records[1].payload, "complete");
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"salary", ColumnType::Double}}};
     table.insert({Value{1}, Value{100000.0}});

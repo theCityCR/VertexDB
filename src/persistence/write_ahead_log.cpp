@@ -46,20 +46,33 @@ std::vector<WalRecord> WriteAheadLog::readAll() const {
         return records;
     }
 
+    // Complete records only: a torn trailing write (crash mid-append) is ignored so recovery can
+    // replay the durable prefix. Mid-file corruption also stops reading at the first bad record.
     while (in.peek() != std::ifstream::traits_type::eof()) {
-        const auto magic = readPod<std::uint32_t>(in, kWalIoError);
-        const auto version = readPod<std::uint32_t>(in, kWalIoError);
-        if (magic != kWalMagic || version != kWalVersion) {
-            throw std::runtime_error("invalid WAL record header");
+        std::uint32_t magic = 0;
+        std::uint32_t version = 0;
+        try {
+            magic = readPod<std::uint32_t>(in, kWalIoError);
+            version = readPod<std::uint32_t>(in, kWalIoError);
+        } catch (const std::exception &) {
+            break;
         }
+        if (magic != kWalMagic || version != kWalVersion) {
+            break;
+        }
+
         WalRecord record;
-        record.lsn = readPod<std::uint64_t>(in, kWalIoError);
-        record.operation = static_cast<WalOperation>(readPod<std::uint8_t>(in, kWalIoError));
-        const auto payloadSize = readPod<std::uint64_t>(in, kWalIoError);
-        record.payload.resize(static_cast<std::size_t>(payloadSize));
-        in.read(record.payload.data(), static_cast<std::streamsize>(record.payload.size()));
-        if (!in) {
-            throw std::runtime_error("truncated WAL payload");
+        try {
+            record.lsn = readPod<std::uint64_t>(in, kWalIoError);
+            record.operation = static_cast<WalOperation>(readPod<std::uint8_t>(in, kWalIoError));
+            const auto payloadSize = readPod<std::uint64_t>(in, kWalIoError);
+            record.payload.resize(static_cast<std::size_t>(payloadSize));
+            in.read(record.payload.data(), static_cast<std::streamsize>(record.payload.size()));
+            if (!in || static_cast<std::size_t>(in.gcount()) != record.payload.size()) {
+                break;
+            }
+        } catch (const std::exception &) {
+            break;
         }
         records.push_back(std::move(record));
     }

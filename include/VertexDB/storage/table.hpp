@@ -58,6 +58,9 @@ class Table {
     bool eraseDiscardingVersion(RowId rowId);
     bool replaceRow(RowId rowId, Row row);
     bool revive(RowId rowId, Row row);
+    // Apply a physical redo after-image or erase during WAL recovery.
+    bool applyPhysicalUpsert(RowId rowId, Row row);
+    bool applyPhysicalErase(RowId rowId);
     [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     bool createIndex(std::string name, std::string column);
     void replaceRows(std::vector<Row> rows);
