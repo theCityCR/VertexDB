@@ -38,8 +38,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   deserializing row slots from page bytes.
 - `VectorRowStore` remains available as a simple in-memory implementation for focused tests and
   comparisons.
-- Hash indexes provide fast equality lookup. `BTreeIndex` provides ordered lookup APIs and keeps
-  explicit node/page metadata, rebuilding its shallow layout from ordered entries lazily on read.
+- Hash indexes provide fast equality lookup. `BTreeIndex` provides ordered lookup APIs and maintains
+  an incremental B+ tree (leaf/internal split and merge) with explicit node/page metadata.
 - The executor uses a rule-based planner that picks the cheapest indexable conjunct from `AND`
   trees (heuristic costs: equality ≈ 1, range ≈ N/3, `IN` ≈ value count) and selects a full scan,
   hash index equality lookup, ordered index range lookup, or hash index `IN` lookup, with residual
@@ -61,8 +61,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 ## Known Limitations
 
 - Database snapshots still serialize typed sparse rows rather than persisting raw page files.
-- B+ tree mutations mark layout dirty and rebuild node layout lazily on the next read rather than
-  incrementally splitting and merging pages.
+- Index pages are not persisted in snapshots; SAVE/LOAD rebuilds indexes from restored rows.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - WAL records are logical and replay SQL operations; there is no physical redo log yet.
 - The planner uses hardcoded heuristic costs and does not collect table/index statistics or perform
@@ -74,12 +73,11 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Implement incremental B+ tree page split/merge logic with invariants tests.
-2. Harden recovery with physical redo records and crash-simulation regression tests.
-3. Add statistics to tables and indexes, then evolve the planner toward a cost model.
-4. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
-5. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
-6. Turn benchmark output into documented reports and trend comparisons.
+1. Harden recovery with physical redo records and crash-simulation regression tests.
+2. Add statistics to tables and indexes, then evolve the planner toward a cost model.
+3. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
+4. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.
+5. Turn benchmark output into documented reports and trend comparisons.
 
 ### CTE index wedge (parallel track) — first milestone shipped
 

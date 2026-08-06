@@ -2,8 +2,10 @@
 
 #include "VertexDB/storage/row.hpp"
 
-#include <map>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace VertexDB {
@@ -21,7 +23,7 @@ struct BTreeNode {
 
 class BTreeIndex {
   public:
-    explicit BTreeIndex(std::size_t maxKeysPerLeaf = 64);
+    explicit BTreeIndex(std::size_t maxKeysPerNode = 64);
 
     void insert(const Value &key, RowId rowId);
     void remove(const Value &key, RowId rowId);
@@ -36,14 +38,40 @@ class BTreeIndex {
     [[nodiscard]] std::vector<BTreeNode> nodesSnapshot() const;
 
   private:
-    void rebuildLayout() const;
-    void ensureLayout() const;
+    [[nodiscard]] BTreePageId allocatePage();
+    void freePage(BTreePageId pageId);
+    [[nodiscard]] BTreeNode &node(BTreePageId pageId);
+    [[nodiscard]] const BTreeNode &node(BTreePageId pageId) const;
+    [[nodiscard]] BTreePageId childFor(const BTreeNode &internal, const Value &key) const;
+    [[nodiscard]] std::size_t childIndex(const BTreeNode &internal, const Value &key) const;
+    [[nodiscard]] std::size_t minKeys() const noexcept;
+    [[nodiscard]] BTreePageId leftmostLeaf() const;
+    [[nodiscard]] std::vector<BTreePageId> pathToLeaf(const Value &key) const;
+
+    void insertIntoLeaf(std::vector<BTreePageId> &path, const Value &key, RowId rowId);
+    void splitLeaf(std::vector<BTreePageId> &path);
+    void splitInternal(std::vector<BTreePageId> &path);
+    void insertSeparator(std::vector<BTreePageId> &path, const Value &separator,
+                         BTreePageId rightChild);
+
+    void removeFromLeaf(std::vector<BTreePageId> &path, const Value &key, RowId rowId);
+    void rebalanceAfterDelete(std::vector<BTreePageId> &path);
+    void mergeLeaves(BTreePageId parentId, std::size_t leftChildIndex);
+    void mergeInternals(BTreePageId parentId, std::size_t leftChildIndex);
+    void borrowFromLeftLeaf(BTreePageId parentId, std::size_t childIndex);
+    void borrowFromRightLeaf(BTreePageId parentId, std::size_t childIndex);
+    void borrowFromLeftInternal(BTreePageId parentId, std::size_t childIndex);
+    void borrowFromRightInternal(BTreePageId parentId, std::size_t childIndex);
+    void collapseRootIfNeeded();
+    void updateSeparator(BTreePageId parentId, std::size_t childIndex, const Value &separator);
 
     // Table::mutex_ serializes access; keep BTreeIndex movable for map storage.
-    std::map<Value, std::vector<RowId>> entries_;
-    std::size_t maxKeysPerLeaf_;
-    mutable std::vector<BTreeNode> nodes_;
-    mutable bool layoutDirty_{true};
+    std::size_t maxKeysPerNode_;
+    std::unordered_map<BTreePageId, BTreeNode> nodes_;
+    std::vector<BTreePageId> freePageIds_;
+    BTreePageId rootPageId_{1};
+    BTreePageId nextPageId_{2};
+    std::size_t keyCount_{0};
 };
 
 } // namespace VertexDB

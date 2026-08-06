@@ -65,10 +65,9 @@ live `(rowId, row)` entries so IDs survive save/load. `VectorRowStore` remains a
 in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata
-with page ids, leaf links, root children, separator keys, and row-id payloads in leaves. Lookup and
-range reads use the leaf payloads; ordered entries remain as the mutation staging structure that
-keeps node rebuilds deterministic. Mutations mark the layout dirty; rebuild runs lazily on the next
-read (`ensureLayout`).
+with page ids, leaf links, internal children, separator keys, and row-id payloads in leaves. Inserts
+and deletes split and merge nodes incrementally; point lookups descend from the root and range scans
+follow linked leaves.
 
 `Table` exposes transaction-aware snapshots through `rowsSnapshot(ReadSnapshot, TransactionManager)`
 and `rowsById(..., ReadSnapshot, TransactionManager)`. The executor stamps DML with SQL transaction
@@ -83,11 +82,10 @@ On `LOAD`, indexes are registered on each table before sparse (or legacy dense) 
 ## Current Limitations
 
 - Database snapshots persist typed sparse rows rather than raw page files on disk.
-- `BTreeIndex` uses leaf payloads for reads but rebuilds a shallow layout lazily on read rather than
-  splitting and merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
   DML WAL records are deferred until `COMMIT` and dropped on `ROLLBACK`.
+- Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows.
 
 ## Current Data Flow
 

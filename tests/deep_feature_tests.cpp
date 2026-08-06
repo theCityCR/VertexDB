@@ -17,6 +17,9 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <stdexcept>
+#include <unordered_map>
+#include <vector>
 
 namespace VertexDB {
 
@@ -31,9 +34,8 @@ TEST(DeepFeatureTests, BTreeIndexSupportsRangeLookup) {
     EXPECT_EQ(index.greaterThan(Value{1}), (std::vector<RowId>{20, 30}));
 }
 
-TEST(DeepFeatureTests, BTreeIndexRebuildLayoutKeepsValidLinkedTreeInvariants) {
-    // Current design rebuilds shallow layout on write (docs). Assert durable B+ invariants for
-    // this fanout, not a permanent golden height/leaf count for incremental split/merge.
+TEST(DeepFeatureTests, BTreeIndexIncrementalLayoutKeepsValidLinkedTreeInvariants) {
+    // Fanout 2 forces leaf/internal splits; assert durable B+ invariants, not exact height.
     BTreeIndex index{2};
     index.insert(Value{1}, 10);
     index.insert(Value{2}, 20);
@@ -54,10 +56,44 @@ TEST(DeepFeatureTests, BTreeIndexRebuildLayoutKeepsValidLinkedTreeInvariants) {
         if (node.leaf && node.nextLeaf.has_value()) {
             ++leafLinks;
         }
+        if (node.leaf) {
+            EXPECT_LE(node.keys.size(), 2U);
+            EXPECT_EQ(node.keys.size(), node.rowIds.size());
+        } else {
+            EXPECT_EQ(node.children.size(), node.keys.size() + 1);
+            EXPECT_LE(node.keys.size(), 2U);
+        }
     }
     EXPECT_GE(leafLinks, 1U);
     EXPECT_FALSE(nodes.back().leaf);
     EXPECT_FALSE(nodes.back().children.empty());
+}
+
+TEST(DeepFeatureTests, BTreeIndexMergeAfterDeletesCollapsesHeight) {
+    BTreeIndex index{2};
+    for (int key = 1; key <= 16; ++key) {
+        index.insert(Value{key}, static_cast<RowId>(key));
+    }
+    EXPECT_GE(index.height(), 3U);
+    EXPECT_EQ(index.size(), 16U);
+
+    for (int key = 1; key <= 15; ++key) {
+        index.remove(Value{key}, static_cast<RowId>(key));
+    }
+    EXPECT_EQ(index.size(), 1U);
+    EXPECT_EQ(index.find(Value{16}), std::vector<RowId>{16});
+    EXPECT_TRUE(index.lessThan(Value{16}).empty());
+    EXPECT_TRUE(index.greaterThan(Value{16}).empty());
+
+    index.remove(Value{16}, 16);
+    EXPECT_EQ(index.size(), 0U);
+    EXPECT_EQ(index.height(), 1U);
+    EXPECT_EQ(index.leafPageCount(), 1U);
+}
+
+TEST(DeepFeatureTests, BTreeIndexRejectsCapacityBelowTwo) {
+    EXPECT_THROW((void)BTreeIndex{0}, std::invalid_argument);
+    EXPECT_THROW((void)BTreeIndex{1}, std::invalid_argument);
 }
 
 TEST(DeepFeatureTests, BTreeIndexReadsFromLeafPayloadsAfterMutation) {

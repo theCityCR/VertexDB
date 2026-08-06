@@ -65,8 +65,8 @@ Optional follow-up: add the same `EXPLAIN` block to `examples/company.sql`.
 high-salary) via `Table::insert`, then asserts `EXPLAIN` still chooses hash index lookup + inlined
 CTE + residual (not a full scan) and that the win query returns Alice through the executor.
 
-`createIndex` at this scale relies on deferred B+ tree layout rebuild (layout rebuilt on read, not
-on every key insert). The CTE microbenchmark can push toward 100k rows.
+`createIndex` at this scale inserts into hash and B+ tree indexes incrementally (B+ tree split/merge
+as keys are added). The CTE microbenchmark can push toward 100k rows.
 
 ### 3. Microbenchmark — done
 

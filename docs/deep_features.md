@@ -2,20 +2,20 @@
 
 ## B+ Tree Index
 
-The first implementation exposes B+ tree behavior through an ordered index API:
+The B+ tree exposes an ordered index API:
 
 - point lookup
 - less-than range lookup
 - greater-than range lookup
 - ordered row id storage per key
 
-Internally it maintains explicit B+ tree layout metadata: leaf page ids, linked leaves, root
-children, separator keys, and row-id payloads in leaves. Point and range reads walk the leaf payloads.
-Ordered entries are retained as the mutation staging structure; leaf/internal layout is rebuilt
-lazily on read until full incremental split/merge logic is warranted.
+Internally it maintains explicit B+ tree layout metadata: leaf page ids, linked leaves, internal
+children, separator keys, and row-id payloads in leaves. Inserts and deletes split and merge leaf
+and internal nodes incrementally (fanout defaults to 64; capacity must be at least 2). Point lookups
+descend from the root; range scans follow `nextLeaf` links.
 
-Next step: replace rebuild-on-read shallow layout with incremental leaf/internal-page split and
-merge logic.
+Next step: persist index pages with the on-disk snapshot format (indexes are still rebuilt from row
+data on load).
 
 ## Write-Ahead Log
 
