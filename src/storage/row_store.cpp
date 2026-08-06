@@ -384,12 +384,13 @@ std::optional<std::vector<std::byte>> PageRowStore::directoryBytes(PageId pageId
 }
 
 std::vector<Row> PageRowStore::decodePage(std::span<const std::byte> bytes) {
+    constexpr std::string_view kTruncated = "truncated page payload while reading fixed-width field";
     auto cursor = bytes;
-    const auto rowCount = readPod<std::uint64_t>(cursor);
+    const auto rowCount = readPod<std::uint64_t>(cursor, kTruncated);
     std::vector<Row> rows;
     rows.reserve(static_cast<std::size_t>(rowCount));
     for (std::uint64_t i = 0; i < rowCount; ++i) {
-        const auto columnCount = readPod<std::uint64_t>(cursor);
+        const auto columnCount = readPod<std::uint64_t>(cursor, kTruncated);
         Row row;
         row.reserve(static_cast<std::size_t>(columnCount));
         for (std::uint64_t c = 0; c < columnCount; ++c) {

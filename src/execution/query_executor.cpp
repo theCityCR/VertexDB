@@ -1,198 +1,17 @@
 #include "VertexDB/execution/query_executor.hpp"
 
+#include "VertexDB/execution/predicate_eval.hpp"
+#include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/planner/query_planner.hpp"
 
-#include <algorithm>
 #include <map>
-#include <optional>
-#include <span>
 #include <sstream>
 #include <stdexcept>
-#include <string_view>
 #include <utility>
 
 namespace VertexDB {
-namespace {
-
-bool compare(const Value &left, ComparisonOperator op, const Value &right) {
-    switch (op) {
-    case ComparisonOperator::Equal:
-        return left == right;
-    case ComparisonOperator::Greater:
-        return right < left;
-    case ComparisonOperator::Less:
-        return left < right;
-    }
-    return false;
-}
-
-QueryResult messageResult(bool success, std::string message) {
-    QueryResult result;
-    result.success = success;
-    result.message = std::move(message);
-    return result;
-}
-
-std::string sqlLiteral(const Value &value) {
-    if (value.isNull()) {
-        return "NULL";
-    }
-    switch (value.type()) {
-    case ColumnType::Int:
-        return value.toString();
-    case ColumnType::Double: {
-        // Ensure the lexeme re-parses as DOUBLE (integers without '.' become INT).
-        std::ostringstream out;
-        out << std::get<double>(value.data());
-        auto text = out.str();
-        if (text.find('.') == std::string::npos && text.find('e') == std::string::npos &&
-            text.find('E') == std::string::npos) {
-            text += ".0";
-        }
-        return text;
-    }
-    case ColumnType::String: {
-        std::string escaped;
-        escaped.reserve(std::get<std::string>(value.data()).size());
-        for (const char character : std::get<std::string>(value.data())) {
-            if (character == '"' || character == '\\') {
-                escaped.push_back('\\');
-            }
-            escaped.push_back(character);
-        }
-        return "\"" + escaped + "\"";
-    }
-    }
-    return {};
-}
-
-std::string columnTypeLiteral(ColumnType type) { return toString(type); }
-
-std::string predicateLiteral(const Predicate &predicate) {
-    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        const auto op = predicate.kind == Predicate::Kind::And ? " AND " : " OR ";
-        return "(" + predicateLiteral(*predicate.left) + op + predicateLiteral(*predicate.right) +
-               ")";
-    }
-    if (predicate.kind == Predicate::Kind::InList) {
-        std::ostringstream out;
-        out << predicate.column << " IN (";
-        for (std::size_t i = 0; i < predicate.inValues.size(); ++i) {
-            if (i > 0) {
-                out << ", ";
-            }
-            out << sqlLiteral(predicate.inValues[i]);
-        }
-        out << ")";
-        return out.str();
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery) {
-        return predicate.column + " IN (SELECT ...)";
-    }
-
-    std::string op;
-    switch (predicate.op) {
-    case ComparisonOperator::Equal:
-        op = "=";
-        break;
-    case ComparisonOperator::Greater:
-        op = ">";
-        break;
-    case ComparisonOperator::Less:
-        op = "<";
-        break;
-    }
-    return predicate.column + " " + op + " " + sqlLiteral(predicate.value);
-}
-
-std::string createTableSql(const CreateTable &command) {
-    std::ostringstream sql;
-    sql << "CREATE TABLE " << command.name << " (";
-    for (std::size_t i = 0; i < command.columns.size(); ++i) {
-        if (i != 0) {
-            sql << ", ";
-        }
-        sql << command.columns[i].name << " " << columnTypeLiteral(command.columns[i].type);
-        if (command.columns[i].nullable) {
-            sql << " NULL";
-        }
-    }
-    sql << ");";
-    return sql.str();
-}
-
-std::string insertSql(std::string_view table, const Row &row) {
-    std::ostringstream sql;
-    sql << "INSERT INTO " << table << " VALUES (";
-    for (std::size_t i = 0; i < row.size(); ++i) {
-        if (i != 0) {
-            sql << ", ";
-        }
-        sql << sqlLiteral(row[i]);
-    }
-    sql << ");";
-    return sql.str();
-}
-
-std::string updateSql(const Update &command) {
-    std::ostringstream sql;
-    sql << "UPDATE " << command.table << " SET " << command.column << " = "
-        << sqlLiteral(command.value);
-    if (command.where) {
-        sql << " WHERE " << predicateLiteral(*command.where);
-    }
-    sql << ";";
-    return sql.str();
-}
-
-std::string deleteSql(const Delete &command) {
-    std::ostringstream sql;
-    sql << "DELETE FROM " << command.table;
-    if (command.where) {
-        sql << " WHERE " << predicateLiteral(*command.where);
-    }
-    sql << ";";
-    return sql.str();
-}
-
-std::string createIndexSql(const CreateIndex &command) {
-    return "CREATE INDEX " + command.name + " ON " + command.table + "(" + command.column + ");";
-}
-
-std::optional<std::size_t> resolveResultColumn(std::span<const std::string> columns,
-                                               std::string_view requested) {
-    for (std::size_t i = 0; i < columns.size(); ++i) {
-        if (columns[i] == requested) {
-            return i;
-        }
-    }
-
-    std::optional<std::size_t> match;
-    const auto suffix = "." + std::string{requested};
-    for (std::size_t i = 0; i < columns.size(); ++i) {
-        if (columns[i].size() < suffix.size()) {
-            continue;
-        }
-        if (columns[i].compare(columns[i].size() - suffix.size(), suffix.size(), suffix) == 0) {
-            if (match) {
-                throw std::runtime_error("ambiguous column reference");
-            }
-            match = i;
-        }
-    }
-    return match;
-}
-
-std::optional<std::size_t> resolveTableColumn(const Table &table, std::string_view tableName,
-                                              std::string_view requested) {
-    const auto qualifier = std::string{tableName} + ".";
-    if (requested.starts_with(qualifier)) {
-        requested.remove_prefix(qualifier.size());
-    }
-    return table.columnIndex(requested);
-}
-
-} // namespace
 
 QueryExecutor::QueryExecutor(std::filesystem::path storageRoot)
     : storageManager_(storageRoot), wal_(storageRoot / "VertexDB.wal") {
@@ -366,27 +185,10 @@ QueryResult QueryExecutor::executeSelect(const Select &command) {
         if (!orderIndex) {
             throw std::runtime_error("unknown ORDER BY column");
         }
-        std::ranges::sort(rows, [&](const Row &left, const Row &right) {
-            if (prepared.orderBy->ascending) {
-                return left[*orderIndex] < right[*orderIndex];
-            }
-            return right[*orderIndex] < left[*orderIndex];
-        });
+        sortRowsByColumn(rows, *orderIndex, prepared.orderBy->ascending);
     }
 
-    QueryResult result{true, "selected rows", std::move(columns), {}};
-    for (const auto &row : rows) {
-        Row projected;
-        projected.reserve(projection.size());
-        for (const auto index : projection) {
-            projected.push_back(row[index]);
-        }
-        result.rows.push_back(std::move(projected));
-        if (prepared.limit && result.rows.size() >= *prepared.limit) {
-            break;
-        }
-    }
-    return result;
+    return projectWithLimit(std::move(rows), projection, std::move(columns), prepared.limit);
 }
 
 QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
@@ -680,6 +482,10 @@ QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
         rightRowsByKey[row[*rightJoinColumn]].push_back(row);
     }
 
+    const ColumnLookup joinLookup = [&](std::string_view column) {
+        return resolveResultColumn(joinedColumns, column);
+    };
+
     std::vector<Row> joinedRows;
     for (const auto &leftRow : leftRows) {
         auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
@@ -691,35 +497,8 @@ QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
             joined.reserve(leftRow.size() + rightRow.size());
             joined.insert(joined.end(), leftRow.begin(), leftRow.end());
             joined.insert(joined.end(), rightRow.begin(), rightRow.end());
-            if (command.where) {
-                auto matchesJoinedPredicate = [&](const Predicate &predicate,
-                                                  const auto &self) -> bool {
-                    if (predicate.kind == Predicate::Kind::And) {
-                        return self(*predicate.left, self) && self(*predicate.right, self);
-                    }
-                    if (predicate.kind == Predicate::Kind::Or) {
-                        return self(*predicate.left, self) || self(*predicate.right, self);
-                    }
-                    if (predicate.kind == Predicate::Kind::InSubquery) {
-                        throw std::runtime_error("IN subquery must be materialized before evaluation");
-                    }
-                    const auto whereColumn = resolveResultColumn(joinedColumns, predicate.column);
-                    if (!whereColumn) {
-                        throw std::runtime_error("unknown predicate column");
-                    }
-                    if (predicate.kind == Predicate::Kind::InList) {
-                        for (const auto &value : predicate.inValues) {
-                            if (joined[*whereColumn] == value) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                    return compare(joined[*whereColumn], predicate.op, predicate.value);
-                };
-                if (!matchesJoinedPredicate(*command.where, matchesJoinedPredicate)) {
-                    continue;
-                }
+            if (command.where && !evalPredicate(*command.where, joined, joinLookup)) {
+                continue;
             }
             joinedRows.push_back(std::move(joined));
         }
@@ -730,56 +509,17 @@ QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
         if (!orderColumn) {
             throw std::runtime_error("unknown ORDER BY column");
         }
-        std::ranges::sort(joinedRows, [&](const Row &left, const Row &right) {
-            if (command.orderBy->ascending) {
-                return left[*orderColumn] < right[*orderColumn];
-            }
-            return right[*orderColumn] < left[*orderColumn];
-        });
+        sortRowsByColumn(joinedRows, *orderColumn, command.orderBy->ascending);
     }
 
-    QueryResult result{true, "selected rows", std::move(projectedColumns), {}};
-    for (const auto &row : joinedRows) {
-        Row projected;
-        projected.reserve(projection.size());
-        for (const auto index : projection) {
-            projected.push_back(row[index]);
-        }
-        result.rows.push_back(std::move(projected));
-        if (command.limit && result.rows.size() >= *command.limit) {
-            break;
-        }
-    }
-    return result;
+    return projectWithLimit(std::move(joinedRows), projection, std::move(projectedColumns),
+                            command.limit);
 }
 
 bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate &predicate) const {
-    if (predicate.kind == Predicate::Kind::And) {
-        return matches(row, table, *predicate.left) && matches(row, table, *predicate.right);
-    }
-    if (predicate.kind == Predicate::Kind::Or) {
-        return matches(row, table, *predicate.left) || matches(row, table, *predicate.right);
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery) {
-        throw std::runtime_error("IN subquery must be materialized before evaluation");
-    }
-    if (predicate.kind == Predicate::Kind::InList) {
-        const auto index = table.columnIndex(predicate.column);
-        if (!index) {
-            throw std::runtime_error("unknown predicate column");
-        }
-        for (const auto &value : predicate.inValues) {
-            if (row[*index] == value) {
-                return true;
-            }
-        }
-        return false;
-    }
-    const auto index = table.columnIndex(predicate.column);
-    if (!index) {
-        throw std::runtime_error("unknown predicate column");
-    }
-    return compare(row[*index], predicate.op, predicate.value);
+    return evalPredicate(predicate, row, [&](std::string_view column) {
+        return table.columnIndex(column);
+    });
 }
 
 Select QueryExecutor::prepareSelect(const Select &command, RewriteResult &rewrite) const {
@@ -828,12 +568,7 @@ std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery)
         if (!orderIndex) {
             throw std::runtime_error("unknown ORDER BY column");
         }
-        std::ranges::sort(rows, [&](const Row &left, const Row &right) {
-            if (prepared.orderBy->ascending) {
-                return left[*orderIndex] < right[*orderIndex];
-            }
-            return right[*orderIndex] < left[*orderIndex];
-        });
+        sortRowsByColumn(rows, *orderIndex, prepared.orderBy->ascending);
     }
 
     std::vector<Value> values;
@@ -927,101 +662,5 @@ QueryResult QueryExecutor::rejectIfTransactionActive(std::string_view action) co
     }
     return messageResult(false, std::string(action) + " is not allowed while a transaction is active");
 }
-
-void QueryExecutor::applyUndoRecord(const UndoRecord &record) {
-    auto table = database_->table(record.tableName);
-    if (!table) {
-        throw std::runtime_error("undo references unknown table " + record.tableName);
-    }
-    switch (record.kind) {
-    case UndoKind::Insert:
-        if (!table->eraseDiscardingVersion(record.rowId)) {
-            throw std::runtime_error("failed to undo insert");
-        }
-        break;
-    case UndoKind::Update:
-        if (!record.beforeImage || !table->replaceRow(record.rowId, *record.beforeImage)) {
-            throw std::runtime_error("failed to undo update");
-        }
-        break;
-    case UndoKind::Delete:
-        if (!record.beforeImage || !table->revive(record.rowId, *record.beforeImage)) {
-            throw std::runtime_error("failed to undo delete");
-        }
-        break;
-    }
-}
-
-void QueryExecutor::recoverFromStorage() {
-    bool loadedSnapshot = false;
-    try {
-        database_ = storageManager_.loadFirstDatabase();
-        loadedSnapshot = true;
-    } catch (const std::exception &) {
-        database_.reset();
-    }
-    recoverFromWal(loadedSnapshot);
-}
-
-void QueryExecutor::recoverFromWal(bool loadedSnapshot) {
-    std::vector<WalRecord> records;
-    try {
-        records = wal_.readAll();
-    } catch (const std::exception &) {
-        return;
-    }
-    if (records.empty()) {
-        return;
-    }
-
-    std::size_t start = 0;
-    if (loadedSnapshot) {
-        for (std::size_t i = 0; i < records.size(); ++i) {
-            if (records[i].operation == WalOperation::SaveDatabase) {
-                start = i + 1;
-            }
-        }
-    }
-
-    replayingWal_ = true;
-    try {
-        Parser parser;
-        for (std::size_t i = start; i < records.size(); ++i) {
-            const auto &record = records[i];
-            if (record.operation == WalOperation::SaveDatabase) {
-                continue;
-            }
-            if (record.operation == WalOperation::CreateDatabase &&
-                record.payload.find(' ') == std::string::npos) {
-                database_ = std::make_shared<Database>(record.payload);
-                continue;
-            }
-            (void)executeUnlocked(parser.parse(record.payload));
-        }
-    } catch (const std::exception &) {
-        database_.reset();
-    }
-    replayingWal_ = false;
-}
-
-void QueryExecutor::appendWal(WalOperation operation, std::string payload) {
-    if (replayingWal_) {
-        return;
-    }
-    if (transactionActive()) {
-        pendingWal_.push_back(PendingWalRecord{operation, std::move(payload)});
-        return;
-    }
-    (void)wal_.append(operation, std::move(payload));
-}
-
-void QueryExecutor::flushPendingWal() {
-    for (auto &record : pendingWal_) {
-        (void)wal_.append(record.operation, std::move(record.payload));
-    }
-    pendingWal_.clear();
-}
-
-void QueryExecutor::clearPendingWal() noexcept { pendingWal_.clear(); }
 
 } // namespace VertexDB

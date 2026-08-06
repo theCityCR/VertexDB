@@ -33,6 +33,10 @@ add_library(VertexDB
     src/indexing/btree_index.cpp
     src/indexing/hash_index.cpp
     src/execution/query_executor.cpp
+    src/execution/query_executor_recovery.cpp
+    src/execution/predicate_eval.cpp
+    src/execution/sql_literal.cpp
+    src/execution/select_helpers.cpp
     src/planner/query_planner.cpp
     src/planner/rewriter.cpp
     src/concurrency/lock_manager.cpp
