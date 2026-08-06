@@ -105,20 +105,89 @@ TEST(DesiredBehaviorTests, ExplainReportsJoinPlanFromCostModel) {
 TEST(DesiredBehaviorTests, NestedSqlDocumentedRefusalsAreRejected) {
     Parser parser;
 
-    EXPECT_THROW(
-        (void)parser.parse("WITH cte AS (SELECT id FROM Employees JOIN Departments ON dept_id = id) "
-                           "SELECT id FROM cte;"),
-        std::runtime_error);
-
+    // Nested WITH remains unsupported.
     EXPECT_THROW((void)parser.parse("WITH outer_cte AS (WITH inner_cte AS (SELECT id FROM Employees) "
                                     "SELECT id FROM inner_cte) SELECT id FROM outer_cte;"),
                  std::runtime_error);
 
+    // Derived tables require an alias.
+    EXPECT_THROW((void)parser.parse("SELECT id FROM (SELECT id FROM Employees);"),
+                 std::runtime_error);
+
+    // Outer JOIN against a CTE/derived alias is rejected (body WHERE would mis-scope on the join).
     auto query = parser.parse(
         "WITH high AS (SELECT id, name FROM Employees WHERE id = 1) "
         "SELECT * FROM high JOIN Departments ON id = id;");
     ASSERT_TRUE(std::holds_alternative<Select>(query));
     EXPECT_THROW((void)rewriteSelect(std::get<Select>(query)), std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, DerivedTableInlinesLikeCteAndUsesBaseIndex) {
+    Parser parser;
+    auto executor = makeExecutor("derived-table");
+    seedEmployees(executor, parser, true, false);
+
+    auto rewritten = rewriteSelect(std::get<Select>(parser.parse(
+        "SELECT name FROM (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) AS high "
+        "WHERE id = 1;")));
+    EXPECT_EQ(rewritten.query.table, "Employees");
+    ASSERT_TRUE(rewritten.query.where.has_value());
+    EXPECT_EQ(rewritten.query.where->kind, Predicate::Kind::And);
+    ASSERT_FALSE(rewritten.notes.empty());
+    EXPECT_NE(rewritten.notes.front().find("inlined CTE"), std::string::npos);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "AS high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) high "
+        "WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(DesiredBehaviorTests, CteWithJoinInlinesToJoinSelect) {
+    Parser parser;
+    auto executor = makeExecutor("cte-join");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");"))
+                    .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH joined AS (SELECT * FROM Employees JOIN Departments ON dept_id = id) "
+        "SELECT Employees.name, Departments.dept FROM joined;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_GE(explain.rows.size(), 1U);
+    EXPECT_NE(explain.rows.front().front().toString().find("hash join"), std::string::npos);
+    bool sawInline = false;
+    for (const auto &row : explain.rows) {
+        if (row.front().toString().find("inlined CTE") != std::string::npos) {
+            sawInline = true;
+        }
+    }
+    EXPECT_TRUE(sawInline);
+
+    auto result = executor.execute(parser.parse(
+        "WITH joined AS (SELECT * FROM Employees JOIN Departments ON dept_id = id) "
+        "SELECT Employees.name, Departments.dept FROM joined;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
+    EXPECT_EQ(result.rows[0][1], Value{std::string{"Eng"}});
 }
 
 TEST(DesiredBehaviorTests, CommitPersistsTransactionMutations) {

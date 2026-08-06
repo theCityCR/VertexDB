@@ -26,6 +26,11 @@ LIMIT 5;
 WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
 SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > 100000.0);
+SELECT name FROM (
+  SELECT id, name, salary FROM Employees WHERE salary > 100000.0
+) AS high WHERE id = 1;
+WITH joined AS (SELECT * FROM Employees JOIN Departments ON dept_id = id)
+SELECT Employees.name, Departments.dept FROM joined;
 EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
@@ -52,10 +57,11 @@ a residual filter. Top-level `OR` predicates still force a full scan; an `OR` ne
 may remain as a residual while another conjunct uses an index.
 
 `WITH` CTEs are always inlined into the outer `SELECT` (no materialization fence), so outer filters
-can use base-table indexes. `WHERE col IN (SELECT …)` materializes the subquery (which itself may
-use indexes) and then probes the outer column via hash index `IN` lookup when that column is
-indexed. CTE bodies and `IN` subqueries are single-table in this version (no nested `WITH`, no
-`JOIN` inside them). Correlated subqueries are not supported.
+can use base-table indexes. Derived tables `FROM (SELECT …) [AS] alias` normalize to the same inline
+path. `WHERE col IN (SELECT …)` materializes the subquery (which itself may use indexes) and then
+probes the outer column via hash index `IN` lookup when that column is indexed. CTE and derived-table
+bodies may include a single equi-join. Nested `WITH`, correlated subqueries, outer `JOIN` against a
+CTE/derived alias, and `JOIN` inside `IN` subqueries are not supported.
 
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
 the access path or join algorithm, CTE inlining notes, residual status, and `est_rows` / `cost`.
@@ -107,5 +113,5 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 - Aggregates such as `COUNT`.
 - `GROUP BY`.
 - Broader join syntax and multiple joins.
-- Derived tables (`FROM (SELECT …)`), correlated subqueries, and `WITH … AS MATERIALIZED`.
+- Correlated subqueries and `WITH … AS MATERIALIZED`.
 - Expression indexes and specialized indexes for substring/regex predicates.

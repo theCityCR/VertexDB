@@ -36,10 +36,6 @@ RewriteResult rewriteSelect(const Select &query) {
         return result;
     }
 
-    if (query.join) {
-        throw std::runtime_error("JOIN with CTE is not supported in this version");
-    }
-
     const auto *matched = static_cast<const Select *>(nullptr);
     std::string matchedName;
     for (const auto &[name, body] : query.ctes) {
@@ -57,14 +53,23 @@ RewriteResult rewriteSelect(const Select &query) {
         return result;
     }
 
-    if (matched->join) {
-        throw std::runtime_error("JOIN inside CTE is not supported in this version");
-    }
-    if (!matched->ctes.empty()) {
-        throw std::runtime_error("nested WITH inside CTE is not supported in this version");
+    if (query.join) {
+        // Body WHERE is AND-merged onto the joined result; that would mis-scope filters and can
+        // make columns ambiguous. Require JOIN to live inside the CTE/derived body instead.
+        throw std::runtime_error("JOIN with CTE is not supported in this version");
     }
 
-    Select inlined = *matched;
+    // Fully rewrite the CTE/derived body first (nested derived tables become synthetic CTEs).
+    Select bodySelect = *matched;
+    if (!bodySelect.ctes.empty()) {
+        auto bodyRewrite = rewriteSelect(bodySelect);
+        for (auto &note : bodyRewrite.notes) {
+            result.notes.push_back(std::move(note));
+        }
+        bodySelect = std::move(bodyRewrite.query);
+    }
+
+    Select inlined = std::move(bodySelect);
     // Outer projection wins when not "*"; CTE projection restricts available columns for "*".
     if (!(query.columns.size() == 1 && query.columns.front() == "*")) {
         inlined.columns = query.columns;
@@ -74,13 +79,13 @@ RewriteResult rewriteSelect(const Select &query) {
         inlined.columns = query.columns;
     }
 
-    inlined.where = andPredicates(inlined.where, query.where);
+    inlined.where = andPredicates(std::move(inlined.where), query.where);
     inlined.orderBy = query.orderBy ? query.orderBy : inlined.orderBy;
     if (query.limit) {
         inlined.limit = query.limit;
     }
     inlined.ctes.clear();
-    inlined.join = std::nullopt;
+    // Preserve a JOIN that lived inside the CTE/derived body.
 
     result.notes.push_back("inlined CTE " + matchedName);
     // Recursively inline if the CTE body still referenced another CTE name from the same WITH.

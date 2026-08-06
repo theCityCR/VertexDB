@@ -107,8 +107,10 @@ residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe.
 
-A rewriter always inlines `WITH` CTEs into the outer `SELECT` and materializes `IN (SELECT …)`
-subqueries into value lists before planning, so nested SQL can still use base-table indexes.
+A rewriter always inlines `WITH` CTEs and derived tables (`FROM (SELECT …) [AS] alias`, normalized
+to synthetic CTEs) into the outer `SELECT` and materializes `IN (SELECT …)` subqueries into value
+lists before planning, so nested SQL can still use base-table indexes. CTE/derived bodies may carry
+a single equi-join through inlining.
 
 ### CTE index demo
 

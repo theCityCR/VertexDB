@@ -46,9 +46,27 @@ Select Parser::parseSelectAfterSelectKeyword() {
     }
 
     expect(TokenType::Identifier, "FROM");
-    const auto table = advance();
-    if (table.type != TokenType::Identifier) {
-        throw std::runtime_error("expected table name");
+
+    std::string tableName;
+    std::vector<std::pair<std::string, std::shared_ptr<Select>>> derivedCtes;
+    if (match(TokenType::LeftParen)) {
+        // Derived table: FROM (SELECT ...) [AS] alias — normalize to a synthetic CTE.
+        expect(TokenType::Identifier, "SELECT");
+        auto body = parseSelectAfterSelectKeyword();
+        expect(TokenType::RightParen);
+        (void)match(TokenType::Identifier, "AS");
+        const auto alias = advance();
+        if (alias.type != TokenType::Identifier) {
+            throw std::runtime_error("expected derived table alias");
+        }
+        tableName = alias.lexeme;
+        derivedCtes.emplace_back(alias.lexeme, std::make_shared<Select>(std::move(body)));
+    } else {
+        const auto table = advance();
+        if (table.type != TokenType::Identifier) {
+            throw std::runtime_error("expected table name");
+        }
+        tableName = table.lexeme;
     }
 
     std::optional<JoinClause> join;
@@ -97,8 +115,9 @@ Select Parser::parseSelectAfterSelectKeyword() {
         }
         limit = static_cast<std::size_t>(parser_detail::parseIntLiteral(count.lexeme));
     }
-    return {table.lexeme,     std::move(join),    std::move(columns),
-            std::move(where), std::move(orderBy), limit, {}};
+    return {std::move(tableName), std::move(join),    std::move(columns),
+            std::move(where),      std::move(orderBy), limit,
+            std::move(derivedCtes)};
 }
 
 Select Parser::parseWithSelect() {
@@ -110,20 +129,27 @@ Select Parser::parseWithSelect() {
         }
         expect(TokenType::Identifier, "AS");
         expect(TokenType::LeftParen);
-        auto body = parseSelect();
-        if (!body.ctes.empty()) {
+        if (match(TokenType::Identifier, "WITH")) {
             throw std::runtime_error("nested WITH inside CTE is not supported");
         }
-        if (body.join) {
-            throw std::runtime_error("JOIN inside CTE is not supported");
-        }
+        auto body = parseSelect();
         expect(TokenType::RightParen);
         ctes.emplace_back(name.lexeme, std::make_shared<Select>(std::move(body)));
     } while (match(TokenType::Comma));
 
     expect(TokenType::Identifier, "SELECT");
     auto query = parseSelectAfterSelectKeyword();
-    query.ctes = std::move(ctes);
+    // Derived-table CTEs are closest to FROM; append WITH CTEs after so a colliding FROM alias
+    // prefers the derived table, while WITH names remain available for bodies/siblings.
+    if (!query.ctes.empty()) {
+        auto combined = std::move(query.ctes);
+        for (auto &cte : ctes) {
+            combined.push_back(std::move(cte));
+        }
+        query.ctes = std::move(combined);
+    } else {
+        query.ctes = std::move(ctes);
+    }
     return query;
 }
 

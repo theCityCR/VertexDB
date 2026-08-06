@@ -13,8 +13,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 ## Features
 
 - SQL tokenization, parsing, AST construction, query planning, and execution for a focused SQL subset
-- `WITH` CTE inlining, `WHERE col IN (SELECT …)`, cheapest-indexable `AND` extraction with residual
-  filters, and `EXPLAIN`
+- `WITH` CTE inlining, derived tables, `WHERE col IN (SELECT …)`, cheapest-indexable `AND`
+  extraction with residual filters, and `EXPLAIN`
 - Typed table storage with schema validation, nullable columns, page-backed row storage (page-byte
   directory as source of truth with an LRU buffer-pool access cache), and stable row IDs via
   tombstones with free-list reuse (persisted across save/load)
@@ -75,8 +75,8 @@ ROLLBACK;
 ```
 
 Also supported: nullable columns, compound predicates, single equi-joins, `WITH` CTEs (always
-inlined), `IN` subqueries, `EXPLAIN`, prepared statements with positional parameters, table
-rename/drop/list operations, and `EXIT`.
+inlined), derived tables `FROM (SELECT …) [AS] alias`, `IN` subqueries, `EXPLAIN`, prepared
+statements with positional parameters, table rename/drop/list operations, and `EXIT`.
 
 See [examples/](examples/) for a runnable walkthrough.
 
@@ -111,7 +111,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 105 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 111 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   88.06%)
@@ -129,15 +129,15 @@ Or feed an example script:
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
 - Planner costs use live row counts and index distinct-key counts (no histograms); multi-index
   intersection and top-level `OR` index unions are not implemented
-- Nested SQL is intentionally limited: no derived tables, correlation, `JOIN` inside CTEs/`IN`
-  subqueries, or expression/regex indexes
+- Nested SQL is intentionally limited: no nested `WITH`, correlation, outer `JOIN` against a
+  CTE/derived alias, `JOIN` inside `IN` subqueries, or expression/regex indexes
 - SQL support is intentionally focused: no aggregates, grouping, or general DDL; joins are single
   equi-joins only
 
 ## Roadmap
 
 1. Persist index pages with snapshots and evolve WAL redo toward page images
-2. Extend nested SQL (derived tables, correlation) and expression indexes
+2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`
 3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies
 4. Add histograms / `ANALYZE` and multi-index AND optimization
 

@@ -136,7 +136,9 @@ inline path so nested SQL does not silently drop indexes. Details:
 
 ### Limitations (honest)
 
-- Single-table CTEs only (no `JOIN` / nested `WITH` inside CTE bodies).
+- Nested `WITH`, outer `JOIN` against a CTE/derived alias, and correlated subqueries are
+  unsupported; `IN` subqueries remain single-table. CTE/derived bodies may include a single
+  equi-join.
 - Cost-based access paths using live row counts and index distinct keys (no histograms yet).
 - This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
 - `UPDATE` / `DELETE` and joins still bypass this index access-path planner.

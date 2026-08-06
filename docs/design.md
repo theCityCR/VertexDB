@@ -10,11 +10,11 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
   recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer, AST, grammar tests, table-management commands, predicates, ordering, limits,
-  joins, `WITH` CTEs, `IN` subqueries, `EXPLAIN`, transactions, prepared statements, save/load, and
-  exit
+  joins, `WITH` CTEs, derived tables, `IN` subqueries, `EXPLAIN`, transactions, prepared statements,
+  save/load, and exit
 - Query execution: projection, filtering, ordering, limit, insert, update, delete, table
-  management, joins, CTE inlining, `IN` subquery materialization, prepared execution, save/load,
-  recovery, and transactional read routing
+  management, joins, CTE/derived-table inlining, `IN` subquery materialization, prepared execution,
+  save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup, plus hash index `IN` multi-lookup
 - Persistence: versioned binary snapshots (current page-payload v3; sparse v2 and dense v1 still
@@ -55,7 +55,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   predicates are not split and force a full scan; nested `OR` under `AND` may remain as a residual
   while another conjunct uses an index. Equi-joins choose hash join or nested-loop index probe from
   the same statistics.
-- `WITH` CTEs are always inlined before planning so outer predicates can hit base-table indexes.
+- `WITH` CTEs and derived tables `FROM (SELECT …) [AS] alias` are always inlined before planning so
+  outer predicates can hit base-table indexes. CTE/derived bodies may include a single equi-join.
   `IN (SELECT …)` subqueries are planned/executed for their values, then probed via index when
   possible.
 - Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v3) that store
@@ -79,15 +80,16 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - Planner costs use live \(N\) and index distinct keys \(D\) without histograms; there is no
   multi-index AND intersection or top-level `OR` index union yet.
 - Top-level `OR` predicates are not split for indexing; they force a full scan.
-- Nested SQL is limited: no derived tables, no correlated subqueries, no `JOIN` / nested `WITH`
-  inside CTE bodies or `IN` subqueries, and no expression/regex indexes.
+- Nested SQL is limited: no nested `WITH`, no correlated subqueries, no outer `JOIN` against a
+  CTE/derived alias, no `JOIN` inside `IN` subqueries, and no expression/regex indexes.
+  CTE/derived bodies may include a single equi-join.
 - SQL support is intentionally limited and does not include aggregation, grouping, or general DDL.
   Joins are single equi-joins only.
 
 ## Next Engineering Plan
 
 1. Persist index pages in snapshots; evolve redo toward page images.
-2. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
+2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`.
 3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins.
 4. Add histograms / `ANALYZE` and multi-index AND optimization.
 5. Turn benchmark output into documented reports and trend comparisons.

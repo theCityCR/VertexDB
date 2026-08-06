@@ -87,8 +87,8 @@ variables.
 - VertexDB is not “better than Postgres” in general. Postgres can already inline with
   `AS NOT MATERIALIZED` or by writing the flat `WHERE`.
 - The win is a **deliberate default**: nested SQL should not silently lose base-table indexes.
-- Limitations: single-table CTEs, cost-based planning with row/distinct-key stats (not histograms),
-  and no user-facing `AS MATERIALIZED` fence.
+- Limitations: cost-based planning with row/distinct-key stats (not histograms), no correlation /
+  nested `WITH`, and no user-facing `AS MATERIALIZED` fence.
 
 ## Related
 
