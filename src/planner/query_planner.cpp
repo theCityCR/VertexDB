@@ -1,5 +1,7 @@
 #include "VertexDB/planner/query_planner.hpp"
 
+#include "VertexDB/common/index_expression.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -45,9 +47,33 @@ std::optional<Predicate> buildAndTree(const std::vector<const Predicate *> &conj
     return 1;
 }
 
+[[nodiscard]] std::size_t distinctOrOne(const Table &table, const IndexExpression &expression) {
+    if (const auto distinct = table.indexDistinctCount(expression)) {
+        return std::max<std::size_t>(*distinct, 1);
+    }
+    return 1;
+}
+
 bool isIndexableComparison(const Predicate &predicate, const Table &table, AccessPath &path,
                            double &cost, std::size_t rowCount) {
-    if (predicate.kind != Predicate::Kind::Comparison) {
+    if (predicate.kind != Predicate::Kind::Comparison || predicate.rhsColumn) {
+        return false;
+    }
+    if (predicate.expression) {
+        if (!table.hasExpressionIndex(*predicate.expression)) {
+            return false;
+        }
+        if (predicate.op == ComparisonOperator::Equal) {
+            path = AccessPath::HashIndexLookup;
+            cost = averageRowsPerKey(rowCount, distinctOrOne(table, *predicate.expression));
+            return true;
+        }
+        if (predicate.op == ComparisonOperator::Greater ||
+            predicate.op == ComparisonOperator::Less) {
+            path = AccessPath::OrderedIndexRange;
+            cost = std::max(static_cast<double>(rowCount) / 3.0, 1.0);
+            return true;
+        }
         return false;
     }
     if (predicate.op == ComparisonOperator::Equal && table.hasIndex(predicate.column)) {
@@ -148,17 +174,28 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     plan.accessPath = bestPath;
     plan.estimatedCost = bestCost;
     plan.indexColumn = chosen.column;
+    plan.indexExpression = chosen.expression;
 
     if (bestPath == AccessPath::HashIndexLookup) {
         plan.indexOp = ComparisonOperator::Equal;
         plan.indexValue = chosen.value;
         plan.estimatedRows = rowsFromCost(bestCost, table.rowCount());
-        plan.explanation = "hash index equality lookup on " + chosen.column;
+        if (chosen.expression) {
+            plan.explanation = "expression hash index equality lookup on (" +
+                               indexExpressionToString(*chosen.expression) + ")";
+        } else {
+            plan.explanation = "hash index equality lookup on " + chosen.column;
+        }
     } else if (bestPath == AccessPath::OrderedIndexRange) {
         plan.indexOp = chosen.op;
         plan.indexValue = chosen.value;
         plan.estimatedRows = rowsFromCost(bestCost, table.rowCount());
-        plan.explanation = "ordered index range lookup on " + chosen.column;
+        if (chosen.expression) {
+            plan.explanation = "expression ordered index range lookup on (" +
+                               indexExpressionToString(*chosen.expression) + ")";
+        } else {
+            plan.explanation = "ordered index range lookup on " + chosen.column;
+        }
     } else if (bestPath == AccessPath::HashIndexInLookup) {
         plan.indexOp = ComparisonOperator::Equal;
         plan.indexValues = chosen.inValues;

@@ -8,7 +8,7 @@ CLI
  Query Executor
  |
  +-- Query Planner
- |   +-- Rewriter (CTE inlining, IN subquery prep)
+ |   +-- Rewriter (CTE inline/materialize, IN subquery prep)
  |   +-- Access-path selection
  |
  +-- Storage Engine
@@ -44,9 +44,9 @@ CLI
   POD I/O (`writePod` / `readPod` for streams and byte spans).
 - `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
   predicate parsing live in focused translation units behind one `Parser` type).
-- `planner`: CTE/derived-table/`IN` rewrite and cost-based access-path / join selection using table
-  and index
-  statistics (row counts and distinct keys), with residual filters.
+- `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
+  cost-based access-path / join selection using table and index statistics (row counts and distinct
+  keys), with residual filters.
 - `storage`: database/table ownership, row storage boundaries, schema validation, and page cache
   abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
   validation).
@@ -99,9 +99,11 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
-3. `Parser` creates a strongly typed `Query` variant (including `WITH`, `IN` subqueries, and
-   `EXPLAIN`).
-4. For `SELECT`/`EXPLAIN`, a rewriter inlines CTEs/derived tables and the executor materializes
-   `IN` subqueries.
-5. `QueryPlanner` chooses an access path (including residual filters) and `QueryExecutor` runs it.
+3. `Parser` creates a strongly typed `Query` variant (including `WITH` materialize modes,
+   `IN`/`EXISTS`, expression indexes, and `EXPLAIN`).
+4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables; the executor
+   materializes uncorrelated `IN` subqueries and evaluates single-level correlated `IN`/`EXISTS`
+   per outer row.
+5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and
+   `QueryExecutor` runs it.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.

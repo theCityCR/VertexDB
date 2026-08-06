@@ -161,10 +161,12 @@ Items **1–5** are done. The one-liner:
 ## Out of scope for this wedge
 
 - Histograms / `ANALYZE` and multi-index AND optimization (separate roadmap item).
-- User-facing `WITH … AS MATERIALIZED` grammar (optional later; not required to demo the win).
-- Multi-index AND, `OR` index union, expression indexes, or join access-path planning.
+- Multi-level correlated subqueries or regex/substring indexes.
 - Winning only because VertexDB always picks hash lookup when Postgres sometimes does not—that is
   a heuristic quirk, not a product story.
+
+Note: user-facing `WITH … AS MATERIALIZED` / `AS NOT MATERIALIZED` and expression indexes shipped
+as roadmap step 2; the wedge demo still highlights the default-inline win.
 
 ## Definition of done
 

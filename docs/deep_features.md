@@ -101,10 +101,12 @@ residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe.
 
-A rewriter always inlines `WITH` CTEs and derived tables (`FROM (SELECT …) [AS] alias`, normalized
-to synthetic CTEs) into the outer `SELECT` and materializes `IN (SELECT …)` subqueries into value
-lists before planning, so nested SQL can still use base-table indexes. CTE/derived bodies may carry
-a single equi-join through inlining.
+A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) and derived tables
+(`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`. 
+`AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Uncorrelated
+`IN (SELECT …)` subqueries materialize into value lists; correlated `IN`/`EXISTS` bind a single
+outer scope per row. Expression indexes match `(expr) =/>/< const` predicates. CTE/derived bodies
+may carry a single equi-join through inlining.
 
 ### CTE index demo
 
@@ -116,9 +118,9 @@ SELECT name FROM high WHERE id = 1;
 ```
 
 `EXPLAIN` chooses hash index equality on `id`, keeps `salary > …` as a residual, and notes
-`inlined CTE high`. Materializing the CTE would build the high-salary set first and lose the
-base-table `id` index for the outer filter. Full write-up, limitations, and comparison artifacts:
-[cte_index_wedge.md](cte_index_wedge.md) (Demo) and
+`inlined CTE high`. `WITH … AS MATERIALIZED` instead notes `materialized CTE high` and plans
+against the temp result (fencing the base-table `id` index). Full write-up, limitations, and
+comparison artifacts: [cte_index_wedge.md](cte_index_wedge.md) (Demo) and
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
 
 Next step: histograms / `ANALYZE` and multi-index AND optimization.

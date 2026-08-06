@@ -121,6 +121,91 @@ TEST(DesiredBehaviorTests, NestedSqlDocumentedRefusalsAreRejected) {
         "SELECT * FROM high JOIN Departments ON id = id;");
     ASSERT_TRUE(std::holds_alternative<Select>(query));
     EXPECT_THROW((void)rewriteSelect(std::get<Select>(query)), std::runtime_error);
+
+    // Multi-level correlation is rejected with a clear error.
+    EXPECT_THROW(
+        (void)parser.parse(
+            "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE EXISTS "
+            "(SELECT id FROM Employees e2 WHERE e2.id = Employees.id));"),
+        std::runtime_error);
+}
+
+TEST(DesiredBehaviorTests, MaterializedCteFencesBaseTableIndex) {
+    Parser parser;
+    auto executor = makeExecutor("materialized-cte");
+    seedEmployees(executor, parser, true, false);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > "
+        "100000.0) SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("materialized CTE high"), std::string::npos);
+    EXPECT_EQ(text.find("inlined CTE"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(DesiredBehaviorTests, ExpressionIndexSurvivesSaveLoad) {
+    Parser parser;
+    auto executor = makeExecutor("expr-index-save");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_neg ON Employees((-salary));")).success);
+
+    auto before = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(before.success);
+    ASSERT_EQ(before.rows.size(), 1U);
+
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-expr-index-save";
+    QueryExecutor reloaded{root};
+    ASSERT_TRUE(reloaded.execute(parser.parse("LOAD DATABASE company;")).success);
+
+    auto explain = reloaded.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("expression hash index"),
+              std::string::npos);
+
+    auto after = reloaded.execute(
+        parser.parse("SELECT name FROM Employees WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(after.success);
+    ASSERT_EQ(after.rows.size(), 1U);
+    EXPECT_EQ(after.rows[0][0], Value{"Alice"});
+}
+
+TEST(DesiredBehaviorTests, CorrelatedInBindsOuterColumnPerRow) {
+    Parser parser;
+    auto executor = makeExecutor("correlated-in");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Peer (emp_id INT, label STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Peer VALUES (1, \"a\"), (1, \"b\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN (SELECT emp_id FROM Peer WHERE emp_id = "
+        "Employees.id);"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
 TEST(DesiredBehaviorTests, DerivedTableInlinesLikeCteAndUsesBaseIndex) {

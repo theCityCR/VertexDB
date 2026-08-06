@@ -4,6 +4,7 @@
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/indexing/hash_index.hpp"
+#include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/row_store.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
@@ -38,6 +39,12 @@ struct PageImageCapture {
     std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes;
 };
 
+struct IndexDefinition {
+    std::string name;
+    std::string column;
+    std::optional<IndexExpression> expression;
+};
+
 class Table {
   public:
     Table(std::string name, std::vector<Column> schema);
@@ -60,14 +67,22 @@ class Table {
     [[nodiscard]] std::size_t capacity() const;
     // On-demand stats for cost-based planning (row count + per-index distinct keys).
     [[nodiscard]] std::optional<std::size_t> indexDistinctCount(std::string_view column) const;
+    [[nodiscard]] std::optional<std::size_t>
+    indexDistinctCount(const IndexExpression &expression) const;
     [[nodiscard]] std::optional<std::vector<RowId>> indexedLookup(std::string_view column,
                                                                   const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
+    indexedLookup(const IndexExpression &expression, const Value &value) const;
+    [[nodiscard]] std::optional<std::vector<RowId>>
     orderedLookup(std::string_view column, ComparisonOperator op, const Value &value) const;
-    // True when the column has a maintained index (hash equality + ordered range today).
+    [[nodiscard]] std::optional<std::vector<RowId>>
+    orderedLookup(const IndexExpression &expression, ComparisonOperator op,
+                  const Value &value) const;
+    // True when the column has a maintained column index (hash equality + ordered range).
     [[nodiscard]] bool hasIndex(std::string_view column) const;
+    [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
-    [[nodiscard]] std::vector<std::pair<std::string, std::string>> indexDefinitions() const;
+    [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
     void validateRow(const Row &row) const;
     // Observability for tests: ordered index node layout for a named index.
@@ -92,8 +107,10 @@ class Table {
                             std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes);
     [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     bool createIndex(std::string name, std::string column);
+    bool createIndex(std::string name, IndexExpression expression);
     // Register index metadata without rebuilding (snapshot v4 restore path).
     bool createIndexWithoutRebuild(std::string name, std::string column);
+    bool createIndexWithoutRebuild(std::string name, IndexExpression expression);
     void replaceRows(std::vector<Row> rows);
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries);
@@ -110,11 +127,15 @@ class Table {
     void addRowToIndexes(RowId rowId);
     void rebuildIndexes();
     void refreshVersionsFromStore();
+    [[nodiscard]] Value indexKeyForRow(const std::string &indexName, const Row &row) const;
+    bool registerIndex(std::string name, std::size_t columnIndex,
+                       std::optional<IndexExpression> expression, bool rebuild);
 
     std::string name_;
     std::vector<Column> schema_;
     std::unique_ptr<RowStore> rowStore_;
     std::map<std::string, std::size_t> indexColumns_;
+    std::map<std::string, IndexExpression> indexExpressions_;
     std::map<std::string, HashIndex> indexes_;
     std::map<std::string, BTreeIndex> orderedIndexes_;
     MVCCRowStore versions_;

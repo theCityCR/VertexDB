@@ -10,16 +10,19 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
   recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer, AST, grammar tests, table-management commands, predicates, ordering, limits,
-  joins, `WITH` CTEs, derived tables, `IN` subqueries, `EXPLAIN`, transactions, prepared statements,
-  save/load, and exit
+  joins, `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`), derived tables, `IN`/`EXISTS`
+  subqueries (including single-level correlation), expression indexes, `EXPLAIN`, transactions,
+  prepared statements, save/load, and exit
 - Query execution: projection, filtering, ordering, limit, insert, update, delete, table
-  management, joins, CTE/derived-table inlining, `IN` subquery materialization, prepared execution,
-  save/load, recovery, and transactional read routing
+  management, joins, CTE/derived-table inlining or materialization, correlated `IN`/`EXISTS`,
+  expression-index maintenance, prepared execution, save/load, recovery, and transactional read
+  routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
-  and range lookup, plus hash index `IN` multi-lookup
+  and range lookup (column and expression keys), plus hash index `IN` multi-lookup
 - Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
   sparse v2, and dense v1 still readable) for database schemas, page directory bytes, free-list
-  state, index definitions, and durable B+ tree / hash index pages under `.tcrdb` files
+  state, index definitions (column or expression metadata), and durable B+ tree / hash index pages
+  under `.tcrdb` files
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
   still replayable), logical SQL for DDL, truncated-trailing-record tolerance, startup replay, save
   checkpoints, and crash-simulation tests
@@ -29,8 +32,9 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   (including dirty-read prevention and snapshot isolation across concurrent statements), and
   transaction-batched page-image WAL flush on `COMMIT`
 - Planner: cheapest indexable conjunct selection from `AND` trees using row-count and index
-  distinct-key statistics, residual filters, CTE rewrite notes, join algorithm selection
-  (hash vs nested-loop index probe), and `EXPLAIN` text with `est_rows` / `cost`
+  distinct-key statistics, residual filters, CTE rewrite notes (inline vs materialize), join
+  algorithm selection (hash vs nested-loop index probe), expression-index matching, and `EXPLAIN`
+  text with `est_rows` / `cost`
 - Quality: GoogleTest coverage, regression tests, sanitizer script, coverage script, benchmark
   target, and multi-platform CI
 
@@ -56,13 +60,15 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   predicates are not split and force a full scan; nested `OR` under `AND` may remain as a residual
   while another conjunct uses an index. Equi-joins choose hash join or nested-loop index probe from
   the same statistics.
-- `WITH` CTEs and derived tables `FROM (SELECT …) [AS] alias` are always inlined before planning so
-  outer predicates can hit base-table indexes. CTE/derived bodies may include a single equi-join.
-  `IN (SELECT …)` subqueries are planned/executed for their values, then probed via index when
-  possible.
+- `WITH` CTEs default to inlining (and `AS NOT MATERIALIZED` is explicit inline); `AS MATERIALIZED`
+  executes the body into an ephemeral indexed table before planning the outer query. Derived tables
+  `FROM (SELECT …) [AS] alias` always inline. `IN (SELECT …)` subqueries are planned/executed for
+  their values when uncorrelated; correlated `IN`/`EXISTS` bind a single outer scope per row.
+  CTE/derived bodies may include a single equi-join.
 - Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v4) that store
   `rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and per-index B+ tree
-  nodes plus hash buckets. On v4 load, heap pages are restored then index pages are installed without
+  nodes plus hash buckets. Index definitions encode expression indexes as `expr:…` alongside column
+  names. On v4 load, heap pages are restored then index pages are installed without
   `rebuildIndexes()`. v3 loads page payloads and rebuilds indexes; sparse v2 and dense v1 remain
   readable. WAL recovery replays page-image / legacy physical / logical SQL payloads after the latest
   save checkpoint.
@@ -81,16 +87,17 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - Planner costs use live \(N\) and index distinct keys \(D\) without histograms; there is no
   multi-index AND intersection or top-level `OR` index union yet.
 - Top-level `OR` predicates are not split for indexing; they force a full scan.
-- Nested SQL is limited: no nested `WITH`, no correlated subqueries, no outer `JOIN` against a
-  CTE/derived alias, no `JOIN` inside `IN` subqueries, and no expression/regex indexes.
-  CTE/derived bodies may include a single equi-join.
+- Nested SQL is limited: no nested `WITH`, no multi-level correlated subqueries, no outer `JOIN`
+  against a CTE/derived alias, no `JOIN` inside `IN`/`EXISTS` subqueries, and no regex/substring
+  indexes. Single-level correlation and expression indexes (`column`, `-column`, `column+/-literal`)
+  are supported. CTE/derived bodies may include a single equi-join.
 - SQL support is intentionally limited and does not include aggregation, grouping, or general DDL.
   Joins are single equi-joins only.
 
 ## Next Engineering Plan
 
 1. Persist index pages in snapshots; evolve redo toward page images. — **done** (v4 + `PageImageRedo`)
-2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`.
+2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`. — **done**
 3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins.
 4. Add histograms / `ANALYZE` and multi-index AND optimization.
 5. Turn benchmark output into documented reports and trend comparisons.

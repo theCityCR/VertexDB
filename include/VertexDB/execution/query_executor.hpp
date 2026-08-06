@@ -61,9 +61,18 @@ class QueryExecutor {
     [[nodiscard]] Select prepareSelect(const Select &command, RewriteResult &rewrite) const;
     [[nodiscard]] Predicate materializePredicate(const Predicate &predicate) const;
     [[nodiscard]] std::vector<Value> evaluateSubqueryValues(const Select &subquery) const;
+    [[nodiscard]] bool evaluateExists(const Select &subquery) const;
+    [[nodiscard]] Select bindOuterReferences(const Select &subquery, const Row &outerRow,
+                                             const Table &outerTable) const;
+    [[nodiscard]] Predicate bindOuterReferences(const Predicate &predicate, const Row &outerRow,
+                                                const Table &outerTable) const;
+    [[nodiscard]] std::shared_ptr<Table>
+    materializeCteTable(const std::string &name, const Select &body) const;
+    [[nodiscard]] std::shared_ptr<Table>
+    requireTable(std::string_view tableName,
+                 const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
     [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
                                                const RewriteResult &rewrite) const;
-    [[nodiscard]] std::shared_ptr<Table> requireTable(std::string_view tableName) const;
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
     [[nodiscard]] std::string bindPreparedSql(const ExecutePrepared &command) const;
     [[nodiscard]] ReadSnapshot readSnapshot() const;

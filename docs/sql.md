@@ -25,7 +25,13 @@ ORDER BY Employees.name DESC
 LIMIT 5;
 WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
+WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
+SELECT name FROM high WHERE id = 1;
+WITH high AS NOT MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
+SELECT name FROM high WHERE id = 1;
 SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > 100000.0);
+SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id);
+SELECT name FROM Employees WHERE id IN (SELECT emp_id FROM Bonuses WHERE emp_id = id);
 SELECT name FROM (
   SELECT id, name, salary FROM Employees WHERE salary > 100000.0
 ) AS high WHERE id = 1;
@@ -37,6 +43,9 @@ SELECT name FROM high WHERE id = 1;
 UPDATE Employees SET salary = 150000.0 WHERE id = 1;
 DELETE FROM Employees WHERE id = 5;
 CREATE INDEX idx_salary ON Employees(salary);
+CREATE INDEX idx_neg_salary ON Employees((-salary));
+CREATE INDEX idx_id_plus ON Employees((id+1));
+SELECT name FROM Employees WHERE (-salary) = -120000.0;
 PREPARE by_id AS "SELECT name FROM Employees WHERE id = ?;";
 EXECUTE by_id VALUES (1);
 SAVE DATABASE;
@@ -48,23 +57,35 @@ ROLLBACK;
 EXIT;
 ```
 
-`CREATE INDEX` builds maintained hash and ordered index structures for the target column. Equality
-predicates can use hash index lookup. Less-than and greater-than predicates can use ordered index
-range lookup when the filtered column is indexed. Compound `AND` predicates select the cheapest
-indexable conjunct for an access path using live row counts and index distinct-key statistics
-(equality ≈ \(N/D\), range ≈ \(N/3\), `IN` ≈ \(K\cdot N/D\)) and evaluate the remaining conjuncts as
-a residual filter. Top-level `OR` predicates still force a full scan; an `OR` nested under `AND`
-may remain as a residual while another conjunct uses an index.
+`CREATE INDEX` builds maintained hash and ordered index structures for the target column or
+expression. Equality predicates can use hash index lookup. Less-than and greater-than predicates can
+use ordered index range lookup when the filtered column (or matching expression) is indexed.
+Compound `AND` predicates select the cheapest indexable conjunct for an access path using live row
+counts and index distinct-key statistics (equality ≈ \(N/D\), range ≈ \(N/3\), `IN` ≈ \(K\cdot N/D\))
+and evaluate the remaining conjuncts as a residual filter. Top-level `OR` predicates still force a
+full scan; an `OR` nested under `AND` may remain as a residual while another conjunct uses an index.
 
-`WITH` CTEs are always inlined into the outer `SELECT` (no materialization fence), so outer filters
-can use base-table indexes. Derived tables `FROM (SELECT …) [AS] alias` normalize to the same inline
-path. `WHERE col IN (SELECT …)` materializes the subquery (which itself may use indexes) and then
-probes the outer column via hash index `IN` lookup when that column is indexed. CTE and derived-table
-bodies may include a single equi-join. Nested `WITH`, correlated subqueries, outer `JOIN` against a
-CTE/derived alias, and `JOIN` inside `IN` subqueries are not supported.
+`WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use
+base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into an ephemeral table
+(with hash indexes on projected columns), and the outer query plans against that temp — `EXPLAIN`
+notes `materialized CTE <name>`. Derived tables `FROM (SELECT …) [AS] alias` normalize to the same
+inline path. `WHERE col IN (SELECT …)` materializes uncorrelated subqueries (which themselves may
+use indexes) and probes the outer column via hash index `IN` lookup when indexed. Correlated
+`IN` / `EXISTS` with single-level outer refs (`table.column` or unambiguous unqualified names) bind
+outer values per candidate row; multi-level correlation is rejected. CTE and derived-table bodies
+may include a single equi-join. Nested `WITH`, outer `JOIN` against a CTE/derived alias, and `JOIN`
+inside `IN`/`EXISTS` subqueries are not supported.
+
+`CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
+`CREATE INDEX idx ON t((expr))` builds the same structures on an evaluated expression key, where
+`expr` is a column, unary `-column`, or `column +/- literal`. Predicates of the form `(expr) = const`
+or `(expr) >/< const` can use the expression index; `EXPLAIN` reports expression hash/ordered
+access. Expression metadata is stored with index definitions in snapshot v4 (`expr:…` encoding) so
+SAVE/LOAD restores expression indexes without losing keys.
 
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
-the access path or join algorithm, CTE inlining notes, residual status, and `est_rows` / `cost`.
+the access path or join algorithm, CTE inlining/materialization notes, residual status, and
+`est_rows` / `cost`.
 
 `JOIN` supports a single equi-join. Joined result columns are qualified as `LeftTable.column` and
 `RightTable.column`. Projection, `WHERE`, `ORDER BY`, and `LIMIT` can reference qualified columns;
@@ -79,11 +100,12 @@ binds values positionally, reparses the bound statement, and executes it through
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
 page-payload + index-pages format v4, extension `.tcrdb`) under the executor's storage root. Current
-snapshots store schemas, index definitions, `rowsPerPage`, capacity, free-list order, serialized
-page-directory payloads, and durable B+ tree / hash index pages so sparse IDs, page bytes, and
-indexes survive checkpoints without an index rebuild. Older page-payload v3, sparse v2, and dense v1
-snapshots remain readable (v1–v3 still rebuild indexes after rows). `LOAD DATABASE` without a name
-reloads the active database when one exists, otherwise it loads the first saved database file.
+snapshots store schemas, index definitions (column or `expr:`-prefixed expression metadata),
+`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and durable B+ tree /
+hash index pages so sparse IDs, page bytes, and indexes survive checkpoints without an index rebuild.
+Older page-payload v3, sparse v2, and dense v1 snapshots remain readable (v1–v3 still rebuild indexes
+after rows). `LOAD DATABASE` without a name reloads the active database when one exists, otherwise it
+loads the first saved database file.
 Query executors also recover automatically on startup by loading the latest saved snapshot and
 replaying WAL records after that checkpoint. DML redo uses page images (`PageImageRedo`); DDL uses
 logical SQL. Legacy `PhysicalRedo` row after-images remain replayable. Incomplete trailing WAL
@@ -114,5 +136,5 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 - Aggregates such as `COUNT`.
 - `GROUP BY`.
 - Broader join syntax and multiple joins.
-- Correlated subqueries and `WITH … AS MATERIALIZED`.
-- Expression indexes and specialized indexes for substring/regex predicates.
+- Specialized indexes for substring/regex predicates.
+- Multi-level correlated subqueries.

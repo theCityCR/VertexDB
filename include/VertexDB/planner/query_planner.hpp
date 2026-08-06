@@ -26,6 +26,7 @@ struct QueryPlan {
     AccessPath accessPath{AccessPath::FullScan};
     std::optional<Predicate> residual;
     std::string indexColumn;
+    std::optional<IndexExpression> indexExpression;
     ComparisonOperator indexOp{ComparisonOperator::Equal};
     Value indexValue;
     std::vector<Value> indexValues;

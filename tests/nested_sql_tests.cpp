@@ -29,7 +29,7 @@ TEST(NestedSqlTests, ParsesWithAndInSubqueryAndExplain) {
     ASSERT_TRUE(std::holds_alternative<Select>(withQuery));
     const auto &withSelect = std::get<Select>(withQuery);
     ASSERT_EQ(withSelect.ctes.size(), 1U);
-    EXPECT_EQ(withSelect.ctes[0].first, "high");
+    EXPECT_EQ(withSelect.ctes[0].name, "high");
     EXPECT_EQ(withSelect.table, "high");
     ASSERT_TRUE(withSelect.where.has_value());
     EXPECT_EQ(withSelect.where->kind, Predicate::Kind::Comparison);
@@ -173,9 +173,9 @@ TEST(NestedSqlTests, ParsesDerivedTableAsSyntheticCte) {
     const auto &select = std::get<Select>(query);
     EXPECT_EQ(select.table, "high");
     ASSERT_EQ(select.ctes.size(), 1U);
-    EXPECT_EQ(select.ctes[0].first, "high");
-    ASSERT_TRUE(select.ctes[0].second);
-    EXPECT_EQ(select.ctes[0].second->table, "Employees");
+    EXPECT_EQ(select.ctes[0].name, "high");
+    ASSERT_TRUE(select.ctes[0].body);
+    EXPECT_EQ(select.ctes[0].body->table, "Employees");
 }
 
 TEST(NestedSqlTests, DerivedTableInlinesLikeCte) {
@@ -262,6 +262,158 @@ TEST(NestedSqlTests, PlannerChoosesHashIndexInLookup) {
     const auto plan = planner.planSelect(query, table);
     EXPECT_EQ(plan.accessPath, AccessPath::HashIndexInLookup);
     EXPECT_EQ(plan.indexValues.size(), 2U);
+}
+
+TEST(NestedSqlTests, ParsesMaterializedAndNotMaterializedCte) {
+    Parser parser;
+    auto materialized = parser.parse(
+        "WITH high AS MATERIALIZED (SELECT id, name FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;");
+    ASSERT_TRUE(std::holds_alternative<Select>(materialized));
+    const auto &matSelect = std::get<Select>(materialized);
+    ASSERT_EQ(matSelect.ctes.size(), 1U);
+    EXPECT_EQ(matSelect.ctes[0].materializeMode, MaterializeMode::Materialized);
+
+    auto notMat = parser.parse(
+        "WITH high AS NOT MATERIALIZED (SELECT id, name FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;");
+    EXPECT_EQ(std::get<Select>(notMat).ctes[0].materializeMode, MaterializeMode::NotMaterialized);
+}
+
+TEST(NestedSqlTests, MaterializedCteExplainNoteAndTempIndexLookup) {
+    Parser parser;
+    auto executor = makeExecutor();
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0), (3, \"Cara\", 110000.0);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > "
+        "100000.0) SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("materialized CTE high"), std::string::npos);
+    EXPECT_EQ(text.find("inlined CTE"), std::string::npos);
+    // Outer predicate hits the ephemeral table index, not the base-table id index path note alone.
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, NotMaterializedCteStillInlinesToBaseIndex) {
+    Parser parser;
+    auto executor = makeExecutor();
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS NOT MATERIALIZED (SELECT id, name, salary FROM Employees WHERE "
+        "salary > 100000.0) SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("inlined CTE high"), std::string::npos);
+    EXPECT_EQ(text.find("materialized CTE"), std::string::npos);
+}
+
+TEST(NestedSqlTests, CorrelatedExistsAndInMatchOuterRow) {
+    Parser parser;
+    auto executor = makeExecutor();
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (1, 5000.0);")).success);
+
+    auto existsResult = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE emp_id = "
+        "Employees.id);"));
+    ASSERT_TRUE(existsResult.success);
+    ASSERT_EQ(existsResult.rows.size(), 1U);
+    EXPECT_EQ(existsResult.rows[0][0], Value{"Alice"});
+
+    auto inResult = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN (SELECT emp_id FROM Bonuses WHERE emp_id = id);"));
+    ASSERT_TRUE(inResult.success);
+    ASSERT_EQ(inResult.rows.size(), 1U);
+    EXPECT_EQ(inResult.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, MultiLevelCorrelationIsRejected) {
+    Parser parser;
+    EXPECT_THROW(
+        (void)parser.parse(
+            "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE EXISTS "
+            "(SELECT id FROM Employees e2 WHERE e2.id = Employees.id));"),
+        std::runtime_error);
+}
+
+TEST(NestedSqlTests, ExpressionIndexEqualityAndRangeExplain) {
+    Parser parser;
+    auto executor = makeExecutor();
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0), (3, \"Cara\", 110000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_neg_salary ON Employees((-salary));"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_id_plus ON Employees((id+1));")).success);
+
+    auto eqExplain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(eqExplain.success);
+    EXPECT_NE(eqExplain.rows.front().front().toString().find("expression hash index"),
+              std::string::npos);
+
+    auto eqResult =
+        executor.execute(parser.parse("SELECT name FROM Employees WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(eqResult.success);
+    ASSERT_EQ(eqResult.rows.size(), 1U);
+    EXPECT_EQ(eqResult.rows[0][0], Value{"Alice"});
+
+    auto rangeExplain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE (id+1) > 2;"));
+    ASSERT_TRUE(rangeExplain.success);
+    EXPECT_NE(rangeExplain.rows.front().front().toString().find("expression ordered index"),
+              std::string::npos);
 }
 
 } // namespace VertexDB

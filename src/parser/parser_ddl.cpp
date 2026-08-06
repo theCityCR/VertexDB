@@ -83,12 +83,18 @@ CreateIndex Parser::parseCreateIndex() {
         throw std::runtime_error("expected indexed table name");
     }
     expect(TokenType::LeftParen);
+    if (match(TokenType::LeftParen)) {
+        auto expression = parseIndexExpression();
+        expect(TokenType::RightParen);
+        expect(TokenType::RightParen);
+        return CreateIndex{index.lexeme, table.lexeme, expression.column, std::move(expression)};
+    }
     const auto column = advance();
     if (column.type != TokenType::Identifier) {
         throw std::runtime_error("expected indexed column name");
     }
     expect(TokenType::RightParen);
-    return {index.lexeme, table.lexeme, column.lexeme};
+    return {index.lexeme, table.lexeme, column.lexeme, std::nullopt};
 }
 
 } // namespace VertexDB

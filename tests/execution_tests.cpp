@@ -194,8 +194,9 @@ TEST(ExecutionTests, SaveLoadPreservesSparseRowIdsAndFreeListReuse) {
     {
         const auto definitions = table->indexDefinitions();
         ASSERT_EQ(definitions.size(), 1U);
-        EXPECT_EQ(definitions.front().first, "idx_id");
-        EXPECT_EQ(definitions.front().second, "id");
+        EXPECT_EQ(definitions.front().name, "idx_id");
+        EXPECT_EQ(definitions.front().column, "id");
+        EXPECT_FALSE(definitions.front().expression.has_value());
     }
     EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3)})
                   .value_or(std::vector<RowId>{}),

@@ -1,5 +1,7 @@
 #include "VertexDB/execution/sql_literal.hpp"
 
+#include "VertexDB/common/index_expression.hpp"
+
 #include <sstream>
 
 namespace VertexDB {
@@ -58,6 +60,9 @@ std::string predicateLiteral(const Predicate &predicate) {
     if (predicate.kind == Predicate::Kind::InSubquery) {
         return predicate.column + " IN (SELECT ...)";
     }
+    if (predicate.kind == Predicate::Kind::Exists) {
+        return "EXISTS (SELECT ...)";
+    }
 
     std::string op;
     switch (predicate.op) {
@@ -71,7 +76,22 @@ std::string predicateLiteral(const Predicate &predicate) {
         op = "<";
         break;
     }
-    return predicate.column + " " + op + " " + sqlLiteral(predicate.value);
+    std::string left = predicate.column;
+    if (predicate.expression) {
+        left = "(" + indexExpressionToString(*predicate.expression) + ")";
+    }
+    if (predicate.rhsColumn) {
+        return left + " " + op + " " + *predicate.rhsColumn;
+    }
+    return left + " " + op + " " + sqlLiteral(predicate.value);
+}
+
+std::string createIndexSql(const CreateIndex &command) {
+    if (command.expression) {
+        return "CREATE INDEX " + command.name + " ON " + command.table + "((" +
+               indexExpressionToString(*command.expression) + "));";
+    }
+    return "CREATE INDEX " + command.name + " ON " + command.table + "(" + command.column + ");";
 }
 
 std::string createTableSql(const CreateTable &command) {
@@ -122,10 +142,6 @@ std::string deleteSql(const Delete &command) {
     }
     sql << ";";
     return sql.str();
-}
-
-std::string createIndexSql(const CreateIndex &command) {
-    return "CREATE INDEX " + command.name + " ON " + command.table + "(" + command.column + ");";
 }
 
 } // namespace VertexDB

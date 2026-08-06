@@ -48,7 +48,7 @@ Select Parser::parseSelectAfterSelectKeyword() {
     expect(TokenType::Identifier, "FROM");
 
     std::string tableName;
-    std::vector<std::pair<std::string, std::shared_ptr<Select>>> derivedCtes;
+    std::vector<CteEntry> derivedCtes;
     if (match(TokenType::LeftParen)) {
         // Derived table: FROM (SELECT ...) [AS] alias — normalize to a synthetic CTE.
         expect(TokenType::Identifier, "SELECT");
@@ -60,7 +60,9 @@ Select Parser::parseSelectAfterSelectKeyword() {
             throw std::runtime_error("expected derived table alias");
         }
         tableName = alias.lexeme;
-        derivedCtes.emplace_back(alias.lexeme, std::make_shared<Select>(std::move(body)));
+        derivedCtes.push_back(
+            CteEntry{alias.lexeme, std::make_shared<Select>(std::move(body)),
+                     MaterializeMode::DefaultInline});
     } else {
         const auto table = advance();
         if (table.type != TokenType::Identifier) {
@@ -91,9 +93,12 @@ Select Parser::parseSelectAfterSelectKeyword() {
     std::optional<Predicate> where;
     std::optional<OrderBy> orderBy;
     std::optional<std::size_t> limit;
+    const auto previousFromTable = currentFromTable_;
+    currentFromTable_ = tableName;
     if (match(TokenType::Identifier, "WHERE")) {
         where = parsePredicate();
     }
+    currentFromTable_ = previousFromTable;
     if (match(TokenType::Identifier, "ORDER")) {
         expect(TokenType::Identifier, "BY");
         const auto column = advance();
@@ -121,20 +126,27 @@ Select Parser::parseSelectAfterSelectKeyword() {
 }
 
 Select Parser::parseWithSelect() {
-    std::vector<std::pair<std::string, std::shared_ptr<Select>>> ctes;
+    std::vector<CteEntry> ctes;
     do {
         const auto name = advance();
         if (name.type != TokenType::Identifier) {
             throw std::runtime_error("expected CTE name");
         }
         expect(TokenType::Identifier, "AS");
+        MaterializeMode mode = MaterializeMode::DefaultInline;
+        if (match(TokenType::Identifier, "NOT")) {
+            expect(TokenType::Identifier, "MATERIALIZED");
+            mode = MaterializeMode::NotMaterialized;
+        } else if (match(TokenType::Identifier, "MATERIALIZED")) {
+            mode = MaterializeMode::Materialized;
+        }
         expect(TokenType::LeftParen);
         if (match(TokenType::Identifier, "WITH")) {
             throw std::runtime_error("nested WITH inside CTE is not supported");
         }
         auto body = parseSelect();
         expect(TokenType::RightParen);
-        ctes.emplace_back(name.lexeme, std::make_shared<Select>(std::move(body)));
+        ctes.push_back(CteEntry{name.lexeme, std::make_shared<Select>(std::move(body)), mode});
     } while (match(TokenType::Comma));
 
     expect(TokenType::Identifier, "SELECT");

@@ -1,11 +1,13 @@
 #include "VertexDB/execution/query_executor.hpp"
 
+#include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/predicate_eval.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 
+#include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -170,11 +172,15 @@ QueryResult QueryExecutor::executeInsert(const Insert &command) {
 QueryResult QueryExecutor::executeSelect(const Select &command) {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(command, rewrite);
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+    for (const auto &[name, body] : rewrite.materialize) {
+        temps.emplace(name, materializeCteTable(name, body));
+    }
     if (prepared.join) {
         return executeJoinSelect(prepared);
     }
 
-    auto table = requireTable(prepared.table);
+    auto table = requireTable(prepared.table, temps);
     const auto plan = planPreparedSelect(prepared, *table, rewrite);
 
     std::vector<std::string> columns;
@@ -195,9 +201,13 @@ QueryResult QueryExecutor::executeSelect(const Select &command) {
 QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(command.query, rewrite);
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+    for (const auto &[name, body] : rewrite.materialize) {
+        temps.emplace(name, materializeCteTable(name, body));
+    }
     if (prepared.join) {
-        auto leftTable = requireTable(prepared.table);
-        auto rightTable = requireTable(prepared.join->table);
+        auto leftTable = requireTable(prepared.table, temps);
+        auto rightTable = requireTable(prepared.join->table, temps);
         const auto joinPlan = planner_.planJoin(*leftTable, *rightTable, *prepared.join);
         QueryResult result;
         result.success = true;
@@ -210,7 +220,7 @@ QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
         return result;
     }
 
-    auto table = requireTable(prepared.table);
+    auto table = requireTable(prepared.table, temps);
     const auto plan = planPreparedSelect(prepared, *table, rewrite);
     QueryResult result;
     result.success = true;
@@ -276,7 +286,9 @@ QueryResult QueryExecutor::executeCreateIndex(const CreateIndex &command) {
         return rejected;
     }
     auto table = requireTable(command.table);
-    const bool created = table->createIndex(command.name, command.column);
+    const bool created =
+        command.expression ? table->createIndex(command.name, *command.expression)
+                           : table->createIndex(command.name, command.column);
     if (created) {
         appendWal(WalOperation::CreateIndex, createIndexSql(command));
     }
@@ -405,12 +417,25 @@ std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &
     };
 
     if (plan.accessPath == AccessPath::HashIndexLookup) {
+        if (plan.indexExpression) {
+            if (auto rowIds = table.indexedLookup(*plan.indexExpression, plan.indexValue)) {
+                return applyResidual(rowsByIdForRead(table, *rowIds));
+            }
+            return {};
+        }
         if (auto rowIds = table.indexedLookup(plan.indexColumn, plan.indexValue)) {
             return applyResidual(rowsByIdForRead(table, *rowIds));
         }
         return {};
     }
     if (plan.accessPath == AccessPath::OrderedIndexRange) {
+        if (plan.indexExpression) {
+            if (auto rowIds = table.orderedLookup(*plan.indexExpression, plan.indexOp,
+                                                  plan.indexValue)) {
+                return applyResidual(rowsByIdForRead(table, *rowIds));
+            }
+            return {};
+        }
         if (auto rowIds =
                 table.orderedLookup(plan.indexColumn, plan.indexOp, plan.indexValue)) {
             return applyResidual(rowsByIdForRead(table, *rowIds));
@@ -548,8 +573,56 @@ QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
 }
 
 bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate &predicate) const {
+    if (predicate.kind == Predicate::Kind::And) {
+        return matches(row, table, *predicate.left) && matches(row, table, *predicate.right);
+    }
+    if (predicate.kind == Predicate::Kind::Or) {
+        return matches(row, table, *predicate.left) || matches(row, table, *predicate.right);
+    }
+    if (predicate.kind == Predicate::Kind::Exists) {
+        if (!predicate.subquery) {
+            throw std::runtime_error("EXISTS subquery is missing");
+        }
+        if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
+            const Select bound = bindOuterReferences(*predicate.subquery, row, table);
+            return evaluateExists(bound);
+        }
+        return evaluateExists(*predicate.subquery);
+    }
+    if (predicate.kind == Predicate::Kind::InSubquery) {
+        if (!predicate.subquery) {
+            throw std::runtime_error("IN subquery is missing");
+        }
+        std::vector<Value> values;
+        if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
+            const Select bound = bindOuterReferences(*predicate.subquery, row, table);
+            values = evaluateSubqueryValues(bound);
+        } else {
+            values = evaluateSubqueryValues(*predicate.subquery);
+        }
+        const auto index = table.columnIndex(predicate.column);
+        if (!index) {
+            throw std::runtime_error("unknown predicate column");
+        }
+        for (const auto &value : values) {
+            if (row[*index] == value) {
+                return true;
+            }
+        }
+        return false;
+    }
     return evalPredicate(predicate, row, [&](std::string_view column) {
-        return table.columnIndex(column);
+        auto index = table.columnIndex(column);
+        if (index) {
+            return index;
+        }
+        // Allow table.column against the current table schema.
+        const auto dot = column.find('.');
+        if (dot != std::string_view::npos &&
+            equalsIgnoreCase(column.substr(0, dot), table.name())) {
+            return table.columnIndex(column.substr(dot + 1));
+        }
+        return std::optional<std::size_t>{};
     });
 }
 
@@ -567,9 +640,15 @@ Predicate QueryExecutor::materializePredicate(const Predicate &predicate) const 
         return Predicate{predicate.kind, std::make_shared<Predicate>(materializePredicate(*predicate.left)),
                          std::make_shared<Predicate>(materializePredicate(*predicate.right))};
     }
+    if (predicate.kind == Predicate::Kind::Exists) {
+        return predicate;
+    }
     if (predicate.kind == Predicate::Kind::InSubquery) {
         if (!predicate.subquery) {
             throw std::runtime_error("IN subquery is missing");
+        }
+        if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
+            return predicate;
         }
         return Predicate{predicate.column, evaluateSubqueryValues(*predicate.subquery)};
     }
@@ -613,6 +692,152 @@ std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery)
     return values;
 }
 
+bool QueryExecutor::evaluateExists(const Select &subquery) const {
+    RewriteResult rewrite;
+    Select prepared = prepareSelect(subquery, rewrite);
+    if (prepared.join) {
+        throw std::runtime_error("JOIN inside EXISTS subquery is not supported");
+    }
+    prepared.limit = 1;
+    auto table = requireTable(prepared.table);
+    const auto plan = planPreparedSelect(prepared, *table, rewrite);
+    auto rows = collectRows(prepared, *table, plan);
+    return !rows.empty();
+}
+
+namespace {
+
+[[nodiscard]] std::string_view unqualifiedName(std::string_view name) {
+    const auto dot = name.rfind('.');
+    if (dot == std::string_view::npos) {
+        return name;
+    }
+    return name.substr(dot + 1);
+}
+
+[[nodiscard]] Value outerColumnValue(std::string_view column, const Row &outerRow,
+                                     const Table &outerTable) {
+    auto index = outerTable.columnIndex(unqualifiedName(column));
+    if (!index) {
+        throw std::runtime_error("unknown outer reference column");
+    }
+    return outerRow[*index];
+}
+
+} // namespace
+
+Predicate QueryExecutor::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
+                                             const Table &outerTable) const {
+    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
+        return Predicate{predicate.kind,
+                         std::make_shared<Predicate>(
+                             bindOuterReferences(*predicate.left, outerRow, outerTable)),
+                         std::make_shared<Predicate>(
+                             bindOuterReferences(*predicate.right, outerRow, outerTable))};
+    }
+    if (predicate.kind == Predicate::Kind::InSubquery || predicate.kind == Predicate::Kind::Exists) {
+        throw std::runtime_error("multi-level correlated subqueries are not supported");
+    }
+    if (predicate.kind != Predicate::Kind::Comparison) {
+        return predicate;
+    }
+    Predicate bound = predicate;
+    bound.referencesOuter = false;
+    if (predicate.rhsColumn) {
+        bound.rhsColumn.reset();
+        bound.value = outerColumnValue(*predicate.rhsColumn, outerRow, outerTable);
+    }
+    return bound;
+}
+
+Select QueryExecutor::bindOuterReferences(const Select &subquery, const Row &outerRow,
+                                          const Table &outerTable) const {
+    Select bound = subquery;
+    bound.hasOuterRefs = false;
+    if (bound.where) {
+        bound.where = bindOuterReferences(*bound.where, outerRow, outerTable);
+    }
+    return bound;
+}
+
+std::shared_ptr<Table> QueryExecutor::materializeCteTable(const std::string &name,
+                                                          const Select &body) const {
+    RewriteResult rewrite;
+    const Select prepared = prepareSelect(body, rewrite);
+    QueryResult bodyResult;
+    if (prepared.join) {
+        bodyResult = const_cast<QueryExecutor *>(this)->executeJoinSelect(prepared);
+    } else {
+        auto source = requireTable(prepared.table);
+        const auto plan = planPreparedSelect(prepared, *source, rewrite);
+        std::vector<std::string> projectedNames;
+        const auto projection = resolveProjection(prepared, *source, projectedNames);
+        auto rows = collectRows(prepared, *source, plan);
+        if (prepared.orderBy) {
+            const auto orderIndex = source->columnIndex(prepared.orderBy->column);
+            if (!orderIndex) {
+                throw std::runtime_error("unknown ORDER BY column");
+            }
+            sortRowsByColumn(rows, *orderIndex, prepared.orderBy->ascending);
+        }
+        if (prepared.limit && rows.size() > *prepared.limit) {
+            rows.resize(*prepared.limit);
+        }
+        bodyResult.success = true;
+        bodyResult.columns = std::move(projectedNames);
+        for (const auto &row : rows) {
+            Row projected;
+            projected.reserve(projection.size());
+            for (const auto index : projection) {
+                projected.push_back(row[index]);
+            }
+            bodyResult.rows.push_back(std::move(projected));
+        }
+        // Capture types from the source schema for projected columns.
+        std::vector<Column> schema;
+        schema.reserve(projection.size());
+        for (std::size_t i = 0; i < projection.size(); ++i) {
+            const auto &sourceColumn = source->schema()[projection[i]];
+            schema.push_back({bodyResult.columns[i], sourceColumn.type, sourceColumn.nullable});
+        }
+        auto table = std::make_shared<Table>(name, std::move(schema));
+        for (auto &row : bodyResult.rows) {
+            table->insert(std::move(row));
+        }
+        for (const auto &column : table->schema()) {
+            (void)table->createIndex(std::string{"idx_"} + column.name, column.name);
+        }
+        return table;
+    }
+
+    if (!bodyResult.success) {
+        throw std::runtime_error(bodyResult.message);
+    }
+    std::vector<Column> schema;
+    schema.reserve(bodyResult.columns.size());
+    for (std::size_t i = 0; i < bodyResult.columns.size(); ++i) {
+        ColumnType type = ColumnType::Int;
+        for (const auto &row : bodyResult.rows) {
+            if (!row[i].isNull()) {
+                type = row[i].type();
+                break;
+            }
+        }
+        schema.push_back({bodyResult.columns[i], type, true});
+    }
+    if (schema.empty()) {
+        throw std::runtime_error("materialized CTE produced no columns");
+    }
+    auto table = std::make_shared<Table>(name, std::move(schema));
+    for (auto &row : bodyResult.rows) {
+        table->insert(std::move(row));
+    }
+    for (const auto &column : table->schema()) {
+        (void)table->createIndex(std::string{"idx_"} + column.name, column.name);
+    }
+    return table;
+}
+
 QueryPlan QueryExecutor::planPreparedSelect(const Select &command, const Table &table,
                                             const RewriteResult &rewrite) const {
     auto plan = planner_.planSelect(command, table);
@@ -622,7 +847,14 @@ QueryPlan QueryExecutor::planPreparedSelect(const Select &command, const Table &
     return plan;
 }
 
-std::shared_ptr<Table> QueryExecutor::requireTable(std::string_view tableName) const {
+std::shared_ptr<Table> QueryExecutor::requireTable(
+    std::string_view tableName,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
+    for (const auto &[name, table] : temps) {
+        if (equalsIgnoreCase(name, tableName)) {
+            return table;
+        }
+    }
     if (!database_) {
         throw std::runtime_error("no active database");
     }

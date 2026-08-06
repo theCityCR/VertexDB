@@ -7,12 +7,34 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace VertexDB {
 
 struct Select;
+
+enum class MaterializeMode {
+    DefaultInline,
+    Materialized,
+    NotMaterialized,
+};
+
+struct IndexExpression {
+    enum class Kind { Column, Negate, Add, Subtract };
+
+    Kind kind{Kind::Column};
+    std::string column;
+    Value literal{};
+
+    [[nodiscard]] friend bool operator==(const IndexExpression &lhs,
+                                         const IndexExpression &rhs) = default;
+};
+
+struct CteEntry {
+    std::string name;
+    std::shared_ptr<Select> body;
+    MaterializeMode materializeMode{MaterializeMode::DefaultInline};
+};
 
 struct Predicate {
     enum class Kind {
@@ -21,6 +43,7 @@ struct Predicate {
         Or,
         InSubquery,
         InList,
+        Exists,
     };
 
     Predicate() = default;
@@ -33,6 +56,22 @@ struct Predicate {
         : kind(Kind::InSubquery), column(std::move(columnName)), subquery(std::move(sub)) {}
     Predicate(std::string columnName, std::vector<Value> values)
         : kind(Kind::InList), column(std::move(columnName)), inValues(std::move(values)) {}
+    static Predicate makeExists(std::shared_ptr<Select> sub) {
+        Predicate predicate;
+        predicate.kind = Kind::Exists;
+        predicate.subquery = std::move(sub);
+        return predicate;
+    }
+    static Predicate makeExpressionComparison(IndexExpression expr, ComparisonOperator comparison,
+                                              Value comparisonValue) {
+        Predicate predicate;
+        predicate.kind = Kind::Comparison;
+        predicate.expression = std::move(expr);
+        predicate.column = predicate.expression->column;
+        predicate.op = comparison;
+        predicate.value = std::move(comparisonValue);
+        return predicate;
+    }
 
     Kind kind{Kind::Comparison};
     std::string column;
@@ -42,6 +81,11 @@ struct Predicate {
     std::shared_ptr<Predicate> right;
     std::shared_ptr<Select> subquery;
     std::vector<Value> inValues;
+    // When set, Comparison compares column/expression against an outer (or unqualified) column
+    // instead of a literal value.
+    std::optional<std::string> rhsColumn;
+    std::optional<IndexExpression> expression;
+    bool referencesOuter{false};
 };
 
 struct CreateDatabase {
@@ -88,7 +132,8 @@ struct Select {
     std::optional<OrderBy> orderBy;
     std::optional<std::size_t> limit;
     // CTE bodies are stored by shared_ptr to avoid an incomplete-type cycle.
-    std::vector<std::pair<std::string, std::shared_ptr<Select>>> ctes;
+    std::vector<CteEntry> ctes;
+    bool hasOuterRefs{false};
 };
 
 struct Update {
@@ -107,6 +152,7 @@ struct CreateIndex {
     std::string name;
     std::string table;
     std::string column;
+    std::optional<IndexExpression> expression;
 };
 
 struct SaveDatabase {};

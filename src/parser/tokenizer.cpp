@@ -36,7 +36,7 @@ std::vector<Token> Tokenizer::tokenize(std::string_view sql) const {
             continue;
         }
 
-        if (std::isdigit(static_cast<unsigned char>(ch)) != 0 || ch == '-') {
+        if (std::isdigit(static_cast<unsigned char>(ch)) != 0) {
             const std::size_t start = pos++;
             while (pos < sql.size() &&
                    (std::isdigit(static_cast<unsigned char>(sql[pos])) != 0 || sql[pos] == '.')) {
@@ -91,6 +91,12 @@ std::vector<Token> Tokenizer::tokenize(std::string_view sql) const {
             break;
         case '<':
             tokens.push_back({TokenType::Less, "<"});
+            break;
+        case '+':
+            tokens.push_back({TokenType::Plus, "+"});
+            break;
+        case '-':
+            tokens.push_back({TokenType::Minus, "-"});
             break;
         default:
             throw std::runtime_error("unexpected character in SQL input");

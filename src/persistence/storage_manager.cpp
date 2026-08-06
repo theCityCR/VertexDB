@@ -1,6 +1,7 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 
 #include "VertexDB/common/binary_io.hpp"
+#include "VertexDB/common/index_expression.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -358,9 +359,9 @@ void StorageManager::saveDatabase(const Database &database) const {
 
             const auto indexes = table->indexDefinitions();
             writePodDb(out, static_cast<std::uint64_t>(indexes.size()));
-            for (const auto &[indexName, columnName] : indexes) {
-                writeString(out, indexName);
-                writeString(out, columnName);
+            for (const auto &definition : indexes) {
+                writeString(out, definition.name);
+                writeString(out, encodeIndexDefinitionColumn(definition.column, definition.expression));
             }
 
             writePagePayloadRows(out, *table);
@@ -431,13 +432,19 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
         const bool restoreIndexPages = version == kVersion;
         for (const auto &definition : indexDefinitions) {
             const auto &indexName = definition.first;
-            const auto &columnName = definition.second;
-            const bool ok = restoreIndexPages
-                                ? table->createIndexWithoutRebuild(indexName, columnName)
-                                : table->createIndex(indexName, columnName);
+            const auto decoded = decodeIndexDefinitionColumn(definition.second);
+            const bool ok = [&]() {
+                if (decoded.second) {
+                    return restoreIndexPages
+                               ? table->createIndexWithoutRebuild(indexName, *decoded.second)
+                               : table->createIndex(indexName, *decoded.second);
+                }
+                return restoreIndexPages ? table->createIndexWithoutRebuild(indexName, decoded.first)
+                                         : table->createIndex(indexName, decoded.first);
+            }();
             if (!ok) {
                 throw std::runtime_error("failed to restore index '" + indexName +
-                                         "' on column '" + columnName + "' for table '" +
+                                         "' on column '" + definition.second + "' for table '" +
                                          tableName + "'");
             }
         }

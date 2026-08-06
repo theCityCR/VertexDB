@@ -39,10 +39,20 @@ class Parser {
     [[nodiscard]] Predicate parseAndPredicate();
     [[nodiscard]] Predicate parsePrimaryPredicate();
     [[nodiscard]] Predicate parseComparisonPredicate();
+    [[nodiscard]] Predicate parseExistsPredicate();
+    [[nodiscard]] IndexExpression parseIndexExpression();
     [[nodiscard]] Value parseValue();
+    [[nodiscard]] Select parseSubquerySelect(bool allowOuterRefs);
+    void markOuterRefs(Select &select, std::string_view innerTable, bool nestedUnderCorrelated);
+    void markOuterRefs(Predicate &predicate, std::string_view innerTable,
+                       bool nestedUnderCorrelated);
 
     std::span<const Token> tokens_;
     std::size_t current_{0};
+    // Immediate FROM table of the SELECT whose WHERE/predicate is being parsed.
+    std::string currentFromTable_;
+    // Outer FROM tables while parsing nested subqueries (immediate outer is back()).
+    std::vector<std::string> outerTableStack_;
 };
 
 } // namespace VertexDB

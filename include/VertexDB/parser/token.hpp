@@ -17,6 +17,8 @@ enum class TokenType : std::uint8_t {
     Equal,
     Greater,
     Less,
+    Plus,
+    Minus,
     End,
 };
 

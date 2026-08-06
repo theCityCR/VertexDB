@@ -25,6 +25,15 @@ Select stripCtes(Select query) {
     return query;
 }
 
+[[nodiscard]] const CteEntry *findCte(const Select &query, std::string_view table) {
+    for (const auto &cte : query.ctes) {
+        if (equalsIgnoreCase(cte.name, table)) {
+            return &cte;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 RewriteResult rewriteSelect(const Select &query) {
@@ -36,16 +45,7 @@ RewriteResult rewriteSelect(const Select &query) {
         return result;
     }
 
-    const auto *matched = static_cast<const Select *>(nullptr);
-    std::string matchedName;
-    for (const auto &[name, body] : query.ctes) {
-        if (equalsIgnoreCase(name, query.table)) {
-            matched = body.get();
-            matchedName = name;
-            break;
-        }
-    }
-
+    const CteEntry *matched = findCte(query, query.table);
     if (matched == nullptr) {
         // FROM is a base table; CTEs unused in FROM (may still appear only as documentation).
         result.query = stripCtes(std::move(result.query));
@@ -60,15 +60,44 @@ RewriteResult rewriteSelect(const Select &query) {
     }
 
     // Fully rewrite the CTE/derived body first (nested derived tables become synthetic CTEs).
-    Select bodySelect = *matched;
+    Select bodySelect = *matched->body;
     if (!bodySelect.ctes.empty()) {
         auto bodyRewrite = rewriteSelect(bodySelect);
         for (auto &note : bodyRewrite.notes) {
             result.notes.push_back(std::move(note));
         }
+        for (auto &item : bodyRewrite.materialize) {
+            result.materialize.push_back(std::move(item));
+        }
         bodySelect = std::move(bodyRewrite.query);
     }
 
+    if (matched->materializeMode == MaterializeMode::Materialized) {
+        result.notes.push_back("materialized CTE " + matched->name);
+        Select remaining = query;
+        remaining.ctes.clear();
+        for (const auto &cte : query.ctes) {
+            if (!equalsIgnoreCase(cte.name, matched->name)) {
+                remaining.ctes.push_back(cte);
+            }
+        }
+        result.materialize.emplace_back(matched->name, std::move(bodySelect));
+        if (!remaining.ctes.empty()) {
+            auto recursive = rewriteSelect(remaining);
+            for (auto &note : recursive.notes) {
+                result.notes.push_back(std::move(note));
+            }
+            for (auto &item : recursive.materialize) {
+                result.materialize.push_back(std::move(item));
+            }
+            result.query = std::move(recursive.query);
+            return result;
+        }
+        result.query = stripCtes(std::move(remaining));
+        return result;
+    }
+
+    // DefaultInline / NotMaterialized: always inline (today's behavior).
     Select inlined = std::move(bodySelect);
     // Outer projection wins when not "*"; CTE projection restricts available columns for "*".
     if (!(query.columns.size() == 1 && query.columns.front() == "*")) {
@@ -87,19 +116,22 @@ RewriteResult rewriteSelect(const Select &query) {
     inlined.ctes.clear();
     // Preserve a JOIN that lived inside the CTE/derived body.
 
-    result.notes.push_back("inlined CTE " + matchedName);
+    result.notes.push_back("inlined CTE " + matched->name);
     // Recursively inline if the CTE body still referenced another CTE name from the same WITH.
     // Rebuild a Select that carries remaining CTEs for nested references.
     if (query.ctes.size() > 1) {
         Select nested = inlined;
-        for (const auto &[name, body] : query.ctes) {
-            if (!equalsIgnoreCase(name, matchedName)) {
-                nested.ctes.emplace_back(name, body);
+        for (const auto &cte : query.ctes) {
+            if (!equalsIgnoreCase(cte.name, matched->name)) {
+                nested.ctes.push_back(cte);
             }
         }
         auto recursive = rewriteSelect(nested);
         for (auto &note : recursive.notes) {
             result.notes.push_back(std::move(note));
+        }
+        for (auto &item : recursive.materialize) {
+            result.materialize.push_back(std::move(item));
         }
         result.query = std::move(recursive.query);
         return result;

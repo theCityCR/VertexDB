@@ -112,9 +112,10 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 114 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
-  desired-behavior gaps, persistence (snapshot v4 index pages and page-image WAL), WAL recovery,
-  concurrency, transactions, and regressions
+- 123 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
+  (materialized CTEs, correlated `IN`/`EXISTS`, expression indexes), desired-behavior gaps,
+  persistence (snapshot v4 index pages and page-image WAL), WAL recovery, concurrency, transactions,
+  and regressions
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   88.06%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -131,8 +132,9 @@ Or feed an example script:
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
 - Planner costs use live row counts and index distinct-key counts (no histograms); multi-index
   intersection and top-level `OR` index unions are not implemented
-- Nested SQL is intentionally limited: no nested `WITH`, correlation, outer `JOIN` against a
-  CTE/derived alias, `JOIN` inside `IN` subqueries, or expression/regex indexes
+- Nested SQL is intentionally limited: no nested `WITH`, multi-level correlation, outer `JOIN`
+  against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS` subqueries; expression indexes cover
+  column / unary minus / `+/-` literal only (no regex/substring indexes)
 - SQL support is intentionally focused: no aggregates, grouping, or general DDL; joins are single
   equi-joins only
 
@@ -140,7 +142,7 @@ Or feed an example script:
 
 1. Persist index pages with snapshots and evolve WAL redo toward page images — **done** (snapshot v4
    + `PageImageRedo`)
-2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`
+2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED` — **done**
 3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies
 4. Add histograms / `ANALYZE` and multi-index AND optimization
 

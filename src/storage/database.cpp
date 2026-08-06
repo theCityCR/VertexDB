@@ -42,8 +42,12 @@ bool Database::renameTable(std::string_view oldName, std::string newName) {
     std::vector<Column> schema{oldTable->schema().begin(), oldTable->schema().end()};
     auto replacement = std::make_shared<Table>(newName, std::move(schema));
     // Restore indexes first so replaceSparse can rebuild entries into them.
-    for (const auto &[indexName, columnName] : oldTable->indexDefinitions()) {
-        if (!replacement->createIndex(indexName, columnName)) {
+    for (const auto &definition : oldTable->indexDefinitions()) {
+        const bool ok =
+            definition.expression
+                ? replacement->createIndex(definition.name, *definition.expression)
+                : replacement->createIndex(definition.name, definition.column);
+        if (!ok) {
             return false;
         }
     }
@@ -90,8 +94,12 @@ std::shared_ptr<Database> Database::clone() const {
             throw std::runtime_error("failed to clone table");
         }
         auto destinationTable = copy->table(sourceTable->name());
-        for (const auto &[indexName, columnName] : sourceTable->indexDefinitions()) {
-            if (!destinationTable->createIndex(indexName, columnName)) {
+        for (const auto &definition : sourceTable->indexDefinitions()) {
+            const bool ok =
+                definition.expression
+                    ? destinationTable->createIndex(definition.name, *definition.expression)
+                    : destinationTable->createIndex(definition.name, definition.column);
+            if (!ok) {
                 throw std::runtime_error("failed to clone index");
             }
         }
