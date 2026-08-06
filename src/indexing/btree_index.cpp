@@ -1,8 +1,6 @@
 #include "VertexDB/indexing/btree_index.hpp"
 
 #include <algorithm>
-#include <mutex>
-#include <shared_mutex>
 #include <stdexcept>
 
 namespace VertexDB {
@@ -16,13 +14,11 @@ BTreeIndex::BTreeIndex(std::size_t maxKeysPerLeaf) : maxKeysPerLeaf_(maxKeysPerL
 }
 
 void BTreeIndex::insert(const Value &key, RowId rowId) {
-    std::unique_lock lock{mutex_};
     entries_[key].push_back(rowId);
     layoutDirty_ = true;
 }
 
 void BTreeIndex::remove(const Value &key, RowId rowId) {
-    std::unique_lock lock{mutex_};
     auto it = entries_.find(key);
     if (it == entries_.end()) {
         return;
@@ -35,13 +31,11 @@ void BTreeIndex::remove(const Value &key, RowId rowId) {
 }
 
 void BTreeIndex::clear() {
-    std::unique_lock lock{mutex_};
     entries_.clear();
     layoutDirty_ = true;
 }
 
 std::vector<RowId> BTreeIndex::find(const Value &key) const {
-    std::unique_lock lock{mutex_};
     ensureLayout();
     for (const auto &node : nodes_) {
         if (!node.leaf) {
@@ -57,7 +51,6 @@ std::vector<RowId> BTreeIndex::find(const Value &key) const {
 }
 
 std::vector<RowId> BTreeIndex::lessThan(const Value &key) const {
-    std::unique_lock lock{mutex_};
     ensureLayout();
     std::vector<RowId> result;
     for (const auto &node : nodes_) {
@@ -75,7 +68,6 @@ std::vector<RowId> BTreeIndex::lessThan(const Value &key) const {
 }
 
 std::vector<RowId> BTreeIndex::greaterThan(const Value &key) const {
-    std::unique_lock lock{mutex_};
     ensureLayout();
     std::vector<RowId> result;
     bool collecting = false;
@@ -95,26 +87,20 @@ std::vector<RowId> BTreeIndex::greaterThan(const Value &key) const {
     return result;
 }
 
-std::size_t BTreeIndex::size() const {
-    std::shared_lock lock{mutex_};
-    return entries_.size();
-}
+std::size_t BTreeIndex::size() const { return entries_.size(); }
 
 std::size_t BTreeIndex::height() const {
-    std::unique_lock lock{mutex_};
     ensureLayout();
     return nodes_.size() <= 1 ? 1 : 2;
 }
 
 std::size_t BTreeIndex::leafPageCount() const {
-    std::unique_lock lock{mutex_};
     ensureLayout();
     return static_cast<std::size_t>(
         std::ranges::count_if(nodes_, [](const BTreeNode &node) { return node.leaf; }));
 }
 
 std::vector<BTreeNode> BTreeIndex::nodesSnapshot() const {
-    std::unique_lock lock{mutex_};
     ensureLayout();
     return nodes_;
 }

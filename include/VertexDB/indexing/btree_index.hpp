@@ -4,7 +4,6 @@
 
 #include <map>
 #include <optional>
-#include <shared_mutex>
 #include <vector>
 
 namespace VertexDB {
@@ -40,11 +39,11 @@ class BTreeIndex {
     void rebuildLayout() const;
     void ensureLayout() const;
 
+    // Table::mutex_ serializes access; keep BTreeIndex movable for map storage.
     std::map<Value, std::vector<RowId>> entries_;
     std::size_t maxKeysPerLeaf_;
     mutable std::vector<BTreeNode> nodes_;
     mutable bool layoutDirty_{true};
-    mutable std::shared_mutex mutex_;
 };
 
 } // namespace VertexDB
