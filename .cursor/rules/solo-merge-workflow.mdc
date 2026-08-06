@@ -19,4 +19,6 @@ If work is already on a feature branch, finish it there, then merge into `main` 
 
 ## Pushing
 
-Do not push unless the user asks to push.
+- After commits on `main` (or after merging a branch into `main`), push to `origin` with a normal `git push` when convenient — do not wait to be asked.
+- Never force-push (`--force`, `--force-with-lease`, etc.) unless the user explicitly asks.
+- Do not open pull requests unless explicitly asked.
