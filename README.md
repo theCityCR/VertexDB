@@ -121,7 +121,9 @@ Or feed an example script:
   88.06%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
-  baselines, update/delete throughput, and concurrent indexed point lookups
+  and MATERIALIZED baselines, page vs vector row-store, B+ range, transaction snapshot/rollback,
+  update/delete throughput, and concurrent indexed point lookups; summarized in
+  [docs/benchmarks.md](docs/benchmarks.md)
 
 ## Current Limitations
 
@@ -148,7 +150,8 @@ Or feed an example script:
 3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies —
    **done**
 4. Add histograms / `ANALYZE` and multi-index AND optimization — **done**
-5. Turn benchmark output into documented reports and trend comparisons
+5. Turn benchmark output into documented reports and trend comparisons — **done** (see
+   [docs/benchmarks.md](docs/benchmarks.md))
 
 Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)
 and [materialize vs inline comparison](docs/cte_materialize_comparison.md).

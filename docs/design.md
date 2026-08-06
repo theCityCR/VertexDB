@@ -105,7 +105,8 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED`. — **done**
 3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins. — **done**
 4. Add histograms / `ANALYZE` and multi-index AND optimization. — **done**
-5. Turn benchmark output into documented reports and trend comparisons.
+5. Turn benchmark output into documented reports and trend comparisons. — **done**
+   (see [benchmarks.md](benchmarks.md))
 
 ### CTE index wedge (parallel track) — first milestone shipped
 
