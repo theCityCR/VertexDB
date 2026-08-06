@@ -3,7 +3,6 @@
 #include "VertexDB/parser/parser.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -327,9 +326,10 @@ QueryResult QueryExecutor::executeInsert(const Insert &command) {
     for (const auto &row : command.rows) {
         table->validateRow(row);
     }
+    const auto writerId = writeTransactionId();
     for (const auto &row : command.rows) {
         appendWal(WalOperation::Insert, insertSql(command.table, row));
-        const RowId rowId = table->insert(row);
+        const RowId rowId = table->insert(row, writerId);
         if (transactionActive()) {
             undoLog_.push(UndoRecord{command.table, UndoKind::Insert, rowId, std::nullopt});
         }
@@ -412,12 +412,14 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
     }
 
     std::size_t count = 0;
-    for (const auto &[rowId, row] : table->liveEntries()) {
+    const auto snapshot = readSnapshot();
+    const auto writerId = writeTransactionId();
+    for (const auto &[rowId, row] : table->visibleEntries(snapshot, transactionManager_)) {
         if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
         const Row beforeImage = row;
-        if (table->update(rowId, *target, command.value)) {
+        if (table->update(rowId, *target, command.value, writerId)) {
             if (transactionActive()) {
                 undoLog_.push(
                     UndoRecord{command.table, UndoKind::Update, rowId, std::move(beforeImage)});
@@ -434,12 +436,14 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
 QueryResult QueryExecutor::executeDelete(const Delete &command) {
     auto table = requireTable(command.table);
     std::size_t count = 0;
-    for (const auto &[rowId, row] : table->liveEntries()) {
+    const auto snapshot = readSnapshot();
+    const auto writerId = writeTransactionId();
+    for (const auto &[rowId, row] : table->visibleEntries(snapshot, transactionManager_)) {
         if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
         const Row beforeImage = row;
-        if (table->erase(rowId)) {
+        if (table->erase(rowId, writerId)) {
             if (transactionActive()) {
                 undoLog_.push(
                     UndoRecord{command.table, UndoKind::Delete, rowId, std::move(beforeImage)});
@@ -492,6 +496,7 @@ QueryResult QueryExecutor::executeLoadDatabase(const LoadDatabase &command) {
     }
     undoLog_.clear();
     activeTransaction_.reset();
+    activeSnapshot_.reset();
     return messageResult(true, "loaded database " + database_->name());
 }
 
@@ -503,6 +508,7 @@ QueryResult QueryExecutor::executeBegin() {
         return messageResult(false, "transaction already active");
     }
     activeTransaction_ = transactionManager_.begin().id;
+    activeSnapshot_ = transactionManager_.currentSnapshot(*activeTransaction_);
     undoLog_.clear();
     return messageResult(true, "began transaction");
 }
@@ -513,6 +519,7 @@ QueryResult QueryExecutor::executeCommit() {
     }
     transactionManager_.commit(*activeTransaction_);
     activeTransaction_.reset();
+    activeSnapshot_.reset();
     undoLog_.clear();
     return messageResult(true, "committed transaction");
 }
@@ -526,6 +533,7 @@ QueryResult QueryExecutor::executeRollback() {
     }
     transactionManager_.rollback(*activeTransaction_);
     activeTransaction_.reset();
+    activeSnapshot_.reset();
     undoLog_.clear();
     return messageResult(true, "rolled back transaction");
 }
@@ -874,26 +882,27 @@ std::string QueryExecutor::bindPreparedSql(const ExecutePrepared &command) const
     return bound.str();
 }
 
-std::optional<TransactionId> QueryExecutor::readVersion() const {
-    if (!activeTransaction_) {
-        return std::nullopt;
+ReadSnapshot QueryExecutor::readSnapshot() const {
+    if (activeSnapshot_) {
+        return *activeSnapshot_;
     }
-    return std::numeric_limits<TransactionId>::max();
+    return transactionManager_.currentSnapshot();
+}
+
+TransactionId QueryExecutor::writeTransactionId() {
+    if (activeTransaction_) {
+        return *activeTransaction_;
+    }
+    return transactionManager_.beginCommitted();
 }
 
 std::vector<Row> QueryExecutor::rowsSnapshotForRead(const Table &table) const {
-    if (const auto version = readVersion()) {
-        return table.rowsSnapshot(*version);
-    }
-    return table.rowsSnapshot();
+    return table.rowsSnapshot(readSnapshot(), transactionManager_);
 }
 
 std::vector<Row> QueryExecutor::rowsByIdForRead(const Table &table,
                                                 std::span<const RowId> rowIds) const {
-    if (const auto version = readVersion()) {
-        return table.rowsById(rowIds, *version);
-    }
-    return table.rowsById(rowIds);
+    return table.rowsById(rowIds, readSnapshot(), transactionManager_);
 }
 
 bool QueryExecutor::transactionActive() const noexcept { return activeTransaction_.has_value(); }

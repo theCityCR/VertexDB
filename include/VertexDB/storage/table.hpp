@@ -27,12 +27,16 @@ class Table {
     [[nodiscard]] std::span<const Column> schema() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
-    [[nodiscard]] std::vector<Row> rowsSnapshot(TransactionId readerId) const;
+    [[nodiscard]] std::vector<Row> rowsSnapshot(const ReadSnapshot &snapshot,
+                                                const TransactionManager &transactions) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>>
+    visibleEntries(const ReadSnapshot &snapshot, const TransactionManager &transactions) const;
     [[nodiscard]] std::vector<RowId> freeList() const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds,
-                                            TransactionId readerId) const;
+                                            const ReadSnapshot &snapshot,
+                                            const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t rowCount() const;
     [[nodiscard]] std::size_t capacity() const;
     [[nodiscard]] std::vector<RowId> findIndexed(std::string_view column, const Value &value) const;
@@ -47,9 +51,10 @@ class Table {
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
     void validateRow(const Row &row) const;
 
-    RowId insert(Row row);
-    bool erase(RowId rowId);
-    bool update(RowId rowId, std::size_t columnIndex, Value value);
+    RowId insert(Row row, TransactionId writerId = kSystemTransactionId);
+    bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId);
+    bool update(RowId rowId, std::size_t columnIndex, Value value,
+                TransactionId writerId = kSystemTransactionId);
     // Undo helpers: reverse INSERT/UPDATE/DELETE without leaving abort residue in MVCC.
     bool eraseDiscardingVersion(RowId rowId);
     bool replaceRow(RowId rowId, Row row);
@@ -71,7 +76,6 @@ class Table {
     std::map<std::string, HashIndex> indexes_;
     std::map<std::string, BTreeIndex> orderedIndexes_;
     MVCCRowStore versions_;
-    TransactionId nextVersionTransactionId_{1};
     mutable std::shared_mutex mutex_;
 };
 

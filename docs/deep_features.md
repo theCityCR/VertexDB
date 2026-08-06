@@ -56,13 +56,14 @@ Next step: add planner-selected join algorithms and support multiple joins.
 
 ## MVCC
 
-The MVCC layer introduces transaction identifiers, transaction state management, and row-version
-chains. `Table` records row versions during inserts, updates, deletes, and row replacement, and it
-exposes transaction-aware snapshot APIs. The executor routes active-transaction reads through
-those APIs. User-facing rollback applies a per-transaction undo log (before-images for
-`UPDATE`/`DELETE`, compensating erase for `INSERT`) against the live database without cloning it.
+The MVCC layer introduces SQL transaction identifiers, commit sequences, row-version chains, and
+commit-aware snapshot reads. DML stamps `createdBy`/`deletedBy` with the active SQL transaction id
+(or an immediately committed autocommit id). `BEGIN` captures a `ReadSnapshot` (`self` +
+`maxCommitSeq`); SELECTs always evaluate visibility through that snapshot so readers see only
+committed creators/deleters at or before the watermark, plus their own uncommitted writes. User-facing
+rollback still applies a per-transaction undo log against the live database without cloning it.
 
-Next step: stamp versions with SQL transaction ids and enforce commit-aware visibility / isolation.
+Next step: make logical WAL records transaction-atomic (defer DML WAL until `COMMIT`).
 
 ## Buffer Pool
 

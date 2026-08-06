@@ -63,20 +63,27 @@ TEST(StorageTests, TracksRowVersionsAcrossTableMutations) {
 }
 
 TEST(StorageTests, ProvidesTransactionVisibleSnapshotsThroughMvccBoundary) {
+    TransactionManager transactions;
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
 
-    const auto rowId = table.insert({Value{1}, Value{std::string{"Alice"}}});
-    ASSERT_TRUE(table.update(rowId, 1, Value{std::string{"Alicia"}}));
+    const auto firstWriter = transactions.begin();
+    const auto rowId = table.insert({Value{1}, Value{std::string{"Alice"}}}, firstWriter.id);
+    transactions.commit(firstWriter.id);
+    const auto afterInsert = transactions.currentSnapshot();
 
-    auto initialView = table.rowsSnapshot(TransactionId{1});
+    const auto secondWriter = transactions.begin();
+    ASSERT_TRUE(table.update(rowId, 1, Value{std::string{"Alicia"}}, secondWriter.id));
+    transactions.commit(secondWriter.id);
+
+    auto initialView = table.rowsSnapshot(afterInsert, transactions);
     ASSERT_EQ(initialView.size(), 1U);
     EXPECT_EQ(initialView.front()[1], Value{std::string{"Alice"}});
 
-    auto updatedView = table.rowsSnapshot(TransactionId{2});
+    auto updatedView = table.rowsSnapshot(transactions.currentSnapshot(), transactions);
     ASSERT_EQ(updatedView.size(), 1U);
     EXPECT_EQ(updatedView.front()[1], Value{std::string{"Alicia"}});
 
-    auto byId = table.rowsById(std::vector<RowId>{rowId}, TransactionId{1});
+    auto byId = table.rowsById(std::vector<RowId>{rowId}, afterInsert, transactions);
     ASSERT_EQ(byId.size(), 1U);
     EXPECT_EQ(byId.front()[1], Value{std::string{"Alice"}});
 }

@@ -57,10 +57,12 @@ with page ids, leaf links, root children, separator keys, and row-id payloads in
 range reads use the leaf payloads; ordered entries remain as the mutation staging structure that
 keeps node rebuilds deterministic.
 
-`Table` exposes transaction-aware snapshots through `rowsSnapshot(TransactionId)` and
-`rowsById(..., TransactionId)`. The executor routes active-transaction reads through those MVCC
-APIs. `BEGIN`/`COMMIT`/`ROLLBACK` use a per-transaction undo log: DML records compensating actions,
-`ROLLBACK` applies them LIFO on the same `Database` instance, and `COMMIT` discards the log.
+`Table` exposes transaction-aware snapshots through `rowsSnapshot(ReadSnapshot, TransactionManager)`
+and `rowsById(..., ReadSnapshot, TransactionManager)`. The executor stamps DML with SQL transaction
+ids, captures a commit-seq snapshot at `BEGIN`, and routes all SELECT visibility through commit-aware
+MVCC (including dirty-read prevention for concurrent autocommit readers). `BEGIN`/`COMMIT`/`ROLLBACK`
+still use a per-transaction undo log for abort: DML records compensating actions, `ROLLBACK` applies
+them LIFO on the same `Database` instance, and `COMMIT` discards the log.
 
 ## Current Limitations
 
@@ -68,8 +70,8 @@ APIs. `BEGIN`/`COMMIT`/`ROLLBACK` use a per-transaction undo log: DML records co
 - `BTreeIndex` uses leaf payloads for reads but rebuilds a shallow layout lazily on read rather than
   splitting and merging nodes incrementally.
 - WAL recovery is logical SQL replay, not physical page redo.
-- Transactions have MVCC read routing and undo-log DML rollback; commit-aware isolation and
-  transaction-atomic WAL are still future work.
+- Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
+  logical WAL records are not yet transaction-atomic (rolled-back DML may still appear in the WAL).
 
 ## Current Data Flow
 

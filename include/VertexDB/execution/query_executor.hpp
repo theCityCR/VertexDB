@@ -64,7 +64,8 @@ class QueryExecutor {
     [[nodiscard]] std::shared_ptr<Table> requireTable(std::string_view tableName) const;
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
     [[nodiscard]] std::string bindPreparedSql(const ExecutePrepared &command) const;
-    [[nodiscard]] std::optional<TransactionId> readVersion() const;
+    [[nodiscard]] ReadSnapshot readSnapshot() const;
+    [[nodiscard]] TransactionId writeTransactionId();
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
     [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,
                                                    std::span<const RowId> rowIds) const;
@@ -82,6 +83,7 @@ class QueryExecutor {
     TransactionManager transactionManager_;
     UndoLog undoLog_;
     std::optional<TransactionId> activeTransaction_;
+    std::optional<ReadSnapshot> activeSnapshot_;
     std::unordered_map<std::string, std::string> preparedStatements_;
     bool replayingWal_{false};
     LockManager lockManager_;
