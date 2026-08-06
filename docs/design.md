@@ -19,11 +19,13 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   and range lookup, plus hash index `IN` multi-lookup
 - Persistence: versioned binary snapshots (current sparse v2, legacy dense v1 still readable) for
   database schemas, sparse row IDs, free-list state, and index definitions under `.tcrdb` files
-- WAL and recovery: append-only logical WAL, startup replay, save checkpoints, and recovery tests
+- WAL and recovery: append-only WAL with physical row-image redo for DML, logical SQL for DDL,
+  truncated-trailing-record tolerance, startup replay, save checkpoints, and crash-simulation tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
 - Transactions: transaction manager with commit sequences, per-transaction undo-log rollback for DML,
-  MVCC row-version store stamped with SQL transaction ids, and commit-aware snapshot reads
-  (including dirty-read prevention and snapshot isolation across concurrent statements)
+  MVCC row-version store stamped with SQL transaction ids, commit-aware snapshot reads
+  (including dirty-read prevention and snapshot isolation across concurrent statements), and
+  transaction-batched physical WAL flush on `COMMIT`
 - Planner: cheapest indexable conjunct selection from `AND` trees (heuristic costs), residual
   filters, CTE rewrite notes, and `EXPLAIN` text
 - Quality: GoogleTest coverage, regression tests, sanitizer script, coverage script, benchmark
@@ -60,14 +62,16 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
   ids; `BEGIN` captures a commit-seq snapshot for isolation. While a transaction is active, the
   executor rejects `CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE INDEX`, and
-  `SAVE`/`LOAD`. DML WAL records are deferred until `COMMIT` and dropped on `ROLLBACK`.
+  `SAVE`/`LOAD`. DML physical redo records are deferred until `COMMIT` (flushed as one atomic batch)
+  and dropped on `ROLLBACK`.
 
 ## Known Limitations
 
 - Database snapshots still serialize typed sparse rows rather than persisting raw page files.
 - Index pages are not persisted in snapshots; SAVE/LOAD rebuilds indexes from restored rows.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
-- WAL records are logical and replay SQL operations; there is no physical redo log yet.
+- DML WAL redo stores physical row after-images (not raw page images yet); DDL still uses logical
+  SQL payloads. Legacy logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
 - The planner uses hardcoded heuristic costs and does not collect table/index statistics or perform
   cost-based multi-index optimization.
 - Top-level `OR` predicates are not split for indexing; they force a full scan.
@@ -77,7 +81,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Harden recovery with physical redo records and crash-simulation regression tests.
+1. Persist page payloads (and later index pages) in snapshots; evolve redo toward page images.
 2. Add statistics to tables and indexes, then evolve the planner toward a cost model.
 3. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
 4. Expand SQL support with aggregates, `GROUP BY`, and more join strategies.

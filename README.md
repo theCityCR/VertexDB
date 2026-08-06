@@ -111,7 +111,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 94 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 99 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
   (remaining roadmap items use explicit `GTEST_SKIP` with reasons rather than locking incomplete
   behavior)
@@ -126,8 +126,9 @@ Or feed an example script:
 - Database snapshots still persist typed sparse `(rowId, row)` entries rather than raw page files
 - Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows
 - Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
-  transaction-atomic logical WAL (DML deferred until `COMMIT`, dropped on `ROLLBACK`)
-- WAL recovery still replays logical SQL operations rather than physical page redo records
+  transaction-atomic physical WAL (DML deferred until `COMMIT` as one batch, dropped on `ROLLBACK`)
+- WAL DML redo uses physical row after-images (not page images yet); DDL remains logical SQL.
+  Trailing torn WAL records are ignored so recovery replays the durable prefix
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
 - The planner is rule-based with heuristic access-path costs and does not yet collect table/index
   statistics for costing
@@ -137,7 +138,8 @@ Or feed an example script:
 
 ## Roadmap
 
-1. Add physical WAL redo/recovery tests, including simulated partial writes
+1. Persist page payloads (and later index pages) as the on-disk snapshot format; evolve redo toward
+   page images
 2. Add table/index statistics and cost-based planning
 3. Extend nested SQL (derived tables, correlation) and expression indexes
 4. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and broader join support

@@ -1,6 +1,7 @@
 #include "VertexDB/execution/query_executor.hpp"
 
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/persistence/physical_redo.hpp"
 
 #include <stdexcept>
 
@@ -41,13 +42,24 @@ void QueryExecutor::recoverFromStorage() {
     recoverFromWal(loadedSnapshot);
 }
 
-void QueryExecutor::recoverFromWal(bool loadedSnapshot) {
-    std::vector<WalRecord> records;
-    try {
-        records = wal_.readAll();
-    } catch (const std::exception &) {
-        return;
+void QueryExecutor::applyPhysicalRedo(const PhysicalRedoRecord &redo) {
+    auto table = requireTable(redo.tableName);
+    switch (redo.kind) {
+    case PhysicalRedoKind::Upsert:
+        if (!table->applyPhysicalUpsert(redo.rowId, redo.row)) {
+            throw std::runtime_error("failed to apply physical upsert redo");
+        }
+        break;
+    case PhysicalRedoKind::Erase:
+        if (!table->applyPhysicalErase(redo.rowId)) {
+            throw std::runtime_error("failed to apply physical erase redo");
+        }
+        break;
     }
+}
+
+void QueryExecutor::recoverFromWal(bool loadedSnapshot) {
+    const auto records = wal_.readAll();
     if (records.empty()) {
         return;
     }
@@ -69,11 +81,18 @@ void QueryExecutor::recoverFromWal(bool loadedSnapshot) {
             if (record.operation == WalOperation::SaveDatabase) {
                 continue;
             }
+            if (record.operation == WalOperation::PhysicalRedo) {
+                for (const auto &redo : decodePhysicalRedos(record.payload)) {
+                    applyPhysicalRedo(redo);
+                }
+                continue;
+            }
             if (record.operation == WalOperation::CreateDatabase &&
                 record.payload.find(' ') == std::string::npos) {
                 database_ = std::make_shared<Database>(record.payload);
                 continue;
             }
+            // Legacy logical DML (Insert/Update/Delete) and DDL still replay as SQL.
             (void)executeUnlocked(parser.parse(record.payload));
         }
     } catch (const std::exception &) {
@@ -94,8 +113,24 @@ void QueryExecutor::appendWal(WalOperation operation, std::string payload) {
 }
 
 void QueryExecutor::flushPendingWal() {
+    if (pendingWal_.empty()) {
+        return;
+    }
+
+    // Collapse a transaction's physical redo records into one WAL append so a torn write cannot
+    // partially durable-commit the transaction.
+    std::vector<PhysicalRedoRecord> batch;
     for (auto &record : pendingWal_) {
-        (void)wal_.append(record.operation, std::move(record.payload));
+        if (record.operation != WalOperation::PhysicalRedo) {
+            (void)wal_.append(record.operation, std::move(record.payload));
+            continue;
+        }
+        for (auto &redo : decodePhysicalRedos(record.payload)) {
+            batch.push_back(std::move(redo));
+        }
+    }
+    if (!batch.empty()) {
+        (void)wal_.append(WalOperation::PhysicalRedo, encodePhysicalRedos(batch));
     }
     pendingWal_.clear();
 }

@@ -19,23 +19,25 @@ data on load).
 
 ## Write-Ahead Log
 
-The WAL records logical operations before mutating in-memory state:
+The WAL records durable operations before they must survive process restart:
 
-- create database/table/index
-- insert
-- update
-- delete
+- create database/table/index (logical SQL or name payloads)
+- physical DML redo (row after-images / erases at explicit row ids)
 - drop/rename table
 - save
 
 The WAL persists append-only binary log records with a versioned header per record. Mutating
-executor operations write replayable payloads. Inside an open transaction, DML records are buffered
-in the executor and only appended on `COMMIT` (dropped on `ROLLBACK`); autocommit and DDL still
-append immediately. Startup recovery loads the latest saved snapshot, then replays WAL records after
-the last save checkpoint. If no saved snapshot exists, recovery replays the WAL from the beginning.
-Successful saves are written through a temporary snapshot file and then checkpoint the WAL.
+executor DML writes `PhysicalRedo` payloads (typed row images, not SQL text). Inside an open
+transaction, those records are buffered in the executor and flushed on `COMMIT` as a single batch
+record (dropped on `ROLLBACK`) so a torn commit cannot partially apply the transaction. Autocommit
+DML and DDL still append immediately. Startup recovery loads the latest saved snapshot, then
+replays WAL records after the last save checkpoint. `readAll` returns only complete records and
+ignores a truncated trailing write (crash mid-append). If no saved snapshot exists, recovery
+replays the WAL from the beginning. Successful saves are written through a temporary snapshot file
+and then checkpoint the WAL. Legacy logical `Insert`/`Update`/`Delete` SQL records remain
+replayable for older WAL files.
 
-Next step: introduce physical redo records and crash-simulation tests for partial writes.
+Next step: persist page payloads as the snapshot format and evolve redo toward page images.
 
 ## Prepared Statements
 
@@ -63,10 +65,10 @@ commit-aware snapshot reads. DML stamps `createdBy`/`deletedBy` with the active 
 `maxCommitSeq`); SELECTs always evaluate visibility through that snapshot so readers see only
 committed creators/deleters at or before the watermark, plus their own uncommitted writes. User-facing
 rollback still applies a per-transaction undo log against the live database without cloning it.
-Logical DML WAL records are buffered while a transaction is active, flushed on `COMMIT`, and dropped
-on `ROLLBACK`.
+Logical DML WAL records are replaced by physical row-image redo: buffered while a transaction is
+active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`.
 
-Next step: introduce physical redo records and crash-simulation tests for partial writes.
+Next step: persist page payloads as the on-disk snapshot format and move redo toward page images.
 
 ## Buffer Pool
 
