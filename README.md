@@ -19,8 +19,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   directory as source of truth with an LRU buffer-pool access cache), and stable row IDs via
   tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree indexes with incremental leaf/internal split/merge
-- Versioned binary persistence (sparse v2 `.tcrdb` snapshots; dense v1 still loadable), logical WAL
-  records, save checkpoints, and startup recovery
+- Versioned binary persistence (page-payload v3 `.tcrdb` snapshots; sparse v2 and dense v1 still
+  loadable), logical WAL records, save checkpoints, and startup recovery
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
   rollback for DML, and transaction-atomic logical WAL (DML deferred until `COMMIT`)
 - GoogleTest suite, Google Benchmark targets, sanitizer/coverage scripts, and multi-platform CI (GCC, Clang, macOS Clang, MSVC)
@@ -111,7 +111,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 102 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
+- 105 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN,
   desired-behavior gaps, persistence, WAL recovery, concurrency, transactions, and regressions
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   88.06%)
@@ -121,7 +121,6 @@ Or feed an example script:
 
 ## Current Limitations
 
-- Database snapshots still persist typed sparse `(rowId, row)` entries rather than raw page files
 - Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows
 - Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
   transaction-atomic physical WAL (DML deferred until `COMMIT` as one batch, dropped on `ROLLBACK`)
@@ -137,8 +136,7 @@ Or feed an example script:
 
 ## Roadmap
 
-1. Persist page payloads (and later index pages) as the on-disk snapshot format; evolve redo toward
-   page images
+1. Persist index pages with snapshots and evolve WAL redo toward page images
 2. Extend nested SQL (derived tables, correlation) and expression indexes
 3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies
 4. Add histograms / `ANALYZE` and multi-index AND optimization

@@ -41,6 +41,16 @@ class RowStore {
 void validateSparseRowLayout(std::size_t capacity, const std::vector<RowId> &freeList,
                              const std::vector<std::pair<RowId, Row>> &entries);
 
+// Durable page-directory snapshot for PageRowStore (on-disk format v3).
+struct PageStoreSnapshot {
+    std::size_t rowsPerPage{0};
+    std::size_t capacity{0};
+    std::vector<RowId> freeList;
+    std::vector<std::pair<PageId, std::vector<std::byte>>> pages; // ascending PageId
+};
+
+void validatePageStoreLayout(const PageStoreSnapshot &snapshot);
+
 class VectorRowStore final : public RowStore {
   public:
     [[nodiscard]] RowId append(Row row) override;
@@ -87,6 +97,9 @@ class PageRowStore final : public RowStore {
     [[nodiscard]] PageId pageIdFor(RowId rowId) const;
     [[nodiscard]] std::optional<std::vector<std::byte>> directoryBytes(PageId pageId) const;
     [[nodiscard]] static std::vector<Row> decodePage(std::span<const std::byte> bytes);
+    [[nodiscard]] std::size_t rowsPerPage() const noexcept;
+    [[nodiscard]] PageStoreSnapshot exportPages() const;
+    void replaceFromPages(PageStoreSnapshot snapshot);
     void replaceRows(std::vector<Row> rows) override;
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries) override;

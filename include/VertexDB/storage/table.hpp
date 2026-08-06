@@ -68,6 +68,8 @@ class Table {
     void replaceRows(std::vector<Row> rows);
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries);
+    [[nodiscard]] PageStoreSnapshot exportPageStore() const;
+    void replaceFromPages(PageStoreSnapshot snapshot);
 
   private:
     void addRowToIndexes(RowId rowId);

@@ -326,6 +326,42 @@ void Table::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
     rebuildIndexes();
 }
 
+PageStoreSnapshot Table::exportPageStore() const {
+    std::shared_lock lock{mutex_};
+    const auto *pageStore = dynamic_cast<const PageRowStore *>(rowStore_.get());
+    if (pageStore == nullptr) {
+        throw std::runtime_error("table row store does not support page payload export");
+    }
+    return pageStore->exportPages();
+}
+
+void Table::replaceFromPages(PageStoreSnapshot snapshot) {
+    validatePageStoreLayout(snapshot);
+    for (const auto &[_, bytes] : snapshot.pages) {
+        for (const auto &row : PageRowStore::decodePage(bytes)) {
+            if (!row.empty()) {
+                validateRow(row);
+            }
+        }
+    }
+
+    std::unique_lock lock{mutex_};
+    auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get());
+    if (pageStore == nullptr) {
+        throw std::runtime_error("table row store does not support page payload restore");
+    }
+    pageStore->replaceFromPages(std::move(snapshot));
+    versions_.clear();
+    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
+        const auto *row = rowStore_->get(rowId);
+        if (row == nullptr) {
+            continue;
+        }
+        versions_.write(rowId, *row, kSystemTransactionId);
+    }
+    rebuildIndexes();
+}
+
 void Table::validateRow(const Row &row) const {
     if (row.size() != schema_.size()) {
         throw std::invalid_argument("row width does not match table schema");

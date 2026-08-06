@@ -18,6 +18,7 @@
 #include <future>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -391,6 +392,64 @@ TEST(DeepFeatureTests, StorageManagerLoadsLegacyDenseSnapshots) {
     ASSERT_NE(table->liveEntries().size(), 0U);
     EXPECT_EQ(table->liveEntries()[0].first, 0U);
     EXPECT_EQ(table->liveEntries()[1].first, 1U);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(DeepFeatureTests, StorageManagerLoadsLegacySparseSnapshots) {
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_v2_snapshot_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+
+    {
+        std::ofstream out{root / "legacy_sparse.tcrdb", std::ios::binary};
+        ASSERT_TRUE(out);
+
+        const auto writePod = [&](const auto &value) {
+            out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+        };
+        const auto writeString = [&](std::string_view value) {
+            writePod(static_cast<std::uint64_t>(value.size()));
+            out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        };
+
+        out.write("TCRDB001", 8);
+        writePod(std::uint32_t{2}); // legacy sparse format
+        writeString("legacy_sparse");
+        writePod(std::uint64_t{1}); // table count
+        writeString("Employees");
+        writePod(std::uint64_t{1}); // column count
+        writeString("id");
+        writePod(std::uint8_t{0}); // INT
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint64_t{0}); // indexes
+        writePod(std::uint64_t{3}); // capacity
+        writePod(std::uint64_t{1}); // free count
+        writePod(std::uint64_t{1}); // free row id 1
+        writePod(std::uint64_t{2}); // live count
+        writePod(std::uint64_t{0}); // live row id 0
+        writePod(std::uint8_t{0});
+        writePod(std::int64_t{10});
+        writePod(std::uint64_t{2}); // live row id 2
+        writePod(std::uint8_t{0});
+        writePod(std::int64_t{30});
+    }
+
+    StorageManager storage{root};
+    auto database = storage.loadDatabase("legacy_sparse");
+    auto table = database->table("Employees");
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->capacity(), 3U);
+    EXPECT_EQ(table->rowCount(), 2U);
+    EXPECT_EQ(table->freeList(), std::vector<RowId>{1});
+    ASSERT_NE(table->getRow(0), std::nullopt);
+    EXPECT_EQ((*table->getRow(0))[0], Value{static_cast<std::int64_t>(10)});
+    EXPECT_EQ(table->getRow(1), std::nullopt);
+    ASSERT_NE(table->getRow(2), std::nullopt);
+    EXPECT_EQ((*table->getRow(2))[0], Value{static_cast<std::int64_t>(30)});
+    EXPECT_EQ(table->insert({Value{static_cast<std::int64_t>(40)}}), 1U);
 
     std::filesystem::remove_all(root);
 }

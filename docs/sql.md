@@ -71,11 +71,12 @@ use the planner's index access paths (intentional v1 limitation).
 Prepared statements store a SQL string containing `?` placeholders. `EXECUTE name VALUES (...)`
 binds values positionally, reparses the bound statement, and executes it through the normal engine.
 
-`SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current sparse
-format v2, extension `.tcrdb`) under the executor's storage root. Current snapshots store schemas,
-indexes, capacity, free-list order, and live `(rowId, row)` entries so sparse IDs survive
-checkpoints; older dense v1 snapshots remain readable. On load, indexes are registered before rows
-are reloaded so index rebuilds populate from the restored row set. `LOAD DATABASE` without a name
+`SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
+page-payload format v3, extension `.tcrdb`) under the executor's storage root. Current snapshots
+store schemas, indexes, `rowsPerPage`, capacity, free-list order, and serialized page-directory
+payloads so sparse IDs and page bytes survive checkpoints; older sparse v2 and dense v1 snapshots
+remain readable. On load, indexes are registered before rows are reloaded so index rebuilds populate
+from the restored row set. `LOAD DATABASE` without a name
 reloads the active database when one exists, otherwise it loads the first saved database file.
 Query executors also recover automatically on startup by loading the latest saved snapshot and
 replaying WAL records after that checkpoint. DML redo uses physical row after-images; DDL uses

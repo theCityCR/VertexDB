@@ -65,9 +65,9 @@ in-memory page directory are the source of truth, and the LRU `BufferPool` is th
 (fill-on-miss). Reads deserialize live row slots from those page bytes. Each page holds a fixed
 number of row slots; serialized page byte lengths vary with row content. Both row-store
 implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
-inserts reuse freed IDs before growing capacity. Snapshots persist capacity, free-list order, and
-live `(rowId, row)` entries so IDs survive save/load. `VectorRowStore` remains available as a simple
-in-memory implementation for focused tests or future comparisons.
+inserts reuse freed IDs before growing capacity. Snapshots persist `rowsPerPage`, capacity, free-list
+order, and serialized page-directory payloads so IDs and page bytes survive save/load. `VectorRowStore`
+remains available as a simple in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata
 with page ids, leaf links, internal children, separator keys, and row-id payloads in leaves. Inserts
@@ -81,17 +81,18 @@ MVCC (including dirty-read prevention for concurrent autocommit readers). `BEGIN
 still use a per-transaction undo log for abort: DML records compensating actions, `ROLLBACK` applies
 them LIFO on the same `Database` instance, and `COMMIT` discards the log.
 
-On `LOAD`, indexes are registered on each table before sparse (or legacy dense) rows are reloaded so
-`replaceSparse` / `replaceRows` rebuilds index entries from the restored row set.
+On `LOAD`, indexes are registered on each table before page payloads (or legacy sparse/dense rows)
+are reloaded so `replaceFromPages` / `replaceSparse` / `replaceRows` rebuilds index entries from the
+restored row set.
 
 ## Current Limitations
 
-- Database snapshots persist typed sparse rows rather than raw page files on disk.
+- Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows.
 - WAL recovery applies physical row-image redo for DML (DDL remains logical SQL); trailing torn
-  WAL records are skipped. Page-image redo awaits page-backed snapshots.
+  WAL records are skipped. Page-image redo is the next persistence step now that snapshots store
+  page payloads.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
   DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped on `ROLLBACK`.
-- Index pages are not persisted; SAVE/LOAD rebuilds indexes from restored rows.
 
 ## Current Data Flow
 

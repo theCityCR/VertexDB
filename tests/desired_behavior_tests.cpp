@@ -1,14 +1,17 @@
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
+#include "VertexDB/storage/database.hpp"
 #include "VertexDB/storage/row_store.hpp"
 #include "VertexDB/storage/table.hpp"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -271,6 +274,84 @@ TEST(DesiredBehaviorTests, PageRowStoreReadsLiveRowsFromPagePayloadBytes) {
     expectMatchesPayload(reused, {Value{4}, Value{std::string{"Dana"}}});
     expectMatchesPayload(second, {Value{20}, Value{std::string{"Bobby"}}});
     expectMatchesPayload(third, {Value{3}, Value{std::string{"Cara"}}});
+}
+
+TEST(DesiredBehaviorTests, SaveLoadPersistsPageDirectoryPayloadBytes) {
+    // Desired: snapshots write PageRowStore directory bytes verbatim (format v3), not sparse rows.
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("vertexdb-desired-page-payload-save-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::remove_all(root);
+    StorageManager storage{root};
+
+    PageStoreSnapshot before;
+    RowId deletedId = 0;
+    {
+        Database database{"company"};
+        ASSERT_TRUE(database.createTable(
+            "Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}));
+        auto table = database.table("Employees");
+        ASSERT_TRUE(table->createIndex("idx_id", "id"));
+        (void)table->insert({Value{static_cast<std::int64_t>(1)}, Value{std::string{"Alice"}}});
+        (void)table->insert({Value{static_cast<std::int64_t>(2)}, Value{std::string{"Bob"}}});
+        (void)table->insert({Value{static_cast<std::int64_t>(3)}, Value{std::string{"Cara"}}});
+        const auto entries = table->liveEntries();
+        ASSERT_EQ(entries.size(), 3U);
+        deletedId = entries[1].first;
+        ASSERT_TRUE(table->erase(deletedId));
+        before = table->exportPageStore();
+        ASSERT_FALSE(before.pages.empty());
+        storage.saveDatabase(database);
+    }
+
+    auto loaded = storage.loadDatabase("company");
+    auto table = loaded->table("Employees");
+    ASSERT_NE(table, nullptr);
+    const auto after = table->exportPageStore();
+    EXPECT_EQ(after.rowsPerPage, before.rowsPerPage);
+    EXPECT_EQ(after.capacity, before.capacity);
+    EXPECT_EQ(after.freeList, before.freeList);
+    ASSERT_EQ(after.pages.size(), before.pages.size());
+    for (std::size_t index = 0; index < before.pages.size(); ++index) {
+        EXPECT_EQ(after.pages[index].first, before.pages[index].first);
+        EXPECT_EQ(after.pages[index].second, before.pages[index].second);
+    }
+
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(3)})
+                  .value_or(std::vector<RowId>{}),
+              std::vector<RowId>{2});
+    const auto reused =
+        table->insert({Value{static_cast<std::int64_t>(4)}, Value{std::string{"Dana"}}});
+    EXPECT_EQ(reused, deletedId);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(DesiredBehaviorTests, PageRowStoreReplaceFromPagesRestoresExactDirectoryBytes) {
+    PageRowStore store{2, 8};
+    (void)store.append({Value{1}});
+    (void)store.append({Value{2}});
+    const auto third = store.append({Value{3}});
+    ASSERT_TRUE(store.erase(1));
+
+    const auto exported = store.exportPages();
+    ASSERT_EQ(exported.pages.size(), 2U);
+
+    PageRowStore restored{4, 8}; // different rowsPerPage; replaceFromPages must adopt snapshot's
+    restored.replaceFromPages(exported);
+    EXPECT_EQ(restored.rowsPerPage(), 2U);
+    EXPECT_EQ(restored.capacity(), 3U);
+    EXPECT_EQ(restored.freeList(), std::vector<RowId>{1});
+    EXPECT_EQ(restored.size(), 2U);
+    ASSERT_EQ(restored.directoryBytes(1), exported.pages[0].second);
+    ASSERT_EQ(restored.directoryBytes(2), exported.pages[1].second);
+    ASSERT_NE(restored.get(0), nullptr);
+    EXPECT_EQ((*restored.get(0))[0], Value{1});
+    EXPECT_EQ(restored.get(1), nullptr);
+    ASSERT_NE(restored.get(third), nullptr);
+    EXPECT_EQ((*restored.get(third))[0], Value{3});
+    EXPECT_EQ(restored.append({Value{4}}), 1U);
 }
 
 TEST(DesiredBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {

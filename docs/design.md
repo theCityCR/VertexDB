@@ -17,8 +17,9 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
   recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup, plus hash index `IN` multi-lookup
-- Persistence: versioned binary snapshots (current sparse v2, legacy dense v1 still readable) for
-  database schemas, sparse row IDs, free-list state, and index definitions under `.tcrdb` files
+- Persistence: versioned binary snapshots (current page-payload v3; sparse v2 and dense v1 still
+  readable) for database schemas, page directory bytes, free-list state, and index definitions
+  under `.tcrdb` files
 - WAL and recovery: append-only WAL with physical row-image redo for DML, logical SQL for DDL,
   truncated-trailing-record tolerance, startup replay, save checkpoints, and crash-simulation tests
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
@@ -57,10 +58,11 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 - `WITH` CTEs are always inlined before planning so outer predicates can hit base-table indexes.
   `IN (SELECT …)` subqueries are planned/executed for their values, then probed via index when
   possible.
-- Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v2) that store
-  capacity, free-list order, and live `(rowId, row)` entries. On load, indexes are created before
-  rows are reloaded so index rebuilds see the restored data. WAL recovery replays logical SQL
-  payloads after the latest save checkpoint.
+- Persistence uses versioned binary snapshots (magic `TCRDB001`, current format v3) that store
+  `rowsPerPage`, capacity, free-list order, and serialized page-directory payloads. On load, indexes
+  are created before rows are reloaded so index rebuilds see the restored data. Sparse v2 and dense
+  v1 snapshots remain readable. WAL recovery replays logical SQL / physical redo payloads after the
+  latest save checkpoint.
 - Transactions use transaction state tracking, MVCC read APIs, and an undo log that reverses DML on
   `ROLLBACK` against the live database (no full-database clone). Version stamps use SQL transaction
   ids; `BEGIN` captures a commit-seq snapshot for isolation. While a transaction is active, the
@@ -70,7 +72,6 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Known Limitations
 
-- Database snapshots still serialize typed sparse rows rather than persisting raw page files.
 - Index pages are not persisted in snapshots; SAVE/LOAD rebuilds indexes from restored rows.
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - DML WAL redo stores physical row after-images (not raw page images yet); DDL still uses logical
@@ -85,7 +86,7 @@ execution, indexing, persistence, WAL recovery, transactions, tests, benchmarks,
 
 ## Next Engineering Plan
 
-1. Persist page payloads (and later index pages) in snapshots; evolve redo toward page images.
+1. Persist index pages in snapshots; evolve redo toward page images.
 2. Expand nested SQL (derived tables, correlation) and add expression indexes where useful.
 3. Expand SQL support with aggregates, `GROUP BY`, and multiple joins.
 4. Add histograms / `ANALYZE` and multi-index AND optimization.

@@ -6,13 +6,15 @@
 #include <fstream>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace VertexDB {
 namespace {
 
 constexpr std::string_view kMagic = "TCRDB001";
 constexpr std::uint32_t kVersionV1 = 1;
-constexpr std::uint32_t kVersion = 2;
+constexpr std::uint32_t kVersionV2 = 2;
+constexpr std::uint32_t kVersion = 3;
 constexpr std::uint8_t kNullValueType = 255;
 constexpr std::string_view kExtension = ".tcrdb";
 constexpr std::string_view kWriteError = "failed to write database file";
@@ -45,26 +47,6 @@ std::string readString(std::istream &in) {
     std::string value(size, '\0');
     readBytesDb(in, value.data(), value.size());
     return value;
-}
-
-void writeValue(std::ostream &out, const Value &value) {
-    if (value.isNull()) {
-        writePodDb(out, kNullValueType);
-        return;
-    }
-    const auto type = static_cast<std::uint8_t>(value.type());
-    writePodDb(out, type);
-    switch (value.type()) {
-    case ColumnType::Int:
-        writePodDb(out, std::get<std::int64_t>(value.data()));
-        break;
-    case ColumnType::Double:
-        writePodDb(out, std::get<double>(value.data()));
-        break;
-    case ColumnType::String:
-        writeString(out, std::get<std::string>(value.data()));
-        break;
-    }
 }
 
 Value readValue(std::istream &in) {
@@ -131,6 +113,49 @@ void loadSparseRows(Table &table, std::istream &in, std::size_t columnCount) {
     table.replaceSparse(capacity, std::move(freeList), std::move(entries));
 }
 
+void loadPagePayloadRows(Table &table, std::istream &in) {
+    PageStoreSnapshot snapshot;
+    snapshot.rowsPerPage = static_cast<std::size_t>(readPodDb<std::uint64_t>(in));
+    snapshot.capacity = static_cast<std::size_t>(readPodDb<std::uint64_t>(in));
+
+    const auto freeCount = readPodDb<std::uint64_t>(in);
+    snapshot.freeList.reserve(static_cast<std::size_t>(freeCount));
+    for (std::uint64_t index = 0; index < freeCount; ++index) {
+        snapshot.freeList.push_back(static_cast<RowId>(readPodDb<std::uint64_t>(in)));
+    }
+
+    const auto pageCount = readPodDb<std::uint64_t>(in);
+    snapshot.pages.reserve(static_cast<std::size_t>(pageCount));
+    for (std::uint64_t index = 0; index < pageCount; ++index) {
+        const auto pageId = static_cast<PageId>(readPodDb<std::uint64_t>(in));
+        const auto byteLength = static_cast<std::size_t>(readPodDb<std::uint64_t>(in));
+        std::vector<std::byte> bytes(byteLength);
+        if (byteLength > 0) {
+            readBytesDb(in, bytes.data(), bytes.size());
+        }
+        snapshot.pages.emplace_back(pageId, std::move(bytes));
+    }
+    table.replaceFromPages(std::move(snapshot));
+}
+
+void writePagePayloadRows(std::ostream &out, const Table &table) {
+    const auto snapshot = table.exportPageStore();
+    writePodDb(out, static_cast<std::uint64_t>(snapshot.rowsPerPage));
+    writePodDb(out, static_cast<std::uint64_t>(snapshot.capacity));
+    writePodDb(out, static_cast<std::uint64_t>(snapshot.freeList.size()));
+    for (const auto rowId : snapshot.freeList) {
+        writePodDb(out, static_cast<std::uint64_t>(rowId));
+    }
+    writePodDb(out, static_cast<std::uint64_t>(snapshot.pages.size()));
+    for (const auto &[pageId, bytes] : snapshot.pages) {
+        writePodDb(out, static_cast<std::uint64_t>(pageId));
+        writePodDb(out, static_cast<std::uint64_t>(bytes.size()));
+        if (!bytes.empty()) {
+            writeBytesDb(out, bytes.data(), bytes.size());
+        }
+    }
+}
+
 } // namespace
 
 StorageManager::StorageManager(std::filesystem::path root) : root_(std::move(root)) {}
@@ -168,21 +193,7 @@ void StorageManager::saveDatabase(const Database &database) const {
                 writeString(out, columnName);
             }
 
-            writePodDb(out, static_cast<std::uint64_t>(table->capacity()));
-            const auto freeList = table->freeList();
-            writePodDb(out, static_cast<std::uint64_t>(freeList.size()));
-            for (const auto rowId : freeList) {
-                writePodDb(out, static_cast<std::uint64_t>(rowId));
-            }
-
-            const auto entries = table->liveEntries();
-            writePodDb(out, static_cast<std::uint64_t>(entries.size()));
-            for (const auto &[rowId, row] : entries) {
-                writePodDb(out, static_cast<std::uint64_t>(rowId));
-                for (const auto &value : row) {
-                    writeValue(out, value);
-                }
-            }
+            writePagePayloadRows(out, *table);
         }
     }
 
@@ -211,7 +222,7 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
         throw std::runtime_error("invalid database file magic");
     }
     const auto version = readPodDb<std::uint32_t>(in);
-    if (version != kVersion && version != kVersionV1) {
+    if (version != kVersion && version != kVersionV2 && version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
@@ -245,7 +256,7 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
             indexDefinitions.emplace_back(std::move(indexName), std::move(columnName));
         }
 
-        // Register indexes before loading rows so replaceRows/replaceSparse rebuilds them.
+        // Register indexes before loading rows so replace*/rebuildIndexes populate them.
         for (const auto &definition : indexDefinitions) {
             const auto &indexName = definition.first;
             const auto &columnName = definition.second;
@@ -258,8 +269,10 @@ std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view database
 
         if (version == kVersionV1) {
             loadDenseRows(*table, in, static_cast<std::size_t>(columnCount));
-        } else {
+        } else if (version == kVersionV2) {
             loadSparseRows(*table, in, static_cast<std::size_t>(columnCount));
+        } else {
+            loadPagePayloadRows(*table, in);
         }
     }
 

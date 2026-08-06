@@ -37,7 +37,7 @@ replays the WAL from the beginning. Successful saves are written through a tempo
 and then checkpoint the WAL. Legacy logical `Insert`/`Update`/`Delete` SQL records remain
 replayable for older WAL files.
 
-Next step: persist page payloads as the snapshot format and evolve redo toward page images.
+Next step: evolve redo toward page images now that snapshots persist page payloads.
 
 ## Prepared Statements
 
@@ -68,7 +68,7 @@ rollback still applies a per-transaction undo log against the live database with
 Logical DML WAL records are replaced by physical row-image redo: buffered while a transaction is
 active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`.
 
-Next step: persist page payloads as the on-disk snapshot format and move redo toward page images.
+Next step: evolve redo toward page images now that snapshots persist page payloads.
 
 ## Buffer Pool
 
@@ -78,11 +78,11 @@ width). `Table` delegates physical row storage through a `RowStore` interface an
 page bytes in an in-memory page directory are the source of truth; the buffer pool caches those
 pages and fills on miss so reads deserialize live slots from page payloads. Both `PageRowStore` and
 `VectorRowStore` keep stable row IDs with tombstones and LIFO free-list reuse: deletes leave holes,
-and inserts reuse freed IDs before allocating new capacity. Database snapshots persist that sparse
-layout so row IDs survive save/load.
+and inserts reuse freed IDs before allocating new capacity. Database snapshots persist
+`rowsPerPage`, capacity, free-list order, and the serialized page-directory payloads so row IDs and
+page bytes survive save/load. Legacy sparse v2 and dense v1 snapshots remain readable.
 
-Next step: persist page payloads as the on-disk snapshot format instead of typed sparse row
-entries.
+Next step: persist index pages with the on-disk snapshot format and move redo toward page images.
 
 ## Query Planner
 

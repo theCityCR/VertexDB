@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace VertexDB {
 namespace {
@@ -271,6 +272,45 @@ std::vector<Row> PageRowStore::decodePage(std::span<const std::byte> bytes) {
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+std::size_t PageRowStore::rowsPerPage() const noexcept { return rowsPerPage_; }
+
+PageStoreSnapshot PageRowStore::exportPages() const {
+    PageStoreSnapshot snapshot;
+    snapshot.rowsPerPage = rowsPerPage_;
+    snapshot.capacity = slots_.size();
+    snapshot.freeList = freeList_;
+    snapshot.pages.reserve(pageDirectory_.size());
+    for (const auto &[pageId, bytes] : pageDirectory_) {
+        snapshot.pages.emplace_back(pageId, bytes);
+    }
+    std::sort(snapshot.pages.begin(), snapshot.pages.end(),
+              [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+    return snapshot;
+}
+
+void PageRowStore::replaceFromPages(PageStoreSnapshot snapshot) {
+    validatePageStoreLayout(snapshot);
+
+    rowsPerPage_ = snapshot.rowsPerPage;
+    pageDirectory_.clear();
+    decodedRows_.clear();
+    slots_.assign(snapshot.capacity, Slot{});
+    freeList_ = std::move(snapshot.freeList);
+    liveCount_ = snapshot.capacity - freeList_.size();
+
+    std::unordered_set<RowId> freeIds(freeList_.begin(), freeList_.end());
+    for (auto &[pageId, bytes] : snapshot.pages) {
+        const auto pageRows = decodePage(bytes);
+        const std::size_t firstRowId = static_cast<std::size_t>(pageId - 1) * rowsPerPage_;
+        for (std::size_t offset = 0; offset < pageRows.size(); ++offset) {
+            const RowId rowId = static_cast<RowId>(firstRowId + offset);
+            slots_[rowId] = Slot{pageId, offset, !freeIds.contains(rowId)};
+        }
+        pageDirectory_[pageId] = std::move(bytes);
+        bufferPool_.put(Page{pageId, pageDirectory_[pageId], false});
+    }
 }
 
 void PageRowStore::replaceRows(std::vector<Row> rows) {
