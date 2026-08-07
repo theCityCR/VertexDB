@@ -2,6 +2,7 @@
 
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/storage/histogram.hpp"
+#include "VertexDB/storage/table.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -42,53 +43,60 @@ std::optional<Predicate> buildAndTree(const std::vector<const Predicate *> &conj
     return static_cast<double>(rowCount) / static_cast<double>(distinct);
 }
 
-[[nodiscard]] std::size_t distinctOrOne(const Table &table, std::string_view column) {
-    if (const auto distinct = table.indexDistinctCount(column)) {
+[[nodiscard]] std::size_t distinctOrOne(const RelationStats &stats,
+                                        const IndexCatalogView &indexes,
+                                        std::string_view column) {
+    if (const auto distinct = indexes.indexDistinctCount(column)) {
         return std::max<std::size_t>(*distinct, 1);
     }
-    if (const auto histogram = table.columnHistogram(column)) {
+    if (const auto histogram = stats.columnHistogram(column)) {
         return std::max<std::size_t>(static_cast<std::size_t>(histogram->distinctCount), 1);
     }
     return 1;
 }
 
-[[nodiscard]] std::size_t distinctOrOne(const Table &table, const IndexExpression &expression) {
-    if (const auto distinct = table.indexDistinctCount(expression)) {
+[[nodiscard]] std::size_t distinctOrOne(const IndexCatalogView &indexes,
+                                        const IndexExpression &expression) {
+    if (const auto distinct = indexes.indexDistinctCount(expression)) {
         return std::max<std::size_t>(*distinct, 1);
     }
     return 1;
 }
 
-[[nodiscard]] double rangeCost(const Table &table, std::string_view column, ComparisonOperator op,
+[[nodiscard]] double rangeCost(const RelationStats &stats, std::string_view column,
+                               ComparisonOperator op,
                                const Value &value, std::size_t rowCount) {
-    if (const auto histogram = table.columnHistogram(column)) {
+    if (const auto histogram = stats.columnHistogram(column)) {
         const double selectivity = histogramRangeSelectivity(*histogram, op, value);
         return std::max(selectivity * static_cast<double>(std::max<std::size_t>(rowCount, 1)), 1.0);
     }
     return std::max(static_cast<double>(rowCount) / 3.0, 1.0);
 }
 
-[[nodiscard]] double inCost(const Table &table, std::string_view column,
+[[nodiscard]] double inCost(const RelationStats &stats, const IndexCatalogView &indexes,
+                            std::string_view column,
                             const std::vector<Value> &values, std::size_t rowCount) {
-    if (const auto histogram = table.columnHistogram(column)) {
+    if (const auto histogram = stats.columnHistogram(column)) {
         const double selectivity = histogramInSelectivity(*histogram, values);
         return std::max(selectivity * static_cast<double>(std::max<std::size_t>(rowCount, 1)), 1.0);
     }
-    return static_cast<double>(values.size()) * averageRowsPerKey(rowCount, distinctOrOne(table, column));
+    return static_cast<double>(values.size()) *
+           averageRowsPerKey(rowCount, distinctOrOne(stats, indexes, column));
 }
 
-bool isIndexableComparison(const Predicate &predicate, const Table &table, AccessPath &path,
-                           double &cost, std::size_t rowCount) {
+bool isIndexableComparison(const Predicate &predicate, const RelationStats &stats,
+                           const IndexCatalogView &indexes, AccessPath &path, double &cost,
+                           std::size_t rowCount) {
     if (predicate.kind != Predicate::Kind::Comparison || predicate.rhsColumn) {
         return false;
     }
     if (predicate.expression) {
-        if (!table.hasExpressionIndex(*predicate.expression)) {
+        if (!indexes.hasExpressionIndex(*predicate.expression)) {
             return false;
         }
         if (predicate.op == ComparisonOperator::Equal) {
             path = AccessPath::HashIndexLookup;
-            cost = averageRowsPerKey(rowCount, distinctOrOne(table, *predicate.expression));
+            cost = averageRowsPerKey(rowCount, distinctOrOne(indexes, *predicate.expression));
             return true;
         }
         if (predicate.op == ComparisonOperator::Greater ||
@@ -100,34 +108,34 @@ bool isIndexableComparison(const Predicate &predicate, const Table &table, Acces
         }
         return false;
     }
-    if (predicate.op == ComparisonOperator::Equal && table.hasIndex(predicate.column)) {
+    if (predicate.op == ComparisonOperator::Equal && indexes.hasIndex(predicate.column)) {
         path = AccessPath::HashIndexLookup;
-        cost = averageRowsPerKey(rowCount, distinctOrOne(table, predicate.column));
+        cost = averageRowsPerKey(rowCount, distinctOrOne(stats, indexes, predicate.column));
         return true;
     }
     if ((predicate.op == ComparisonOperator::Greater ||
          predicate.op == ComparisonOperator::Less) &&
-        table.hasIndex(predicate.column)) {
+        indexes.hasIndex(predicate.column)) {
         path = AccessPath::OrderedIndexRange;
-        cost = rangeCost(table, predicate.column, predicate.op, predicate.value, rowCount);
+        cost = rangeCost(stats, predicate.column, predicate.op, predicate.value, rowCount);
         return true;
     }
     return false;
 }
 
-bool isIndexableInList(const Predicate &predicate, const Table &table, double &cost,
-                       std::size_t rowCount) {
+bool isIndexableInList(const Predicate &predicate, const RelationStats &stats,
+                       const IndexCatalogView &indexes, double &cost, std::size_t rowCount) {
     if (predicate.kind != Predicate::Kind::InList) {
         return false;
     }
-    if (!table.hasIndex(predicate.column) || predicate.inValues.empty()) {
+    if (!indexes.hasIndex(predicate.column) || predicate.inValues.empty()) {
         return false;
     }
-    cost = inCost(table, predicate.column, predicate.inValues, rowCount);
+    cost = inCost(stats, indexes, predicate.column, predicate.inValues, rowCount);
     return true;
 }
 
-bool isEqualityIndexProbe(const Predicate &predicate, const Table &table) {
+bool isEqualityIndexProbe(const Predicate &predicate, const IndexCatalogView &indexes) {
     if (predicate.kind != Predicate::Kind::Comparison || predicate.rhsColumn) {
         return false;
     }
@@ -135,9 +143,9 @@ bool isEqualityIndexProbe(const Predicate &predicate, const Table &table) {
         return false;
     }
     if (predicate.expression) {
-        return table.hasExpressionIndex(*predicate.expression);
+        return indexes.hasExpressionIndex(*predicate.expression);
     }
-    return table.hasIndex(predicate.column);
+    return indexes.hasIndex(predicate.column);
 }
 
 [[nodiscard]] IndexEqualityProbe makeEqualityProbe(const Predicate &predicate) {
@@ -148,12 +156,13 @@ bool isEqualityIndexProbe(const Predicate &predicate, const Table &table) {
     return probe;
 }
 
-[[nodiscard]] double equalityFanout(const Predicate &predicate, const Table &table,
+[[nodiscard]] double equalityFanout(const Predicate &predicate, const RelationStats &stats,
+                                    const IndexCatalogView &indexes,
                                     std::size_t rowCount) {
     if (predicate.expression) {
-        return averageRowsPerKey(rowCount, distinctOrOne(table, *predicate.expression));
+        return averageRowsPerKey(rowCount, distinctOrOne(indexes, *predicate.expression));
     }
-    return averageRowsPerKey(rowCount, distinctOrOne(table, predicate.column));
+    return averageRowsPerKey(rowCount, distinctOrOne(stats, indexes, predicate.column));
 }
 
 [[nodiscard]] std::size_t rowsFromCost(double cost, std::size_t rowCount) {
@@ -172,9 +181,10 @@ bool isEqualityIndexProbe(const Predicate &predicate, const Table &table) {
 
 } // namespace
 
-QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) const {
+QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &stats,
+                                   const IndexCatalogView &indexes) const {
     QueryPlan plan;
-    plan.estimatedRows = table.rowCount();
+    plan.estimatedRows = stats.rowCount();
     plan.estimatedCost = static_cast<double>(std::max<std::size_t>(plan.estimatedRows, 1));
 
     if (!query.where) {
@@ -214,18 +224,19 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     for (std::size_t i = 0; i < conjuncts.size(); ++i) {
         AccessPath path = AccessPath::FullScan;
         double comparisonCost = bestCost;
-        if (isIndexableComparison(*conjuncts[i], table, path, comparisonCost, plan.estimatedRows)) {
+        if (isIndexableComparison(*conjuncts[i], stats, indexes, path, comparisonCost,
+                                  plan.estimatedRows)) {
             consider(i, path, comparisonCost);
         }
         double inListCost = bestCost;
-        if (isIndexableInList(*conjuncts[i], table, inListCost, plan.estimatedRows)) {
+        if (isIndexableInList(*conjuncts[i], stats, indexes, inListCost, plan.estimatedRows)) {
             consider(i, AccessPath::HashIndexInLookup, inListCost);
         }
     }
 
     std::vector<std::size_t> equalityIndexes;
     for (std::size_t i = 0; i < conjuncts.size(); ++i) {
-        if (isEqualityIndexProbe(*conjuncts[i], table)) {
+        if (isEqualityIndexProbe(*conjuncts[i], indexes)) {
             equalityIndexes.push_back(i);
         }
     }
@@ -238,7 +249,8 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
         // selective than any one conjunct alone.
         intersectRows = static_cast<double>(std::max<std::size_t>(plan.estimatedRows, 1));
         for (const auto index : equalityIndexes) {
-            const double fanout = equalityFanout(*conjuncts[index], table, plan.estimatedRows);
+            const double fanout =
+                equalityFanout(*conjuncts[index], stats, indexes, plan.estimatedRows);
             const double selectivity =
                 fanout / static_cast<double>(std::max<std::size_t>(plan.estimatedRows, 1));
             intersectRows *= std::clamp(selectivity, 0.0, 1.0);
@@ -257,7 +269,7 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     if (choseIntersect) {
         plan.accessPath = AccessPath::MultiIndexIntersect;
         plan.estimatedCost = intersectCost;
-        plan.estimatedRows = rowsFromCost(intersectCost, table.rowCount());
+        plan.estimatedRows = rowsFromCost(intersectCost, stats.rowCount());
         plan.intersectProbes.reserve(equalityIndexes.size());
         std::ostringstream labels;
         std::vector<const Predicate *> residualConjuncts;
@@ -293,7 +305,7 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     if (bestPath == AccessPath::HashIndexLookup) {
         plan.indexOp = ComparisonOperator::Equal;
         plan.indexValue = chosen.value;
-        plan.estimatedRows = rowsFromCost(bestCost, table.rowCount());
+        plan.estimatedRows = rowsFromCost(bestCost, stats.rowCount());
         if (chosen.expression) {
             plan.explanation = "expression hash index equality lookup on (" +
                                indexExpressionToString(*chosen.expression) + ")";
@@ -303,7 +315,7 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     } else if (bestPath == AccessPath::OrderedIndexRange) {
         plan.indexOp = chosen.op;
         plan.indexValue = chosen.value;
-        plan.estimatedRows = rowsFromCost(bestCost, table.rowCount());
+        plan.estimatedRows = rowsFromCost(bestCost, stats.rowCount());
         if (chosen.expression) {
             plan.explanation = "expression ordered index range lookup on (" +
                                indexExpressionToString(*chosen.expression) + ")";
@@ -313,7 +325,7 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
     } else if (bestPath == AccessPath::HashIndexInLookup) {
         plan.indexOp = ComparisonOperator::Equal;
         plan.indexValues = chosen.inValues;
-        plan.estimatedRows = rowsFromCost(bestCost, table.rowCount());
+        plan.estimatedRows = rowsFromCost(bestCost, stats.rowCount());
         plan.explanation = "hash index IN lookup on " + chosen.column + " (" +
                            std::to_string(plan.indexValues.size()) + " values)";
     }
@@ -330,6 +342,11 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) cons
         plan.notes.push_back("residual filter applied after index lookup");
     }
     return plan;
+}
+
+QueryPlan QueryPlanner::planSelect(const Select &query, const Table &table) const {
+    return planSelect(query, static_cast<const RelationStats &>(table),
+                      static_cast<const IndexCatalogView &>(table));
 }
 
 JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
@@ -362,12 +379,14 @@ JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
     };
 
     if (rightIndexed) {
-        const double fanout = averageRowsPerKey(rightRows, distinctOrOne(right, join.rightColumn));
+        const double fanout =
+            averageRowsPerKey(rightRows, distinctOrOne(right, right, join.rightColumn));
         considerNested(true, static_cast<double>(std::max<std::size_t>(leftRows, 1)) * fanout,
                        right.name(), join.rightColumn);
     }
     if (leftIndexed) {
-        const double fanout = averageRowsPerKey(leftRows, distinctOrOne(left, join.leftColumn));
+        const double fanout =
+            averageRowsPerKey(leftRows, distinctOrOne(left, left, join.leftColumn));
         considerNested(false, static_cast<double>(std::max<std::size_t>(rightRows, 1)) * fanout,
                        left.name(), join.leftColumn);
     }
@@ -387,7 +406,8 @@ JoinPlan QueryPlanner::planJoinAgainstRows(std::size_t leftRows, const Table &ri
     plan.outerIsLeft = true;
 
     if (right.hasIndex(join.rightColumn)) {
-        const double fanout = averageRowsPerKey(rightRows, distinctOrOne(right, join.rightColumn));
+        const double fanout =
+            averageRowsPerKey(rightRows, distinctOrOne(right, right, join.rightColumn));
         const double cost = static_cast<double>(std::max<std::size_t>(leftRows, 1)) * fanout;
         if (cost < plan.estimatedCost) {
             plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;

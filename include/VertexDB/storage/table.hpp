@@ -1,19 +1,19 @@
 #pragma once
 
-// Table API: schema, DML, indexes, MVCC visibility, snapshot/redo hooks.
-// Impl split: table.cpp (core DML), table_indexes.cpp, table_persist.cpp.
+// Table façade: schema/DML, MVCC, persistence, and planner-facing views.
+// IndexManager and TableStatistics own index/statistics state; Table owns synchronization.
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
-#include "VertexDB/indexing/btree_index.hpp"
-#include "VertexDB/indexing/hash_index.hpp"
+#include "VertexDB/indexing/index_manager.hpp"
 #include "VertexDB/storage/histogram.hpp"
+#include "VertexDB/storage/relation_stats.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/table_statistics.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
@@ -43,13 +43,7 @@ struct PageImageCapture {
     std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes;
 };
 
-struct IndexDefinition {
-    std::string name;
-    std::string column;
-    std::optional<IndexExpression> expression;
-};
-
-class Table {
+class Table : public RelationStats, public IndexCatalogView {
   public:
     Table(std::string name, std::vector<Column> schema);
 
@@ -67,15 +61,17 @@ class Table {
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds,
                                             const ReadSnapshot &snapshot,
                                             const TransactionManager &transactions) const;
-    [[nodiscard]] std::size_t rowCount() const;
+    [[nodiscard]] std::size_t rowCount() const override;
     [[nodiscard]] std::size_t capacity() const;
     // On-demand stats for cost-based planning (row count + per-index distinct keys).
-    [[nodiscard]] std::optional<std::size_t> indexDistinctCount(std::string_view column) const;
     [[nodiscard]] std::optional<std::size_t>
-    indexDistinctCount(const IndexExpression &expression) const;
+    indexDistinctCount(std::string_view column) const override;
+    [[nodiscard]] std::optional<std::size_t>
+    indexDistinctCount(const IndexExpression &expression) const override;
     // ANALYZE builds equi-height per-column histograms (+ distinct counts) from live rows.
     void analyze(std::size_t maxBuckets = kDefaultHistogramBuckets);
-    [[nodiscard]] std::optional<ColumnHistogram> columnHistogram(std::string_view column) const;
+    [[nodiscard]] std::optional<ColumnHistogram>
+    columnHistogram(std::string_view column) const override;
     [[nodiscard]] std::vector<ColumnHistogram> columnHistograms() const;
     void replaceColumnHistograms(std::vector<ColumnHistogram> histograms);
     void clearColumnHistograms();
@@ -89,8 +85,8 @@ class Table {
     orderedLookup(const IndexExpression &expression, ComparisonOperator op,
                   const Value &value) const;
     // True when the column has a maintained column index (hash equality + ordered range).
-    [[nodiscard]] bool hasIndex(std::string_view column) const;
-    [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const;
+    [[nodiscard]] bool hasIndex(std::string_view column) const override;
+    [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const override;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
     [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
@@ -137,18 +133,14 @@ class Table {
     void addRowToIndexes(RowId rowId);
     void rebuildIndexes();
     void refreshVersionsFromStore();
-    [[nodiscard]] Value indexKeyForRow(const std::string &indexName, const Row &row) const;
     bool registerIndex(std::string name, std::size_t columnIndex,
                        std::optional<IndexExpression> expression, bool rebuild);
 
     std::string name_;
     std::vector<Column> schema_;
     std::unique_ptr<RowStore> rowStore_;
-    std::map<std::string, std::size_t> indexColumns_;
-    std::map<std::string, IndexExpression> indexExpressions_;
-    std::map<std::string, HashIndex> indexes_;
-    std::map<std::string, BTreeIndex> orderedIndexes_;
-    std::map<std::string, ColumnHistogram> histograms_;
+    IndexManager indexManager_;
+    TableStatistics statistics_;
     MVCCRowStore versions_;
     mutable std::shared_mutex mutex_;
 };

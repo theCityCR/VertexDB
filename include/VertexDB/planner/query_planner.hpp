@@ -3,7 +3,7 @@
 // Cost-based access-path and join selection. CTE/derived rewrite is in rewriter.hpp.
 
 #include "VertexDB/parser/ast.hpp"
-#include "VertexDB/storage/table.hpp"
+#include "VertexDB/storage/relation_stats.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -11,6 +11,8 @@
 #include <vector>
 
 namespace VertexDB {
+
+class Table;
 
 enum class AccessPath : std::uint8_t {
     FullScan,
@@ -59,6 +61,8 @@ struct JoinPlan {
 
 class QueryPlanner {
   public:
+    [[nodiscard]] QueryPlan planSelect(const Select &query, const RelationStats &stats,
+                                       const IndexCatalogView &indexes) const;
     [[nodiscard]] QueryPlan planSelect(const Select &query, const Table &table) const;
     [[nodiscard]] JoinPlan planJoin(const Table &left, const Table &right,
                                     const JoinClause &join) const;

@@ -2,7 +2,6 @@
 
 #include "VertexDB/common/index_expression.hpp"
 
-#include <algorithm>
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
@@ -11,54 +10,27 @@ namespace VertexDB {
 
 void Table::analyze(std::size_t maxBuckets) {
     std::unique_lock lock{mutex_};
-    histograms_.clear();
-    const auto entries = rowStore_->liveEntries();
-    for (std::size_t columnIndex = 0; columnIndex < schema_.size(); ++columnIndex) {
-        std::vector<Value> values;
-        values.reserve(entries.size());
-        for (const auto &[rowId, row] : entries) {
-            (void)rowId;
-            if (columnIndex < row.size() && !row[columnIndex].isNull()) {
-                values.push_back(row[columnIndex]);
-            }
-        }
-        std::sort(values.begin(), values.end());
-        auto histogram =
-            buildEquiHeightHistogram(schema_[columnIndex].name, std::move(values), maxBuckets);
-        histograms_.emplace(histogram.column, std::move(histogram));
-    }
+    statistics_.analyze(schema_, *rowStore_, maxBuckets);
 }
 
 std::optional<ColumnHistogram> Table::columnHistogram(std::string_view column) const {
     std::shared_lock lock{mutex_};
-    auto it = histograms_.find(std::string{column});
-    if (it == histograms_.end()) {
-        return std::nullopt;
-    }
-    return it->second;
+    return statistics_.columnHistogram(column);
 }
 
 std::vector<ColumnHistogram> Table::columnHistograms() const {
     std::shared_lock lock{mutex_};
-    std::vector<ColumnHistogram> out;
-    out.reserve(histograms_.size());
-    for (const auto &[_, histogram] : histograms_) {
-        out.push_back(histogram);
-    }
-    return out;
+    return statistics_.columnHistograms();
 }
 
 void Table::replaceColumnHistograms(std::vector<ColumnHistogram> histograms) {
     std::unique_lock lock{mutex_};
-    histograms_.clear();
-    for (auto &histogram : histograms) {
-        histograms_.emplace(histogram.column, std::move(histogram));
-    }
+    statistics_.replaceColumnHistograms(std::move(histograms));
 }
 
 void Table::clearColumnHistograms() {
     std::unique_lock lock{mutex_};
-    histograms_.clear();
+    statistics_.clearColumnHistograms();
 }
 
 bool Table::applyPhysicalUpsert(RowId rowId, Row row) {
@@ -107,16 +79,18 @@ void Table::applyPageImageRedo(
         freeListOpt = std::move(freeList);
     }
     pageStore->applyPageImages(capacityOpt, std::move(freeListOpt), std::move(heapPages));
+    auto &orderedIndexes = indexManager_.orderedIndexes();
+    auto &hashIndexStores = indexManager_.hashIndexes();
     for (auto &[name, snapshot] : btreeIndexes) {
-        auto it = orderedIndexes_.find(name);
-        if (it == orderedIndexes_.end()) {
+        auto it = orderedIndexes.find(name);
+        if (it == orderedIndexes.end()) {
             throw std::runtime_error("page image redo references unknown btree index " + name);
         }
         it->second.applyDirtyPages(snapshot);
     }
     for (auto &[name, snapshot] : hashIndexes) {
-        auto it = indexes_.find(name);
-        if (it == indexes_.end()) {
+        auto it = hashIndexStores.find(name);
+        if (it == hashIndexStores.end()) {
             throw std::runtime_error("page image redo references unknown hash index " + name);
         }
         it->second.applyDirtyBuckets(snapshot);
@@ -197,17 +171,21 @@ void Table::replaceFromPages(PageStoreSnapshot snapshot, bool rebuildIndexesAfte
 TableIndexStoreSnapshot Table::exportIndexPages() const {
     std::shared_lock lock{mutex_};
     TableIndexStoreSnapshot snapshot;
-    snapshot.indexes.reserve(indexColumns_.size());
-    for (const auto &[name, columnIndex] : indexColumns_) {
+    const auto &indexColumns = indexManager_.indexColumns();
+    const auto &indexExpressions = indexManager_.indexExpressions();
+    const auto &orderedIndexes = indexManager_.orderedIndexes();
+    const auto &hashIndexes = indexManager_.hashIndexes();
+    snapshot.indexes.reserve(indexColumns.size());
+    for (const auto &[name, columnIndex] : indexColumns) {
         IndexStoreSnapshot entry;
         entry.name = name;
-        if (auto it = indexExpressions_.find(name); it != indexExpressions_.end()) {
+        if (auto it = indexExpressions.find(name); it != indexExpressions.end()) {
             entry.column = encodeIndexDefinitionColumn(schema_.at(columnIndex).name, it->second);
         } else {
             entry.column = schema_.at(columnIndex).name;
         }
-        entry.btree = orderedIndexes_.at(name).exportPages();
-        entry.hash = indexes_.at(name).exportBuckets();
+        entry.btree = orderedIndexes.at(name).exportPages();
+        entry.hash = hashIndexes.at(name).exportBuckets();
         snapshot.indexes.push_back(std::move(entry));
     }
     return snapshot;
@@ -215,10 +193,12 @@ TableIndexStoreSnapshot Table::exportIndexPages() const {
 
 void Table::replaceIndexPages(TableIndexStoreSnapshot snapshot) {
     std::unique_lock lock{mutex_};
+    auto &hashIndexes = indexManager_.hashIndexes();
+    auto &orderedIndexes = indexManager_.orderedIndexes();
     for (auto &entry : snapshot.indexes) {
-        auto hashIt = indexes_.find(entry.name);
-        auto btreeIt = orderedIndexes_.find(entry.name);
-        if (hashIt == indexes_.end() || btreeIt == orderedIndexes_.end()) {
+        auto hashIt = hashIndexes.find(entry.name);
+        auto btreeIt = orderedIndexes.find(entry.name);
+        if (hashIt == hashIndexes.end() || btreeIt == orderedIndexes.end()) {
             throw std::runtime_error("index page restore references unknown index " + entry.name);
         }
         btreeIt->second.replaceFromPages(std::move(entry.btree));
@@ -231,10 +211,10 @@ void Table::clearDirtyTracking() {
     if (auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get()); pageStore != nullptr) {
         pageStore->clearDirtyPages();
     }
-    for (auto &[_, index] : indexes_) {
+    for (auto &[_, index] : indexManager_.hashIndexes()) {
         index.clearDirtyPages();
     }
-    for (auto &[_, index] : orderedIndexes_) {
+    for (auto &[_, index] : indexManager_.orderedIndexes()) {
         index.clearDirtyPages();
     }
 }
@@ -249,12 +229,12 @@ PageImageCapture Table::takePageImageCapture() {
         throw std::runtime_error("table row store does not support page image capture");
     }
     capture.heapPages = pageStore->takeDirtyPages();
-    for (auto &[name, index] : orderedIndexes_) {
+    for (auto &[name, index] : indexManager_.orderedIndexes()) {
         if (index.hasDirtyPages()) {
             capture.btreeIndexes.emplace_back(name, index.takeDirtyPages());
         }
     }
-    for (auto &[name, index] : indexes_) {
+    for (auto &[name, index] : indexManager_.hashIndexes()) {
         if (index.hasDirtyPages()) {
             capture.hashIndexes.emplace_back(name, index.takeDirtyBuckets());
         }

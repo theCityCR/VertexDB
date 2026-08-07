@@ -48,17 +48,20 @@ CLI
   reference `IndexExpression` from `common/` rather than owning the type.
 
 - `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
-  cost-based access-path / join selection using table/index statistics and optional `ANALYZE`
-  histograms, including multi-index AND intersect, with residual filters.
-- `storage`: database/table ownership, row storage boundaries, schema validation, column histograms,
-  and page cache abstractions. `Table` implementation is split across `table.cpp` (schema/DML),
-  `table_indexes.cpp`, and `table_persist.cpp` (snapshots, redo, histograms). `VectorRowStore` and
-  `PageRowStore` are separate TUs sharing sparse-layout validation.
+  cost-based access-path / join selection through the `RelationStats` and `IndexCatalogView`
+  interfaces, including optional `ANALYZE` histograms, multi-index AND intersect, and residual
+  filters.
+- `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
+  and page cache abstractions. `Table` is the synchronized façade over row, index, statistics, and
+  MVCC components. `VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
+  validation.
 - `execution`: `QueryExecutor` façade for command dispatch (DDL/DML/txn). Focused TUs:
   `query_executor_select.cpp` (SELECT/join/EXPLAIN), `query_executor_subquery.cpp` (CTE/`IN`/`EXISTS`),
   `query_executor_recovery.cpp` (WAL/undo), plus `predicate_eval`, `select_helpers`, `prepared_bind`,
   and `sql_literal`.
-- `indexing`: hash indexes and ordered B+ tree index APIs with explicit node/page layout metadata.
+- `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
+  maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
+  forwards its public index API while holding the appropriate lock.
 - `persistence`: `StorageManager` orchestrates snapshot paths; `tcrdb_codec` owns `.tcrdb` v1–v4
   encode/decode. WAL recovery uses page-image redo plus legacy physical/logical records.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager`.
@@ -68,8 +71,10 @@ Key public headers carry a short ownership banner pointing at sibling TUs.
 
 ## Architectural Boundaries
 
-`Table` owns schema validation and index maintenance, but delegates physical row storage to the
-`RowStore` interface. `PageRowStore` is the default implementation: serialized page payloads in an
+`Table` owns schema validation and synchronization, composes `IndexManager` and `TableStatistics`,
+and delegates physical row storage to the `RowStore` interface. It implements the read-only
+`RelationStats` and `IndexCatalogView` planner boundaries, so planning does not depend on table
+storage internals. `PageRowStore` is the default implementation: serialized page payloads in an
 in-memory page directory are the source of truth, and the LRU `BufferPool` is the access cache
 (fill-on-miss). Reads deserialize live row slots from those page bytes. Each page holds a fixed
 number of row slots; serialized page byte lengths vary with row content. Both row-store

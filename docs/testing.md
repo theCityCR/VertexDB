@@ -29,7 +29,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 155 discovered GoogleTest cases across the files above.
+The current suite contains 156 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

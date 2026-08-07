@@ -34,7 +34,53 @@ QueryExecutor makeExecutor(std::string_view suffix) {
     return makeTempExecutor("vertexdb-planner-", suffix);
 }
 
+class StubRelationStats final : public RelationStats {
+  public:
+    [[nodiscard]] std::size_t rowCount() const override { return 100; }
+
+    [[nodiscard]] std::optional<ColumnHistogram>
+    columnHistogram(std::string_view) const override {
+        return std::nullopt;
+    }
+};
+
+class StubIndexCatalog final : public IndexCatalogView {
+  public:
+    [[nodiscard]] bool hasIndex(std::string_view column) const override {
+        return column == "id";
+    }
+
+    [[nodiscard]] bool hasExpressionIndex(const IndexExpression &) const override {
+        return false;
+    }
+
+    [[nodiscard]] std::optional<std::size_t>
+    indexDistinctCount(std::string_view column) const override {
+        return column == "id" ? std::optional<std::size_t>{100} : std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<std::size_t>
+    indexDistinctCount(const IndexExpression &) const override {
+        return std::nullopt;
+    }
+};
+
 } // namespace
+
+TEST(PlannerBehaviorTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) {
+    Select query{"Employees", {},
+                 {SelectExpr::makeStar()},
+                 Predicate{"id", ComparisonOperator::Equal, Value{42}},
+                 {},
+                 {}};
+    const StubRelationStats stats;
+    const StubIndexCatalog indexes;
+
+    const auto plan = QueryPlanner{}.planSelect(query, stats, indexes);
+
+    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.estimatedRows, 1U);
+}
 
 TEST(PlannerBehaviorTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConjuncts) {
     Parser parser;
