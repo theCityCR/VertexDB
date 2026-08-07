@@ -41,10 +41,12 @@ CLI
 
 ## Module Responsibilities
 
-- `common`: shared value types, column metadata, string helpers (`equalsIgnoreCase`), and binary
-  POD I/O (`writePod` / `readPod` for streams and byte spans).
+- `common`: shared value types, column metadata, `IndexExpression` shapes/helpers, string helpers
+  (`equalsIgnoreCase`), and binary POD I/O (`writePod` / `readPod` for streams and byte spans).
 - `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
-  predicate parsing live in focused translation units behind one `Parser` type).
+  predicate parsing live in focused translation units behind one `Parser` type). AST statements
+  reference `IndexExpression` from `common/` rather than owning the type.
+
 - `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
   cost-based access-path / join selection using table/index statistics and optional `ANALYZE`
   histograms, including multi-index AND intersect, with residual filters.

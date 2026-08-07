@@ -4,6 +4,7 @@
 // by QueryExecutor / QueryPlanner / rewriter.
 
 #include "VertexDB/common/comparison_operator.hpp"
+#include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
 
 #include <cstdint>
@@ -21,17 +22,6 @@ enum class MaterializeMode {
     DefaultInline,
     Materialized,
     NotMaterialized,
-};
-
-struct IndexExpression {
-    enum class Kind { Column, Negate, Add, Subtract };
-
-    Kind kind{Kind::Column};
-    std::string column;
-    Value literal{};
-
-    [[nodiscard]] friend bool operator==(const IndexExpression &lhs,
-                                         const IndexExpression &rhs) = default;
 };
 
 struct CteEntry {

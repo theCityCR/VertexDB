@@ -1,6 +1,9 @@
 #pragma once
 
-#include "VertexDB/parser/ast.hpp"
+// Index expression shapes and helpers shared by parser, planner, indexes, and persistence.
+// Lives in common/ so storage does not depend on parser/ast.hpp for index metadata.
+
+#include "VertexDB/common/value.hpp"
 #include "VertexDB/storage/row.hpp"
 
 #include <functional>
@@ -9,6 +12,17 @@
 #include <string_view>
 
 namespace VertexDB {
+
+struct IndexExpression {
+    enum class Kind { Column, Negate, Add, Subtract };
+
+    Kind kind{Kind::Column};
+    std::string column;
+    Value literal{};
+
+    [[nodiscard]] friend bool operator==(const IndexExpression &lhs,
+                                         const IndexExpression &rhs) = default;
+};
 
 [[nodiscard]] std::string indexExpressionToString(const IndexExpression &expression);
 [[nodiscard]] std::optional<IndexExpression> parseIndexExpressionString(std::string_view text);

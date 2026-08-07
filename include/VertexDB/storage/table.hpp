@@ -4,10 +4,10 @@
 // Impl split: table.cpp (core DML), table_indexes.cpp, table_persist.cpp.
 
 #include "VertexDB/common/comparison_operator.hpp"
+#include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/indexing/hash_index.hpp"
-#include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/histogram.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/row_store.hpp"
