@@ -1,5 +1,6 @@
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/indexing/hash_index.hpp"
+#include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
 
 #include <gtest/gtest.h>
@@ -156,6 +157,42 @@ TEST(IndexTests, IncrementalBTreeSplitMergeMaintainsStructuralInvariants) {
     EXPECT_EQ(index.size(), 0U);
     EXPECT_EQ(index.height(), 1U);
     EXPECT_EQ(index.leafPageCount(), 1U);
+}
+
+TEST(IndexTests, ParseIndexExpressionStringRoundTripsSupportedShapes) {
+    const auto column = parseIndexExpressionString("salary");
+    ASSERT_TRUE(column);
+    EXPECT_EQ(column->kind, IndexExpression::Kind::Column);
+    EXPECT_EQ(column->column, "salary");
+    EXPECT_EQ(indexExpressionToString(*column), "salary");
+
+    const auto negate = parseIndexExpressionString("-salary");
+    ASSERT_TRUE(negate);
+    EXPECT_EQ(negate->kind, IndexExpression::Kind::Negate);
+    EXPECT_EQ(indexExpressionToString(*negate), "-salary");
+
+    const auto add = parseIndexExpressionString("id+1");
+    ASSERT_TRUE(add);
+    EXPECT_EQ(add->kind, IndexExpression::Kind::Add);
+    EXPECT_EQ(add->literal, Value{std::int64_t{1}});
+    EXPECT_EQ(indexExpressionToString(*add), "id+1");
+
+    const auto sub = parseIndexExpressionString("id-2.5");
+    ASSERT_TRUE(sub);
+    EXPECT_EQ(sub->kind, IndexExpression::Kind::Subtract);
+    EXPECT_EQ(sub->literal, Value{2.5});
+    EXPECT_EQ(indexExpressionToString(*sub), "id-2.5");
+
+    const auto encoded = encodeIndexDefinitionColumn("id", add);
+    EXPECT_EQ(encoded, "expr:id+1");
+    const auto decoded = decodeIndexDefinitionColumn(encoded);
+    ASSERT_TRUE(decoded.second);
+    EXPECT_EQ(decoded.first, "id");
+    EXPECT_EQ(*decoded.second, *add);
+
+    EXPECT_FALSE(parseIndexExpressionString(""));
+    EXPECT_FALSE(parseIndexExpressionString("a.b"));
+    EXPECT_FALSE(parseIndexExpressionString("id*2"));
 }
 
 } // namespace VertexDB

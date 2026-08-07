@@ -1,10 +1,9 @@
 #pragma once
 
-// SELECT projection, ORDER BY/LIMIT, and hash aggregation helpers.
-// Prepared ? binding lives in prepared_bind.hpp.
+// SELECT projection, ORDER BY/LIMIT, and column resolve helpers.
+// Scope rewrite: select_scope.hpp. Aggregation: select_aggregate.hpp.
 
 #include "VertexDB/execution/query_result.hpp"
-#include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/table.hpp"
 
@@ -33,14 +32,5 @@ void sortRowsByColumn(std::vector<Row> &rows, std::size_t columnIndex, bool asce
                                                             std::string_view requested);
 
 [[nodiscard]] QueryResult messageResult(bool success, std::string message);
-
-void validateAggregation(const Select &command);
-
-// Strip FROM-scope qualifiers (`e.id` → `id`) using the select's table / alias so planning and
-// execution see bare column names. Qualifiers that name an outer scope are left intact.
-void normalizeSelectScopeQualifiers(Select &select);
-
-[[nodiscard]] QueryResult aggregateRows(const Select &command, const std::vector<std::string> &sourceColumns,
-                                        std::vector<Row> rows);
 
 } // namespace VertexDB

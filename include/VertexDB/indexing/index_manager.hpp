@@ -1,5 +1,8 @@
 #pragma once
 
+// Index definitions plus hash/B+ tree stores; maintenance against RowStore + schema.
+// Table holds the mutex and forwards its public index API while locked.
+
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/indexing/btree_index.hpp"

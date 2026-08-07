@@ -1,5 +1,8 @@
 #pragma once
 
+// SELECT / join / EXPLAIN execution owned by SelectEngine.
+// Implementation: select_engine.cpp. QueryExecutor remains the public façade.
+
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/planner/query_planner.hpp"

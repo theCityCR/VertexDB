@@ -1,38 +1,11 @@
 #include "VertexDB/indexing/btree_index.hpp"
 
-#include <algorithm>
+#include "btree_index_detail.hpp"
+
 #include <stdexcept>
 #include <utility>
 
 namespace VertexDB {
-namespace {
-
-std::size_t lowerBoundKey(const std::vector<Value> &keys, const Value &key) {
-    std::size_t lo = 0;
-    std::size_t hi = keys.size();
-    while (lo < hi) {
-        const std::size_t mid = lo + (hi - lo) / 2;
-        if (keys[mid] < key) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
-}
-
-} // namespace
-
-BTreeIndex::BTreeIndex(std::size_t maxKeysPerNode) : maxKeysPerNode_(maxKeysPerNode) {
-    if (maxKeysPerNode_ < 2) {
-        throw std::invalid_argument("B+ tree node capacity must be at least 2");
-    }
-    BTreeNode root;
-    root.pageId = rootPageId_;
-    root.leaf = true;
-    nodes_.emplace(rootPageId_, std::move(root));
-    clearDirtyPages();
-}
 
 void BTreeIndex::markDirty(BTreePageId pageId) {
     dirtyPages_[pageId] = true;
@@ -57,49 +30,6 @@ void BTreeIndex::freePage(BTreePageId pageId) {
     fullReplaceDirty_ = true; // freed pages require a full node set on redo
 }
 
-BTreeNode &BTreeIndex::node(BTreePageId pageId) {
-    markDirty(pageId);
-    return nodes_.at(pageId);
-}
-
-const BTreeNode &BTreeIndex::node(BTreePageId pageId) const { return nodes_.at(pageId); }
-
-std::size_t BTreeIndex::minKeys() const noexcept { return maxKeysPerNode_ / 2; }
-
-std::size_t BTreeIndex::childIndex(const BTreeNode &internal, const Value &key) const {
-    std::size_t index = 0;
-    while (index < internal.keys.size() && !(key < internal.keys[index])) {
-        ++index;
-    }
-    return index;
-}
-
-BTreePageId BTreeIndex::childFor(const BTreeNode &internal, const Value &key) const {
-    return internal.children[childIndex(internal, key)];
-}
-
-BTreePageId BTreeIndex::leftmostLeaf() const {
-    BTreePageId pageId = rootPageId_;
-    while (!node(pageId).leaf) {
-        pageId = node(pageId).children.front();
-    }
-    return pageId;
-}
-
-std::vector<BTreePageId> BTreeIndex::pathToLeaf(const Value &key) const {
-    std::vector<BTreePageId> path;
-    BTreePageId pageId = rootPageId_;
-    while (true) {
-        path.push_back(pageId);
-        const auto &current = node(pageId);
-        if (current.leaf) {
-            break;
-        }
-        pageId = childFor(current, key);
-    }
-    return path;
-}
-
 void BTreeIndex::insert(const Value &key, RowId rowId) {
     auto path = pathToLeaf(key);
     insertIntoLeaf(path, key, rowId);
@@ -107,7 +37,7 @@ void BTreeIndex::insert(const Value &key, RowId rowId) {
 
 void BTreeIndex::insertIntoLeaf(std::vector<BTreePageId> &path, const Value &key, RowId rowId) {
     auto &leaf = node(path.back());
-    const auto index = lowerBoundKey(leaf.keys, key);
+    const auto index = btree_detail::lowerBoundKey(leaf.keys, key);
     if (index < leaf.keys.size() && leaf.keys[index] == key) {
         leaf.rowIds[index].push_back(rowId);
         return;
@@ -202,7 +132,7 @@ void BTreeIndex::remove(const Value &key, RowId rowId) {
 
 void BTreeIndex::removeFromLeaf(std::vector<BTreePageId> &path, const Value &key, RowId rowId) {
     auto &leaf = node(path.back());
-    const auto index = lowerBoundKey(leaf.keys, key);
+    const auto index = btree_detail::lowerBoundKey(leaf.keys, key);
     if (index >= leaf.keys.size() || !(leaf.keys[index] == key)) {
         return;
     }
@@ -418,168 +348,6 @@ void BTreeIndex::clear() {
     dirtyPages_.clear();
     fullReplaceDirty_ = true;
     metadataDirty_ = true;
-}
-
-std::vector<RowId> BTreeIndex::find(const Value &key) const {
-    const auto leafId = pathToLeaf(key).back();
-    const auto &leaf = node(leafId);
-    const auto index = lowerBoundKey(leaf.keys, key);
-    if (index < leaf.keys.size() && leaf.keys[index] == key) {
-        return leaf.rowIds[index];
-    }
-    return {};
-}
-
-std::vector<RowId> BTreeIndex::lessThan(const Value &key) const {
-    std::vector<RowId> result;
-    std::optional<BTreePageId> pageId = leftmostLeaf();
-    while (pageId) {
-        const auto &leaf = node(*pageId);
-        for (std::size_t i = 0; i < leaf.keys.size(); ++i) {
-            if (!(leaf.keys[i] < key)) {
-                return result;
-            }
-            result.insert(result.end(), leaf.rowIds[i].begin(), leaf.rowIds[i].end());
-        }
-        pageId = leaf.nextLeaf;
-    }
-    return result;
-}
-
-std::vector<RowId> BTreeIndex::greaterThan(const Value &key) const {
-    std::vector<RowId> result;
-    const auto startId = pathToLeaf(key).back();
-    std::optional<BTreePageId> pageId = startId;
-    bool collecting = false;
-    while (pageId) {
-        const auto &leaf = node(*pageId);
-        for (std::size_t i = 0; i < leaf.keys.size(); ++i) {
-            if (!collecting && key < leaf.keys[i]) {
-                collecting = true;
-            }
-            if (collecting) {
-                result.insert(result.end(), leaf.rowIds[i].begin(), leaf.rowIds[i].end());
-            }
-        }
-        pageId = leaf.nextLeaf;
-    }
-    return result;
-}
-
-std::size_t BTreeIndex::size() const { return keyCount_; }
-
-std::size_t BTreeIndex::height() const {
-    std::size_t levels = 1;
-    BTreePageId pageId = rootPageId_;
-    while (!node(pageId).leaf) {
-        ++levels;
-        pageId = node(pageId).children.front();
-    }
-    return levels;
-}
-
-std::size_t BTreeIndex::leafPageCount() const {
-    std::size_t count = 0;
-    std::optional<BTreePageId> pageId = leftmostLeaf();
-    while (pageId) {
-        ++count;
-        pageId = node(*pageId).nextLeaf;
-    }
-    return count;
-}
-
-std::vector<BTreeNode> BTreeIndex::nodesSnapshot() const {
-    std::vector<BTreeNode> snapshot;
-    snapshot.reserve(nodes_.size());
-
-    std::optional<BTreePageId> leafId = leftmostLeaf();
-    while (leafId) {
-        snapshot.push_back(node(*leafId));
-        leafId = node(*leafId).nextLeaf;
-    }
-
-    for (const auto &[pageId, page] : nodes_) {
-        if (!page.leaf) {
-            snapshot.push_back(page);
-        }
-    }
-
-    // Keep the root last when it is an internal node so existing layout checks stay readable.
-    if (!node(rootPageId_).leaf) {
-        auto rootIt = std::find_if(snapshot.begin(), snapshot.end(),
-                                   [this](const BTreeNode &page) {
-                                       return !page.leaf && page.pageId == rootPageId_;
-                                   });
-        if (rootIt != snapshot.end() && std::next(rootIt) != snapshot.end()) {
-            auto rootNode = std::move(*rootIt);
-            snapshot.erase(rootIt);
-            snapshot.push_back(std::move(rootNode));
-        }
-    }
-    return snapshot;
-}
-
-BTreeIndexSnapshot BTreeIndex::exportPages() const {
-    BTreeIndexSnapshot snapshot;
-    snapshot.maxKeysPerNode = maxKeysPerNode_;
-    snapshot.rootPageId = rootPageId_;
-    snapshot.nextPageId = nextPageId_;
-    snapshot.freePageIds = freePageIds_;
-    snapshot.keyCount = keyCount_;
-    snapshot.nodes.reserve(nodes_.size());
-    for (const auto &[_, page] : nodes_) {
-        snapshot.nodes.push_back(page);
-    }
-    std::sort(snapshot.nodes.begin(), snapshot.nodes.end(),
-              [](const BTreeNode &lhs, const BTreeNode &rhs) { return lhs.pageId < rhs.pageId; });
-    return snapshot;
-}
-
-void BTreeIndex::replaceFromPages(BTreeIndexSnapshot snapshot) {
-    if (snapshot.maxKeysPerNode < 2) {
-        throw std::invalid_argument("B+ tree node capacity must be at least 2");
-    }
-    maxKeysPerNode_ = snapshot.maxKeysPerNode;
-    rootPageId_ = snapshot.rootPageId;
-    nextPageId_ = snapshot.nextPageId;
-    freePageIds_ = std::move(snapshot.freePageIds);
-    keyCount_ = snapshot.keyCount;
-    nodes_.clear();
-    for (auto &page : snapshot.nodes) {
-        const auto pageId = page.pageId;
-        nodes_.emplace(pageId, std::move(page));
-    }
-    if (!nodes_.contains(rootPageId_)) {
-        throw std::invalid_argument("B+ tree snapshot is missing the root page");
-    }
-    clearDirtyPages();
-}
-
-void BTreeIndex::clearDirtyPages() noexcept {
-    dirtyPages_.clear();
-    metadataDirty_ = false;
-    fullReplaceDirty_ = false;
-}
-
-bool BTreeIndex::hasDirtyPages() const noexcept {
-    return fullReplaceDirty_ || metadataDirty_ || !dirtyPages_.empty();
-}
-
-BTreeIndexSnapshot BTreeIndex::takeDirtyPages() {
-    if (!hasDirtyPages()) {
-        return {};
-    }
-    // Always ship a complete live node set so redo can install without merging frees.
-    auto snapshot = exportPages();
-    clearDirtyPages();
-    return snapshot;
-}
-
-void BTreeIndex::applyDirtyPages(const BTreeIndexSnapshot &dirty) {
-    if (dirty.nodes.empty() && dirty.keyCount == 0 && dirty.rootPageId == 0) {
-        return;
-    }
-    replaceFromPages(dirty);
 }
 
 } // namespace VertexDB

@@ -1,5 +1,8 @@
 #pragma once
 
+// CTE / derived-table rewrite (inline or AS MATERIALIZED) before planning.
+// Access-path selection lives in query_planner.hpp; execution in SubqueryRuntime.
+
 #include "VertexDB/parser/ast.hpp"
 
 #include <string>

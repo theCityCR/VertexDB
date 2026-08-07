@@ -1,5 +1,7 @@
 #pragma once
 
+// Named database: owns tables under a shared mutex. Persistence is StorageManager.
+
 #include "VertexDB/storage/table.hpp"
 
 #include <map>

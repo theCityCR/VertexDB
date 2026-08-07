@@ -251,7 +251,7 @@ TEST(NestedSqlTests, CteBodyJoinInlinesToJoinPlan) {
     EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
 }
 
-TEST(NestedSqlTests, PlannerChoosesHashIndexInLookup) {
+TEST(NestedSqlTests, PlannerChoosesHashIn) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
     table.insert({Value{1}, Value{"Alice"}});
     table.insert({Value{2}, Value{"Bob"}});
@@ -266,7 +266,7 @@ TEST(NestedSqlTests, PlannerChoosesHashIndexInLookup) {
                  {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexInLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIn);
     EXPECT_EQ(std::get<HashInPlan>(plan.path).indexValues.size(), 2U);
 }
 

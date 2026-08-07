@@ -41,12 +41,13 @@ add_library(VertexDB
     src/storage/table_snapshot_io.cpp
     src/storage/table_statistics.cpp
     src/storage/histogram.cpp
-    src/indexing/btree_index.cpp
+    src/indexing/btree_index_lookup.cpp
+    src/indexing/btree_index_mutate.cpp
+    src/indexing/btree_index_snapshot.cpp
     src/indexing/hash_index.cpp
     src/indexing/index_manager.cpp
     src/execution/query_executor.cpp
-    src/execution/query_executor_select.cpp
-    src/execution/query_executor_recovery.cpp
+    src/execution/select_engine.cpp
     src/execution/txn_session.cpp
     src/execution/recovery_service.cpp
     src/execution/subquery_runtime.cpp
@@ -54,8 +55,13 @@ add_library(VertexDB
     src/execution/predicate_eval.cpp
     src/execution/sql_literal.cpp
     src/execution/select_helpers.cpp
+    src/execution/select_scope.cpp
+    src/execution/select_aggregate.cpp
     src/execution/prepared_bind.cpp
     src/planner/query_planner.cpp
+    src/planner/planner_predicate.cpp
+    src/planner/query_planner_join.cpp
+    src/planner/query_planner_format.cpp
     src/planner/rewriter.cpp
     src/concurrency/lock_manager.cpp
     src/persistence/storage_manager.cpp

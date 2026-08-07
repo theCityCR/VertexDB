@@ -2,6 +2,10 @@
 
 // Variant-based costed access-path selection. Each path stores only the probe
 // fields valid for that physical operation. CTE/derived rewrite is in rewriter.hpp.
+// AccessPath names match *Plan structs (HashEq ↔ HashEqPlan, …). Older docs may
+// say HashIndexLookup / OrderedIndexRange / HashIndexInLookup / MultiIndex*.
+// Sibling TUs: planner_predicate.cpp, query_planner_join.cpp, query_planner_format.cpp;
+// shared helpers in src/planner/planner_detail.hpp.
 
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/relation_stats.hpp"
@@ -18,11 +22,11 @@ class Table;
 
 enum class AccessPath : std::uint8_t {
     FullScan,
-    HashIndexLookup,
-    OrderedIndexRange,
-    HashIndexInLookup,
-    MultiIndexIntersect,
-    MultiIndexUnion,
+    HashEq,
+    OrderedRange,
+    HashIn,
+    Intersect,
+    Union,
 };
 
 enum class JoinAlgorithm : std::uint8_t {

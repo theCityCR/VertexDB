@@ -1,5 +1,8 @@
 #pragma once
 
+// Append-only WAL records and file I/O. RecoveryService owns replay policy.
+// DML redo payloads use page_image_redo (legacy physical_redo still readable).
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>

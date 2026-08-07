@@ -1,5 +1,8 @@
 #pragma once
 
+// Row-level Predicate evaluation shared by SELECT filters and DML WHERE.
+// Implementation: predicate_eval.cpp.
+
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/parser/ast.hpp"

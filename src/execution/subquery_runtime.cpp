@@ -3,6 +3,7 @@
 #include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/execution/select_scope.hpp"
 #include "VertexDB/parser/predicate.hpp"
 
 #include <memory>

@@ -23,7 +23,7 @@ Every feature and every small designed behavior must ship with tests. Do not mer
 
 ```text
 BAD:  ASSERT(plan.accessPath == FullScan);  // because today’s planner is weak
-GOOD: ASSERT(plan.accessPath == HashIndexLookup);  // because AND+index should use the index
+GOOD: ASSERT(plan.accessPath == HashEq);  // because AND+index should use the index
 ```
 
 If a limitation is intentional and documented, a test may assert that documented limitation — label it as such, and do not treat accidental gaps as requirements.

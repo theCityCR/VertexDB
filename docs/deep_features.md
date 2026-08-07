@@ -99,12 +99,12 @@ plus optional equi-height histograms from `ANALYZE` (`Table::columnHistogram`):
 - `IN` ≈ histogram ndistinct when present, otherwise \(K \cdot (N / D)\)
 
 When ≥2 indexable equality conjuncts exist, the planner estimates intersection under independence
-(\(N \cdot \prod 1/D_i\)) and chooses `MultiIndexIntersect` when that cost beats the best single
+(\(N \cdot \prod 1/D_i\)) and chooses `Intersect` when that cost beats the best single
 index path. Tie-breaks still prefer any index over a full scan and equality over range/`IN` when
 costs match. For non-intersect `AND` plans the cheapest indexable conjunct drives the access path;
 remaining conjuncts become a residual filter. Top-level `OR` of equality index probes estimates
 union under independence (\(N \cdot (1 - \prod(1 - 1/D_i))\)) over the indexable subset and chooses
-`MultiIndexUnion` when that cost beats a full scan. Non-indexable disjuncts become a residual OR
+`Union` when that cost beats a full scan. Non-indexable disjuncts become a residual OR
 evaluated as a complementary scan after the index union (partial OR); `EXPLAIN` reports
 `residual: yes` and a residual-OR note. When no arm is indexable (or the indexable union is not
 cheaper), the planner keeps a full scan. An `OR` nested under `AND` may stay as a residual while

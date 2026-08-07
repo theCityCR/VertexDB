@@ -1,5 +1,8 @@
 #pragma once
 
+// Ordered B+ tree: point/range lookup, incremental split/merge, page snapshots.
+// Implementation split across btree_index_{lookup,mutate,snapshot}.cpp.
+
 #include "VertexDB/storage/row.hpp"
 
 #include <cstddef>

@@ -52,7 +52,8 @@ CLI
   cost-based access-path / join selection through the `RelationStats` and `IndexCatalogView`
   interfaces, including optional `ANALYZE` histograms, multi-index AND intersect / OR union
   (including partial OR with residual complementary scan), and
-  residual filters.
+  residual filters. `QueryPlanner` is split across `query_planner.cpp` (SELECT paths),
+  `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
 or existence node owns only the fields valid for that shape. Physical access paths are likewise a
@@ -67,17 +68,20 @@ residual filters live in the shared `PlanEstimates` metadata.
   preparation and evaluation, and `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
   `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. `predicate_eval`,
-  `select_helpers`, `prepared_bind`, and `sql_literal` provide shared execution helpers.
+  `select_helpers` / `select_scope` / `select_aggregate`, `prepared_bind`, and `sql_literal`
+  provide shared execution helpers.
 - `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
-  forwards its public index API while holding the appropriate lock.
+  forwards its public index API while holding the appropriate lock. `BTreeIndex` is split across
+  `btree_index_{lookup,mutate,snapshot}.cpp`.
 - `persistence`: `StorageManager` orchestrates snapshot paths; the slim `tcrdb_codec` orchestrates
   `.tcrdb` v1–v4 encode/decode across focused value, table, and index codec translation units.
   WAL recovery uses page-image redo plus legacy physical/logical records.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager`.
 - `transaction`: commit sequences, MVCC row versions, and per-transaction undo-log rollback.
 
-Key public headers carry a short ownership banner pointing at sibling TUs.
+Public module headers carry a short ownership banner pointing at sibling TUs when useful;
+see `AGENTS.md` for the agent-oriented layout map.
 
 ## Architectural Boundaries
 

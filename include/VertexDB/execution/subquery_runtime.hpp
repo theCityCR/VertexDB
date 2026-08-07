@@ -1,5 +1,8 @@
 #pragma once
 
+// CTE / derived-table / IN / EXISTS preparation and evaluation.
+// Implementation: subquery_runtime.cpp. Rewrites go through rewriter.hpp first.
+
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/table.hpp"

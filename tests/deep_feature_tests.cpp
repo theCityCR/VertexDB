@@ -268,7 +268,7 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
                     makeComparison("id", ComparisonOperator::Equal, Value{1}),
                     {},          {}};
     const auto equalityPlan = planner.planSelect(equality, table);
-    EXPECT_EQ(equalityPlan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(equalityPlan.accessPath(), AccessPath::HashEq);
     EXPECT_EQ(equalityPlan.estimates.estimatedRows, 1U);
     EXPECT_LT(equalityPlan.estimates.estimatedCost, static_cast<double>(table.rowCount()));
     EXPECT_FALSE(equalityPlan.residual().has_value());
@@ -278,7 +278,7 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
                  makeComparison("salary", ComparisonOperator::Greater, Value{100000.0}),
                  {},          {}};
     const auto rangePlan = planner.planSelect(range, table);
-    EXPECT_EQ(rangePlan.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_EQ(rangePlan.accessPath(), AccessPath::OrderedRange);
     EXPECT_GE(rangePlan.estimates.estimatedRows, 1U);
 
     Predicate andPredicate =
@@ -286,7 +286,7 @@ TEST(DeepFeatureTests, PlannerChoosesIndexAccessPaths) {
                 makeComparison("salary", ComparisonOperator::Greater, Value{100000.0}));
     Select compound{"Employees", {}, {SelectExpr::makeStar()}, andPredicate, {}, {}};
     const auto compoundPlan = planner.planSelect(compound, table);
-    EXPECT_EQ(compoundPlan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(compoundPlan.accessPath(), AccessPath::HashEq);
     ASSERT_TRUE(compoundPlan.residual().has_value());
     EXPECT_EQ(predicateKind(*compoundPlan.residual()), PredicateKind::Comparison);
     EXPECT_EQ(std::get<ComparisonPred>(*compoundPlan.residual()).column, "salary");

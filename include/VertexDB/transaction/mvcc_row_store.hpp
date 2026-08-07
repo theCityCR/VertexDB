@@ -1,5 +1,8 @@
 #pragma once
 
+// Per-row version chains for commit-aware snapshot isolation reads.
+// TransactionManager supplies commit sequences; UndoLog handles abort compensation.
+
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/transaction/transaction_manager.hpp"
 

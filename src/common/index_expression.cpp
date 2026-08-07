@@ -1,8 +1,10 @@
 #include "VertexDB/common/index_expression.hpp"
 
-#include "VertexDB/parser/parser.hpp"
-
+#include <cctype>
+#include <charconv>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <variant>
 
 namespace VertexDB {
@@ -56,6 +58,78 @@ namespace {
     return Value{std::get<std::int64_t>(lhs.data()) - std::get<std::int64_t>(rhs.data())};
 }
 
+[[nodiscard]] bool isIdentStart(char ch) {
+    return std::isalpha(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+[[nodiscard]] bool isIdentContinue(char ch) {
+    return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+[[nodiscard]] std::string_view trim(std::string_view text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
+[[nodiscard]] bool tryParseIdentifier(std::string_view text, std::string &out) {
+    if (text.empty() || !isIdentStart(text.front())) {
+        return false;
+    }
+    std::size_t end = 1;
+    while (end < text.size() && isIdentContinue(text[end])) {
+        ++end;
+    }
+    if (end != text.size()) {
+        return false;
+    }
+    out.assign(text.data(), end);
+    return true;
+}
+
+[[nodiscard]] std::optional<Value> parseExpressionLiteral(std::string_view text) {
+    text = trim(text);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    if (text == "NULL") {
+        return Value{};
+    }
+
+    const bool negative = text.front() == '-';
+    std::string_view digits = negative ? text.substr(1) : text;
+    if (digits.empty()) {
+        return std::nullopt;
+    }
+
+    const bool looksNumeric =
+        std::isdigit(static_cast<unsigned char>(digits.front())) != 0 || digits.front() == '.';
+    if (looksNumeric) {
+        if (digits.find('.') != std::string_view::npos) {
+            try {
+                const double value = std::stod(std::string{digits});
+                return Value{negative ? -value : value};
+            } catch (const std::exception &) {
+                return std::nullopt;
+            }
+        }
+        std::int64_t value{};
+        const auto [ptr, ec] =
+            std::from_chars(digits.data(), digits.data() + digits.size(), value);
+        if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
+            return std::nullopt;
+        }
+        return Value{negative ? -value : value};
+    }
+
+    // Unquoted string remnant from Value::toString() round-trip.
+    return Value{std::string{text}};
+}
+
 } // namespace
 
 std::string indexExpressionToString(const IndexExpression &expression) {
@@ -73,16 +147,50 @@ std::string indexExpressionToString(const IndexExpression &expression) {
 }
 
 std::optional<IndexExpression> parseIndexExpressionString(std::string_view text) {
-    try {
-        Parser parser;
-        const auto query = parser.parse("CREATE INDEX __expr ON __t ((" + std::string{text} + "));");
-        if (!std::holds_alternative<CreateIndex>(query)) {
-            return std::nullopt;
-        }
-        return std::get<CreateIndex>(query).expression;
-    } catch (const std::runtime_error &) {
+    text = trim(text);
+    if (text.empty()) {
         return std::nullopt;
     }
+
+    // -column
+    if (text.front() == '-') {
+        std::string column;
+        if (!tryParseIdentifier(text.substr(1), column)) {
+            return std::nullopt;
+        }
+        return IndexExpression{IndexExpression::Kind::Negate, std::move(column), {}};
+    }
+
+    std::size_t identEnd = 0;
+    if (!isIdentStart(text.front())) {
+        return std::nullopt;
+    }
+    ++identEnd;
+    while (identEnd < text.size() && isIdentContinue(text[identEnd])) {
+        ++identEnd;
+    }
+    std::string column{text.substr(0, identEnd)};
+    const auto rest = text.substr(identEnd);
+
+    if (rest.empty()) {
+        return IndexExpression{IndexExpression::Kind::Column, std::move(column), {}};
+    }
+    if (rest.front() == '+') {
+        auto literal = parseExpressionLiteral(rest.substr(1));
+        if (!literal) {
+            return std::nullopt;
+        }
+        return IndexExpression{IndexExpression::Kind::Add, std::move(column), std::move(*literal)};
+    }
+    if (rest.front() == '-') {
+        auto literal = parseExpressionLiteral(rest.substr(1));
+        if (!literal) {
+            return std::nullopt;
+        }
+        return IndexExpression{IndexExpression::Kind::Subtract, std::move(column),
+                               std::move(*literal)};
+    }
+    return std::nullopt;
 }
 
 Value evaluateIndexExpression(

@@ -78,7 +78,7 @@ TEST(PlannerBehaviorTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) 
 
     const auto plan = QueryPlanner{}.planSelect(query, stats, indexes);
 
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
     EXPECT_EQ(plan.estimates.estimatedRows, 1U);
 }
 
@@ -138,7 +138,7 @@ TEST(PlannerBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
                 makeComparison("salary", ComparisonOperator::Less, Value{100000.0}),
                 {},          {}};
     const auto plan = planner.planSelect(less, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedRange);
     EXPECT_EQ(std::get<OrderedRangePlan>(plan.path).indexOp, ComparisonOperator::Less);
     EXPECT_FALSE(plan.residual().has_value());
 
@@ -170,7 +170,7 @@ TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesMultiIndexUnion) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, orPredicate, {}, {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    EXPECT_EQ(plan.accessPath(), AccessPath::Union);
     ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
     EXPECT_FALSE(plan.residual().has_value());
@@ -216,7 +216,7 @@ TEST(PlannerBehaviorTests, IndexPreferredOverFullScanWhenCostsAreTied) {
                  makeComparison("id", ComparisonOperator::Equal, Value{1}),
                  {},          {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
 }
 
 TEST(PlannerBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidualTree) {
@@ -235,7 +235,7 @@ TEST(PlannerBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidua
 
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
     EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
     ASSERT_TRUE(plan.residual().has_value());
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::And);
@@ -294,7 +294,7 @@ TEST(PlannerBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCard
                 makeComparison("id", ComparisonOperator::Equal, Value{50}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
     EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
     EXPECT_LT(plan.estimates.estimatedCost, 2.0);
     ASSERT_TRUE(plan.residual().has_value());
@@ -314,7 +314,7 @@ TEST(PlannerBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
                 makeComparison("id", ComparisonOperator::Equal, Value{7}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
     EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
     EXPECT_LT(plan.estimates.estimatedCost, 3.0);
 }
@@ -425,7 +425,7 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
                 makeExpressionComparison(bPlus, ComparisonOperator::Equal, Value{1}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexIntersect);
+    EXPECT_EQ(plan.accessPath(), AccessPath::Intersect);
     ASSERT_EQ(std::get<IntersectPlan>(plan.path).intersectProbes.size(), 2U);
     EXPECT_NE(plan.estimates.explanation.find("multi-index intersect on"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("a"), std::string::npos);
@@ -445,7 +445,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionAcrossColumns) {
                makeComparison("dept", ComparisonOperator::Equal, Value{0}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    EXPECT_EQ(plan.accessPath(), AccessPath::Union);
     ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("id"), std::string::npos);
@@ -499,7 +499,7 @@ TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctUsesPartialUnion) {
                makeComparison("name", ComparisonOperator::Equal, Value{std::string{"n2"}}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    EXPECT_EQ(plan.accessPath(), AccessPath::Union);
     ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 1U);
     EXPECT_EQ(std::get<UnionPlan>(plan.path).unionProbes.front().column, "id");
     ASSERT_TRUE(plan.residual().has_value());
@@ -579,7 +579,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionIncludesExpressionEquality) {
                makeExpressionComparison(bPlus, ComparisonOperator::Equal, Value{2}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    EXPECT_EQ(plan.accessPath(), AccessPath::Union);
     ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
 }
@@ -626,12 +626,12 @@ TEST(PlannerBehaviorTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) 
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
 
     const auto before = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(before.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_EQ(before.accessPath(), AccessPath::OrderedRange);
     EXPECT_NEAR(before.estimates.estimatedCost, 30.0, 0.5); // N/3 fallback
 
     table.analyze();
     const auto after = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(after.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_EQ(after.accessPath(), AccessPath::OrderedRange);
     EXPECT_LT(after.estimates.estimatedCost, before.estimates.estimatedCost);
     EXPECT_LE(after.estimates.estimatedCost, 15.0);
 }
@@ -693,7 +693,7 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
     Predicate where = makeComparison("score", ComparisonOperator::Less, Value{10.0});
     Select query{"Scores", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedRange);
     EXPECT_LT(plan.estimates.estimatedCost, 64.0 / 3.0);
 }
 
@@ -739,7 +739,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhileConjunctUsesIndex
         makeAnd(makeComparison("id", ComparisonOperator::Equal, Value{1}), nestedOr);
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
     EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
     ASSERT_TRUE(plan.residual().has_value());
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Or);

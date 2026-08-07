@@ -1,5 +1,8 @@
 #pragma once
 
+// Page-image DML redo encoding/decoding for WAL (heap + index dirty pages).
+// Legacy row after-images live in physical_redo.hpp.
+
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/indexing/hash_index.hpp"
 #include "VertexDB/storage/buffer_pool.hpp"

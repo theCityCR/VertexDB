@@ -28,7 +28,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for the module map and data flow. High level:
+See [AGENTS.md](AGENTS.md) for a short agent-oriented layout map and
+[docs/architecture.md](docs/architecture.md) for the module map and data flow. High level:
 
 ```text
 CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence / Txn
@@ -95,7 +96,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 175 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 176 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:

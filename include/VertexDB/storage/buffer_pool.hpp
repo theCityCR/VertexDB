@@ -1,5 +1,7 @@
 #pragma once
 
+// LRU page access cache for PageRowStore (fill-on-miss). Page directory bytes are source of truth.
+
 #include <cstddef>
 #include <cstdint>
 #include <list>

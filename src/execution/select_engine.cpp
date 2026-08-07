@@ -2,6 +2,7 @@
 
 #include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/predicate_eval.hpp"
+#include "VertexDB/execution/select_aggregate.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 
