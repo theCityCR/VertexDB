@@ -48,6 +48,8 @@ add_library(VertexDB
     src/execution/query_executor_select.cpp
     src/execution/query_executor_subquery.cpp
     src/execution/query_executor_recovery.cpp
+    src/execution/txn_session.cpp
+    src/execution/recovery_service.cpp
     src/execution/predicate_eval.cpp
     src/execution/sql_literal.cpp
     src/execution/select_helpers.cpp

@@ -2,6 +2,7 @@
 
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
+#include "VertexDB/execution/txn_session.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/persistence/physical_redo.hpp"
@@ -122,6 +123,25 @@ TEST(TransactionBehaviorTests, SchemaChangesRejectedWhileTransactionActive) {
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
     auto after = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
     EXPECT_TRUE(after.success);
+}
+
+TEST(TransactionBehaviorTests, TxnSessionOwnsSnapshotUndoAndDeferredWalState) {
+    TxnSession session;
+
+    ASSERT_TRUE(session.begin().success);
+    EXPECT_TRUE(session.transactionActive());
+    EXPECT_EQ(session.readSnapshot().self, session.writeTransactionId());
+
+    session.pushUndo(UndoRecord{"Employees", UndoKind::Insert, 7, std::nullopt});
+    session.pushPendingWal(PendingWalRecord{WalOperation::Insert, "legacy insert"});
+    EXPECT_EQ(session.undoLog().size(), 1U);
+    EXPECT_EQ(session.pendingWal().size(), 1U);
+    EXPECT_FALSE(session.rejectIfTransactionActive("CREATE TABLE").success);
+
+    ASSERT_TRUE(session.rollback().success);
+    EXPECT_FALSE(session.transactionActive());
+    EXPECT_TRUE(session.undoLog().empty());
+    EXPECT_TRUE(session.pendingWal().empty());
 }
 
 // --- P1 -----------------------------------------------------------------

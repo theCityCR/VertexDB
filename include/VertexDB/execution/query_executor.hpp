@@ -2,20 +2,18 @@
 
 // SQL command façade: dispatch, DDL/DML, transactions, prepared EXECUTE.
 // SELECT/join live in query_executor_select.cpp; CTE/IN/EXISTS in
-// query_executor_subquery.cpp; WAL/undo recovery in query_executor_recovery.cpp.
+// query_executor_subquery.cpp; TxnSession and RecoveryService own transactional state.
 
 #include "VertexDB/concurrency/lock_manager.hpp"
 #include "VertexDB/execution/query_result.hpp"
+#include "VertexDB/execution/recovery_service.hpp"
+#include "VertexDB/execution/txn_session.hpp"
 #include "VertexDB/parser/ast.hpp"
-#include "VertexDB/persistence/page_image_redo.hpp"
-#include "VertexDB/persistence/physical_redo.hpp"
 #include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/database.hpp"
-#include "VertexDB/transaction/transaction_manager.hpp"
-#include "VertexDB/transaction/undo_log.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -95,32 +93,18 @@ class QueryExecutor {
                                                    std::span<const RowId> rowIds) const;
     [[nodiscard]] bool transactionActive() const noexcept;
     [[nodiscard]] QueryResult rejectIfTransactionActive(std::string_view action) const;
-    void applyUndoRecord(const UndoRecord &record);
-    void applyPhysicalRedo(const PhysicalRedoRecord &redo);
-    void applyPageImageRedo(const PageImageRedoRecord &redo);
-    void recoverFromStorage();
-    void recoverFromWal(bool loadedSnapshot);
     void appendWal(WalOperation operation, std::string payload);
     void appendPageImageRedo(Table &table, std::string tableName);
     void flushPendingWal();
     void clearPendingWal() noexcept;
 
-    struct PendingWalRecord {
-        WalOperation operation{};
-        std::string payload;
-    };
-
     std::shared_ptr<Database> database_;
     StorageManager storageManager_;
     WriteAheadLog wal_;
     QueryPlanner planner_;
-    TransactionManager transactionManager_;
-    UndoLog undoLog_;
-    std::vector<PendingWalRecord> pendingWal_;
-    std::optional<TransactionId> activeTransaction_;
-    std::optional<ReadSnapshot> activeSnapshot_;
+    TxnSession session_;
+    RecoveryService recovery_;
     std::unordered_map<std::string, Query> preparedStatements_;
-    bool replayingWal_{false};
     LockManager lockManager_;
 };
 

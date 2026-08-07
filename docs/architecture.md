@@ -55,10 +55,11 @@ CLI
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
   façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
   `PageRowStore` are separate TUs sharing sparse-layout validation.
-- `execution`: `QueryExecutor` façade for command dispatch (DDL/DML/txn). Focused TUs:
-  `query_executor_select.cpp` (SELECT/join/EXPLAIN), `query_executor_subquery.cpp` (CTE/`IN`/`EXISTS`),
-  `query_executor_recovery.cpp` (WAL/undo), plus `predicate_eval`, `select_helpers`, `prepared_bind`,
-  and `sql_literal`.
+- `execution`: `QueryExecutor` façade for command dispatch (DDL/DML/txn), with `TxnSession`
+  owning transaction-manager, snapshot, undo-log, and deferred-WAL state and `RecoveryService`
+  owning WAL replay, redo/undo application, and WAL flushing. Focused executor TUs cover
+  SELECT/join/EXPLAIN, CTE/`IN`/`EXISTS`, and thin recovery forwarding; `predicate_eval`,
+  `select_helpers`, `prepared_bind`, and `sql_literal` provide shared execution helpers.
 - `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
   forwards its public index API while holding the appropriate lock.
@@ -94,11 +95,12 @@ follow linked leaves. `exportPages` / `replaceFromPages` round-trip that layout 
 page-image redo.
 
 `Table` exposes transaction-aware snapshots through `rowsSnapshot(ReadSnapshot, TransactionManager)`
-and `rowsById(..., ReadSnapshot, TransactionManager)`. The executor stamps DML with SQL transaction
-ids, captures a commit-seq snapshot at `BEGIN`, and routes all SELECT visibility through commit-aware
-MVCC (including dirty-read prevention for concurrent autocommit readers). `BEGIN`/`COMMIT`/`ROLLBACK`
-still use a per-transaction undo log for abort: DML records compensating actions, `ROLLBACK` applies
-them LIFO on the same `Database` instance, and `COMMIT` discards the log.
+and `rowsById(..., ReadSnapshot, TransactionManager)`. `TxnSession` stamps DML with SQL transaction
+ids, captures a commit-seq snapshot at `BEGIN`, and supplies all SELECT visibility state for
+commit-aware MVCC (including dirty-read prevention for concurrent autocommit readers).
+`BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML records compensating
+actions, `RecoveryService` applies them LIFO on `ROLLBACK` to the same `Database` instance, and
+`COMMIT` discards the log after `RecoveryService` flushes deferred WAL.
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
 pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered before rows so

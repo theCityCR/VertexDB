@@ -433,12 +433,12 @@ std::shared_ptr<Table> QueryExecutor::requireTable(
 }
 
 std::vector<Row> QueryExecutor::rowsSnapshotForRead(const Table &table) const {
-    return table.rowsSnapshot(readSnapshot(), transactionManager_);
+    return table.rowsSnapshot(readSnapshot(), session_.transactionManager());
 }
 
 std::vector<Row> QueryExecutor::rowsByIdForRead(const Table &table,
                                                 std::span<const RowId> rowIds) const {
-    return table.rowsById(rowIds, readSnapshot(), transactionManager_);
+    return table.rowsById(rowIds, readSnapshot(), session_.transactionManager());
 }
 
 } // namespace VertexDB

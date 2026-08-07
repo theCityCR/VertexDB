@@ -12,8 +12,10 @@
 namespace VertexDB {
 
 QueryExecutor::QueryExecutor(std::filesystem::path storageRoot)
-    : storageManager_(storageRoot), wal_(storageRoot / "VertexDB.wal") {
-    recoverFromStorage();
+    : storageManager_(storageRoot), wal_(storageRoot / "VertexDB.wal"),
+      recovery_(storageManager_, wal_, session_, database_,
+                [this](const Query &query) { (void)executeUnlocked(query); }) {
+    recovery_.recoverFromStorage();
 }
 
 QueryResult QueryExecutor::execute(const Query &query) {
@@ -160,7 +162,8 @@ QueryResult QueryExecutor::executeInsert(const Insert &command) {
         table->clearDirtyTracking();
         const RowId rowId = table->insert(row, writerId);
         if (transactionActive()) {
-            undoLog_.push(UndoRecord{command.table, UndoKind::Insert, rowId, std::nullopt});
+            session_.pushUndo(
+                UndoRecord{command.table, UndoKind::Insert, rowId, std::nullopt});
         }
         appendPageImageRedo(*table, command.table);
     }
@@ -177,7 +180,8 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
     std::size_t count = 0;
     const auto snapshot = readSnapshot();
     const auto writerId = writeTransactionId();
-    for (const auto &[rowId, row] : table->visibleEntries(snapshot, transactionManager_)) {
+    for (const auto &[rowId, row] :
+         table->visibleEntries(snapshot, session_.transactionManager())) {
         if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
@@ -185,7 +189,7 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
         table->clearDirtyTracking();
         if (table->update(rowId, *target, command.value, writerId)) {
             if (transactionActive()) {
-                undoLog_.push(
+                session_.pushUndo(
                     UndoRecord{command.table, UndoKind::Update, rowId, std::move(beforeImage)});
             }
             appendPageImageRedo(*table, command.table);
@@ -200,7 +204,8 @@ QueryResult QueryExecutor::executeDelete(const Delete &command) {
     std::size_t count = 0;
     const auto snapshot = readSnapshot();
     const auto writerId = writeTransactionId();
-    for (const auto &[rowId, row] : table->visibleEntries(snapshot, transactionManager_)) {
+    for (const auto &[rowId, row] :
+         table->visibleEntries(snapshot, session_.transactionManager())) {
         if (command.where && !matches(row, *table, *command.where)) {
             continue;
         }
@@ -208,7 +213,7 @@ QueryResult QueryExecutor::executeDelete(const Delete &command) {
         table->clearDirtyTracking();
         if (table->erase(rowId, writerId)) {
             if (transactionActive()) {
-                undoLog_.push(
+                session_.pushUndo(
                     UndoRecord{command.table, UndoKind::Delete, rowId, std::move(beforeImage)});
             }
             appendPageImageRedo(*table, command.table);
@@ -273,10 +278,7 @@ QueryResult QueryExecutor::executeLoadDatabase(const LoadDatabase &command) {
     } else {
         database_ = storageManager_.loadFirstDatabase();
     }
-    undoLog_.clear();
-    clearPendingWal();
-    activeTransaction_.reset();
-    activeSnapshot_.reset();
+    session_.reset();
     return messageResult(true, "loaded database " + database_->name());
 }
 
@@ -284,14 +286,7 @@ QueryResult QueryExecutor::executeBegin() {
     if (!database_) {
         return messageResult(false, "no active database");
     }
-    if (transactionActive()) {
-        return messageResult(false, "transaction already active");
-    }
-    activeTransaction_ = transactionManager_.begin().id;
-    activeSnapshot_ = transactionManager_.currentSnapshot(*activeTransaction_);
-    undoLog_.clear();
-    clearPendingWal();
-    return messageResult(true, "began transaction");
+    return session_.begin();
 }
 
 QueryResult QueryExecutor::executeCommit() {
@@ -299,26 +294,17 @@ QueryResult QueryExecutor::executeCommit() {
         return messageResult(false, "no active transaction");
     }
     flushPendingWal();
-    transactionManager_.commit(*activeTransaction_);
-    activeTransaction_.reset();
-    activeSnapshot_.reset();
-    undoLog_.clear();
-    return messageResult(true, "committed transaction");
+    return session_.commit();
 }
 
 QueryResult QueryExecutor::executeRollback() {
     if (!transactionActive()) {
         return messageResult(false, "no active transaction");
     }
-    while (auto record = undoLog_.pop()) {
-        applyUndoRecord(*record);
+    while (auto record = session_.undoLog().pop()) {
+        recovery_.applyUndoRecord(*record);
     }
-    transactionManager_.rollback(*activeTransaction_);
-    activeTransaction_.reset();
-    activeSnapshot_.reset();
-    undoLog_.clear();
-    clearPendingWal();
-    return messageResult(true, "rolled back transaction");
+    return session_.rollback();
 }
 
 QueryResult QueryExecutor::executePrepare(const PrepareStatement &command) {
@@ -352,27 +338,14 @@ std::optional<Query> QueryExecutor::preparedAst(std::string_view name) const {
     return std::nullopt;
 }
 
-ReadSnapshot QueryExecutor::readSnapshot() const {
-    if (activeSnapshot_) {
-        return *activeSnapshot_;
-    }
-    return transactionManager_.currentSnapshot();
-}
+ReadSnapshot QueryExecutor::readSnapshot() const { return session_.readSnapshot(); }
 
-TransactionId QueryExecutor::writeTransactionId() {
-    if (activeTransaction_) {
-        return *activeTransaction_;
-    }
-    return transactionManager_.beginCommitted();
-}
+TransactionId QueryExecutor::writeTransactionId() { return session_.writeTransactionId(); }
 
-bool QueryExecutor::transactionActive() const noexcept { return activeTransaction_.has_value(); }
+bool QueryExecutor::transactionActive() const noexcept { return session_.transactionActive(); }
 
 QueryResult QueryExecutor::rejectIfTransactionActive(std::string_view action) const {
-    if (!transactionActive()) {
-        return messageResult(true, {});
-    }
-    return messageResult(false, std::string(action) + " is not allowed while a transaction is active");
+    return session_.rejectIfTransactionActive(action);
 }
 
 } // namespace VertexDB
