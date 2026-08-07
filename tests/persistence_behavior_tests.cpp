@@ -679,4 +679,27 @@ TEST(PersistenceBehaviorTests, LoadFirstDatabaseAndMetadataHelpers) {
     std::filesystem::remove_all(anonRoot);
 }
 
+TEST(PersistenceBehaviorTests, RejectsInvalidSnapshotMagicAndVersion) {
+    const auto root = tempRoot("bad-snapshot");
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    {
+        std::ofstream out{root / "company.tcrdb", std::ios::binary};
+        ASSERT_TRUE(out);
+        out.write("BADMAGIC", 8);
+    }
+    StorageManager storage{root};
+    EXPECT_THROW(storage.loadDatabase("company"), std::runtime_error);
+
+    {
+        std::ofstream out{root / "company.tcrdb", std::ios::binary | std::ios::trunc};
+        ASSERT_TRUE(out);
+        out.write("TCRDB001", 8);
+        const std::uint32_t version = 99;
+        out.write(reinterpret_cast<const char *>(&version), sizeof(version));
+    }
+    EXPECT_THROW(storage.loadDatabase("company"), std::runtime_error);
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB

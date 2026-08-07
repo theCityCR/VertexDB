@@ -410,10 +410,32 @@ TEST(AggregatePreparedTests, SqlLiteralHelpersCoverNullDoubleAndEscapes) {
 
     Predicate comparison{"id", ComparisonOperator::Equal, Value{1}};
     EXPECT_NE(predicateLiteral(comparison).find("id"), std::string::npos);
+    Predicate greater{"salary", ComparisonOperator::Greater, Value{1.0}};
+    EXPECT_NE(predicateLiteral(greater).find(">"), std::string::npos);
+    Predicate less{"salary", ComparisonOperator::Less, Value{1.0}};
+    EXPECT_NE(predicateLiteral(less).find("<"), std::string::npos);
+
+    IndexExpression exprCmp;
+    exprCmp.kind = IndexExpression::Kind::Negate;
+    exprCmp.column = "salary";
+    auto exprPred =
+        Predicate::makeExpressionComparison(exprCmp, ComparisonOperator::Equal, Value{-1.0});
+    EXPECT_NE(predicateLiteral(exprPred).find("-salary"), std::string::npos);
+
+    Predicate withRhs = comparison;
+    withRhs.rhsColumn = "other.id";
+    EXPECT_NE(predicateLiteral(withRhs).find("other.id"), std::string::npos);
 
     Predicate inList{"id", {Value{1}, Value{2}}};
-    const auto inText = predicateLiteral(inList);
-    EXPECT_NE(inText.find("IN"), std::string::npos);
+    EXPECT_NE(predicateLiteral(inList).find("IN"), std::string::npos);
+
+    Select sub;
+    sub.table = "Employees";
+    sub.columns = {SelectExpr::makeColumn("id")};
+    Predicate inSub{"id", std::make_shared<Select>(sub)};
+    EXPECT_NE(predicateLiteral(inSub).find("IN (SELECT"), std::string::npos);
+    EXPECT_NE(predicateLiteral(Predicate::makeExists(std::make_shared<Select>(sub))).find("EXISTS"),
+              std::string::npos);
 
     Predicate both{Predicate::Kind::And, std::make_shared<Predicate>(comparison),
                    std::make_shared<Predicate>(inList)};
@@ -428,6 +450,55 @@ TEST(AggregatePreparedTests, SqlLiteralHelpersCoverNullDoubleAndEscapes) {
     CreateIndex exprIndex{"idx_neg", "Employees", {}};
     exprIndex.expression = expr;
     EXPECT_NE(createIndexSql(exprIndex).find("-salary"), std::string::npos);
+
+    Row row{Value{1}, Value{std::string{"Alice"}}, Value{}};
+    EXPECT_NE(insertSql("Employees", row).find("INSERT INTO Employees"), std::string::npos);
+    Update update{"Employees", "name", Value{std::string{"Bob"}}, comparison};
+    EXPECT_NE(updateSql(update).find("UPDATE Employees"), std::string::npos);
+    Delete del{"Employees", comparison};
+    EXPECT_NE(deleteSql(del).find("DELETE FROM Employees"), std::string::npos);
+}
+
+TEST(AggregatePreparedTests, PreparedBindCoversExplainDeleteInsertAndCte) {
+    Parser parser;
+    auto executor = makeExecutor("prep-bind-paths");
+    seedEmployees(executor, parser, true, true);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE del AS \"DELETE FROM Employees WHERE id = ?;\";"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("EXECUTE del VALUES (2);")).success);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE ins AS \"INSERT INTO Employees VALUES (?, ?, ?);\";"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("EXECUTE ins VALUES (9, \"Zed\", 1.0);")).success);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE ex AS \"EXPLAIN SELECT name FROM Employees WHERE id = ?;\";"))
+                    .success);
+    auto explained = executor.execute(parser.parse("EXECUTE ex VALUES (1);"));
+    ASSERT_TRUE(explained.success);
+    EXPECT_FALSE(explained.rows.empty());
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE cte AS \"WITH high AS (SELECT id, name FROM Employees WHERE "
+                        "id = ?) SELECT name FROM high;\";"))
+                    .success);
+    auto cte = executor.execute(parser.parse("EXECUTE cte VALUES (1);"));
+    ASSERT_TRUE(cte.success);
+    ASSERT_EQ(cte.rows.size(), 1U);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE idx AS \"CREATE INDEX idx_neg ON Employees((-salary));\";"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("EXECUTE idx;")).success);
 }
 
 } // namespace VertexDB
