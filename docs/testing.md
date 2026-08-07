@@ -61,6 +61,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 scripts/run-sanitizers.sh
 scripts/run-coverage.sh
-cmake -S . -B build-benchmark -DVERTEXDB_BUILD_TESTS=OFF -DVERTEXDB_BUILD_BENCHMARKS=ON
+cmake -S . -B build-benchmark \
+  -DVERTEXDB_BUILD_TESTS=OFF \
+  -DVERTEXDB_BUILD_BENCHMARKS=ON \
+  -DCMAKE_BUILD_TYPE=Release
 cmake --build build-benchmark
 ```

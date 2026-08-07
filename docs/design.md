@@ -56,9 +56,10 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-1. Keep benchmark reports current as planner and storage change ([benchmarks.md](benchmarks.md)).
-2. Broader nested SQL only where it still fits the educational scope (e.g. table aliases in
+1. Broader nested SQL only where it still fits the educational scope (e.g. table aliases in
    subqueries, `WITH` inside `IN`/`EXISTS`).
+2. Re-run the Release benchmark summary in [benchmarks.md](benchmarks.md) when planner or storage
+   paths change.
 
 CTE inlining so outer predicates hit base-table indexes is packaged as a demo wedge: see
 [cte_index_wedge.md](cte_index_wedge.md) and [cte_materialize_comparison.md](cte_materialize_comparison.md).
