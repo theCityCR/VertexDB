@@ -132,5 +132,3 @@ SELECT name FROM high WHERE id = 1;
 against the temp result (fencing the base-table `id` index). Full write-up, limitations, and
 comparison artifacts: [cte_index_wedge.md](cte_index_wedge.md) (Demo) and
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
-
-Next step: documented benchmark reports and trend comparisons.

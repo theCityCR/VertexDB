@@ -1,5 +1,8 @@
 #pragma once
 
+// Table API: schema, DML, indexes, MVCC visibility, snapshot/redo hooks.
+// Impl split: table.cpp (core DML), table_indexes.cpp, table_persist.cpp.
+
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/indexing/btree_index.hpp"

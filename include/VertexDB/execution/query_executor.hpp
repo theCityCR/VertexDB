@@ -1,5 +1,9 @@
 #pragma once
 
+// SQL command façade: dispatch, DDL/DML, transactions, prepared EXECUTE.
+// SELECT/join live in query_executor_select.cpp; CTE/IN/EXISTS in
+// query_executor_subquery.cpp; WAL/undo recovery in query_executor_recovery.cpp.
+
 #include "VertexDB/concurrency/lock_manager.hpp"
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/parser/ast.hpp"

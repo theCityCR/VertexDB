@@ -36,18 +36,24 @@ add_library(VertexDB
     src/storage/vector_row_store.cpp
     src/storage/page_row_store.cpp
     src/storage/table.cpp
+    src/storage/table_indexes.cpp
+    src/storage/table_persist.cpp
     src/storage/histogram.cpp
     src/indexing/btree_index.cpp
     src/indexing/hash_index.cpp
     src/execution/query_executor.cpp
+    src/execution/query_executor_select.cpp
+    src/execution/query_executor_subquery.cpp
     src/execution/query_executor_recovery.cpp
     src/execution/predicate_eval.cpp
     src/execution/sql_literal.cpp
     src/execution/select_helpers.cpp
+    src/execution/prepared_bind.cpp
     src/planner/query_planner.cpp
     src/planner/rewriter.cpp
     src/concurrency/lock_manager.cpp
     src/persistence/storage_manager.cpp
+    src/persistence/tcrdb_codec.cpp
     src/persistence/write_ahead_log.cpp
     src/persistence/physical_redo.cpp
     src/persistence/page_image_redo.cpp
@@ -113,7 +119,10 @@ if(VERTEXDB_BUILD_TESTS)
         tests/execution_tests.cpp
         tests/deep_feature_tests.cpp
         tests/nested_sql_tests.cpp
-        tests/desired_behavior_tests.cpp
+        tests/planner_behavior_tests.cpp
+        tests/transaction_behavior_tests.cpp
+        tests/persistence_behavior_tests.cpp
+        tests/aggregate_prepared_tests.cpp
         tests/regression_tests.cpp
     )
     target_link_libraries(VertexDB_tests PRIVATE VertexDB::VertexDB GTest::gtest_main)

@@ -26,7 +26,8 @@ CLI
  |       +-- BTreeNode layout metadata
  |
  +-- Persistence Layer
- |   +-- StorageManager
+ |   +-- StorageManager (path / open / rename)
+ |   +-- TcrdbCodec (.tcrdb v1–v4 layout)
  |   +-- WriteAheadLog
  |
  +-- Concurrency
@@ -48,16 +49,20 @@ CLI
   cost-based access-path / join selection using table/index statistics and optional `ANALYZE`
   histograms, including multi-index AND intersect, with residual filters.
 - `storage`: database/table ownership, row storage boundaries, schema validation, column histograms,
-  and page cache abstractions (`VectorRowStore` and `PageRowStore` are separate TUs sharing
-  sparse-layout validation).
-- `execution`: `QueryExecutor` façade for command dispatch; helpers for predicate evaluation,
-  SELECT projection/ORDER BY/LIMIT, hash aggregation, prepared-parameter binding, SQL/WAL literal
-  formatting, and startup recovery.
+  and page cache abstractions. `Table` implementation is split across `table.cpp` (schema/DML),
+  `table_indexes.cpp`, and `table_persist.cpp` (snapshots, redo, histograms). `VectorRowStore` and
+  `PageRowStore` are separate TUs sharing sparse-layout validation.
+- `execution`: `QueryExecutor` façade for command dispatch (DDL/DML/txn). Focused TUs:
+  `query_executor_select.cpp` (SELECT/join/EXPLAIN), `query_executor_subquery.cpp` (CTE/`IN`/`EXISTS`),
+  `query_executor_recovery.cpp` (WAL/undo), plus `predicate_eval`, `select_helpers`, `prepared_bind`,
+  and `sql_literal`.
 - `indexing`: hash indexes and ordered B+ tree index APIs with explicit node/page layout metadata.
-- `persistence`: binary serialization (`.tcrdb` snapshots v1–v4), versioning, save/load, and WAL
-  recovery (page-image redo plus legacy physical/logical records).
+- `persistence`: `StorageManager` orchestrates snapshot paths; `tcrdb_codec` owns `.tcrdb` v1–v4
+  encode/decode. WAL recovery uses page-image redo plus legacy physical/logical records.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager`.
 - `transaction`: commit sequences, MVCC row versions, and per-transaction undo-log rollback.
+
+Key public headers carry a short ownership banner pointing at sibling TUs.
 
 ## Architectural Boundaries
 
@@ -71,8 +76,7 @@ inserts reuse freed IDs before growing capacity. Snapshots (format v4) persist `
 capacity, free-list order, serialized page-directory payloads, and index pages (B+ tree nodes and
 hash buckets) so IDs, page bytes, and indexes survive save/load. Per-column equi-height histograms
 from `ANALYZE` are persisted after index pages in v4 (optional `VDBHIST1` section). `VectorRowStore`
-remains available
-as a simple in-memory implementation for focused tests or future comparisons.
+remains available as a simple in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata
 with page ids, leaf links, internal children, separator keys, and row-id payloads in leaves. Inserts

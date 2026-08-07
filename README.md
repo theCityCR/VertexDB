@@ -28,35 +28,14 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 
 ## Architecture
 
+See [docs/architecture.md](docs/architecture.md) for the module map and data flow. High level:
+
 ```text
-CLI
- |
- SQL Parser
- |
- Query Executor
- |
- +-- Query Planner
- +-- Storage Engine
- |   +-- Database / Table
- |   +-- RowStore
- |   |   +-- PageRowStore
- |   |   +-- VectorRowStore
- |   +-- BufferPool
- |
- +-- Index Manager
- |   +-- HashIndex
- |   +-- BTreeIndex
- |
- +-- Persistence
- |   +-- StorageManager
- |   +-- WriteAheadLog
- |
- +-- Concurrency / Transactions
-     +-- LockManager
-     +-- TransactionManager
-     +-- MVCCRowStore
-     +-- UndoLog
+CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence / Txn
 ```
+
+Focused executor TUs handle SELECT, subquery/CTE, and WAL recovery; `Table` and `.tcrdb` codecs are
+likewise split by concern.
 
 ## SQL Surface
 
@@ -113,10 +92,9 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 152 GoogleTest cases covering parser, storage, indexes, execution, nested SQL rewrite/EXPLAIN
-  (materialized CTEs, correlated `IN`/`EXISTS`, expression indexes), desired-behavior gaps,
-  persistence (snapshot v4 index pages, histograms, and page-image WAL), WAL recovery, concurrency,
-  transactions, and regressions
+- 152 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+  transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
+  (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   85.19%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -144,17 +122,12 @@ Or feed an example script:
 
 ## Roadmap
 
-1. Persist index pages with snapshots and evolve WAL redo toward page images — **done** (snapshot v4
-   + `PageImageRedo`)
-2. Add correlated subqueries, expression indexes, and `WITH … AS MATERIALIZED` — **done**
-3. Extend SQL with aggregates, `COUNT`, `GROUP BY`, and multiple joins / richer join strategies —
-   **done**
-4. Add histograms / `ANALYZE` and multi-index AND optimization — **done**
-5. Turn benchmark output into documented reports and trend comparisons — **done** (see
-   [docs/benchmarks.md](docs/benchmarks.md))
+Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
+include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
+aggregates and multi-join, histograms / multi-index AND, and documented benchmarks.
 
-Parallel product wedge (first milestone shipped): [CTE index wedge plan](docs/cte_index_wedge.md)
-and [materialize vs inline comparison](docs/cte_materialize_comparison.md).
+Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
+[materialize vs inline comparison](docs/cte_materialize_comparison.md).
 
 ## Documentation
 

@@ -1,5 +1,8 @@
 #pragma once
 
+// Snapshot path orchestration (open/rename/exists). On-disk .tcrdb layout is
+// in tcrdb_codec.hpp.
+
 #include "VertexDB/storage/database.hpp"
 
 #include <filesystem>

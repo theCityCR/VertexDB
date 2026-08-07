@@ -1,5 +1,8 @@
 #pragma once
 
+// SELECT projection, ORDER BY/LIMIT, and hash aggregation helpers.
+// Prepared ? binding lives in prepared_bind.hpp.
+
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/row.hpp"
@@ -35,7 +38,5 @@ void validateAggregation(const Select &command);
 
 [[nodiscard]] QueryResult aggregateRows(const Select &command, const std::vector<std::string> &sourceColumns,
                                         std::vector<Row> rows);
-
-[[nodiscard]] Query bindQueryParameters(const Query &query, const std::vector<Value> &parameters);
 
 } // namespace VertexDB

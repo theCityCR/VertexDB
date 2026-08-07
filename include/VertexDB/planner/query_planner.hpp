@@ -1,5 +1,7 @@
 #pragma once
 
+// Cost-based access-path and join selection. CTE/derived rewrite is in rewriter.hpp.
+
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/table.hpp"
 

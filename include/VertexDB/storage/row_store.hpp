@@ -1,5 +1,8 @@
 #pragma once
 
+// RowStore interface plus PageRowStore / VectorRowStore. Page payloads are the
+// source of truth; BufferPool is an LRU access cache. See table.hpp for ownership.
+
 #include "VertexDB/storage/buffer_pool.hpp"
 #include "VertexDB/storage/row.hpp"
 

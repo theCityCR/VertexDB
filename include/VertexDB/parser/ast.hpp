@@ -1,5 +1,8 @@
 #pragma once
 
+// Typed SQL AST (Query variant and statement structs). Built by Parser; consumed
+// by QueryExecutor / QueryPlanner / rewriter.
+
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/value.hpp"
 

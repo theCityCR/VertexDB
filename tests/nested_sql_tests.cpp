@@ -6,16 +6,43 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <string>
+#include <string_view>
 
 namespace VertexDB {
 
 namespace {
 
-QueryExecutor makeExecutor() {
+QueryExecutor makeExecutor(std::string_view suffix) {
     const auto root =
-        std::filesystem::temp_directory_path() / "vertexdb-nested-sql-tests";
+        std::filesystem::temp_directory_path() / ("vertexdb-nested-" + std::string(suffix));
     std::filesystem::remove_all(root);
     return QueryExecutor{root};
+}
+
+QueryExecutor makeExecutor() {
+    return makeExecutor("nested-sql-tests");
+}
+
+void seedEmployees(QueryExecutor &executor, Parser &parser, bool indexId = true,
+                   bool indexSalary = false) {
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0), (3, \"Cara\", 110000.0);"))
+                    .success);
+    if (indexId) {
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    }
+    if (indexSalary) {
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE INDEX idx_salary ON Employees(salary);")).success);
+    }
 }
 
 } // namespace
@@ -510,6 +537,261 @@ TEST(NestedSqlTests, InlinedCteOuterExpressionPredicateUsesExpressionIndex) {
     auto result = executor.execute(parser.parse(
         "WITH high AS (SELECT id, name, salary FROM Employees WHERE id > 0) "
         "SELECT name FROM high WHERE (-salary) = -120000.0;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
+    Parser parser;
+
+    // Nested WITH remains unsupported.
+    EXPECT_THROW((void)parser.parse("WITH outer_cte AS (WITH inner_cte AS (SELECT id FROM Employees) "
+                                    "SELECT id FROM inner_cte) SELECT id FROM outer_cte;"),
+                 std::runtime_error);
+
+    // Derived tables require an alias.
+    EXPECT_THROW((void)parser.parse("SELECT id FROM (SELECT id FROM Employees);"),
+                 std::runtime_error);
+
+    // Outer JOIN against a CTE/derived alias is rejected (body WHERE would mis-scope on the join).
+    auto query = parser.parse(
+        "WITH high AS (SELECT id, name FROM Employees WHERE id = 1) "
+        "SELECT * FROM high JOIN Departments ON id = id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(query));
+    EXPECT_THROW((void)rewriteSelect(std::get<Select>(query)), std::runtime_error);
+
+    // Multi-level correlation is rejected with a clear error.
+    EXPECT_THROW(
+        (void)parser.parse(
+            "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE EXISTS "
+            "(SELECT id FROM Employees e2 WHERE e2.id = Employees.id));"),
+        std::runtime_error);
+}
+
+TEST(NestedSqlTests, MaterializedCteFencesBaseTableIndex) {
+    Parser parser;
+    auto executor = makeExecutor("materialized-cte");
+    seedEmployees(executor, parser, true, false);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > "
+        "100000.0) SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("materialized CTE high"), std::string::npos);
+    EXPECT_EQ(text.find("inlined CTE"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH high AS MATERIALIZED (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, CorrelatedInBindsOuterColumnPerRow) {
+    Parser parser;
+    auto executor = makeExecutor("correlated-in");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Peer (emp_id INT, label STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Peer VALUES (1, \"a\"), (1, \"b\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN (SELECT emp_id FROM Peer WHERE emp_id = "
+        "Employees.id);"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, DerivedTableInlinesLikeCteAndUsesBaseIndex) {
+    Parser parser;
+    auto executor = makeExecutor("derived-table");
+    seedEmployees(executor, parser, true, false);
+
+    auto rewritten = rewriteSelect(std::get<Select>(parser.parse(
+        "SELECT name FROM (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) AS high "
+        "WHERE id = 1;")));
+    EXPECT_EQ(rewritten.query.table, "Employees");
+    ASSERT_TRUE(rewritten.query.where.has_value());
+    EXPECT_EQ(rewritten.query.where->kind, Predicate::Kind::And);
+    ASSERT_FALSE(rewritten.notes.empty());
+    EXPECT_NE(rewritten.notes.front().find("inlined CTE"), std::string::npos);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "AS high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) high "
+        "WHERE id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, CteWithJoinInlinesToJoinSelect) {
+    Parser parser;
+    auto executor = makeExecutor("cte-join");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");"))
+                    .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH joined AS (SELECT * FROM Employees JOIN Departments ON dept_id = id) "
+        "SELECT Employees.name, Departments.dept FROM joined;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_GE(explain.rows.size(), 1U);
+    EXPECT_NE(explain.rows.front().front().toString().find("hash join"), std::string::npos);
+    bool sawInline = false;
+    for (const auto &row : explain.rows) {
+        if (row.front().toString().find("inlined CTE") != std::string::npos) {
+            sawInline = true;
+        }
+    }
+    EXPECT_TRUE(sawInline);
+
+    auto result = executor.execute(parser.parse(
+        "WITH joined AS (SELECT * FROM Employees JOIN Departments ON dept_id = id) "
+        "SELECT Employees.name, Departments.dept FROM joined;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
+    EXPECT_EQ(result.rows[0][1], Value{std::string{"Eng"}});
+}
+
+TEST(NestedSqlTests, MultiCteInliningAndUnusedCteNote) {
+    Parser parser;
+
+    auto chained = parser.parse(
+        "WITH base AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0), "
+        "high AS (SELECT id, name, salary FROM base WHERE id = 1) "
+        "SELECT name FROM high;");
+    const auto rewritten = rewriteSelect(std::get<Select>(chained));
+    EXPECT_EQ(rewritten.query.table, "Employees");
+    ASSERT_GE(rewritten.notes.size(), 1U);
+    EXPECT_NE(rewritten.notes.front().find("inlined CTE"), std::string::npos);
+
+    auto unused = parser.parse(
+        "WITH unused AS (SELECT id FROM Employees WHERE id = 1) "
+        "SELECT name FROM Employees WHERE id = 2;");
+    const auto unusedRewrite = rewriteSelect(std::get<Select>(unused));
+    EXPECT_EQ(unusedRewrite.query.table, "Employees");
+    ASSERT_FALSE(unusedRewrite.notes.empty());
+    EXPECT_NE(unusedRewrite.notes.front().find("FROM references a base table"), std::string::npos);
+}
+
+TEST(NestedSqlTests, NestedWithAndJoinInSubqueryDocumentedRefusals) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT name FROM Employees WHERE id IN (WITH t AS (SELECT id FROM Employees) "
+                     "SELECT id FROM t);"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT name FROM Employees WHERE id IN (SELECT Employees.id FROM Employees "
+                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
+                 std::runtime_error);
+}
+
+TEST(NestedSqlTests, SiblingCtesInlineRecursively) {
+    auto executor = makeExecutor("sibling-ctes");
+    Parser parser;
+    seedEmployees(executor, parser, true, false);
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0), "
+        "picked AS (SELECT name FROM high WHERE id = 1) SELECT name FROM picked;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+    auto result = executor.execute(parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0), "
+        "picked AS (SELECT name FROM high WHERE id = 1) SELECT name FROM picked;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
+}
+
+TEST(NestedSqlTests, CteInliningLeavesBodyFilterAsResidualWhenOuterUsesIndex) {
+    Parser parser;
+    auto executor = makeExecutor("cte-residual");
+    seedEmployees(executor, parser, true, false);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+}
+
+TEST(NestedSqlTests, ScaledCteWinQueryUsesHashIndexAndResidual) {
+    // Large enough that a materializing CTE of high-salary rows would be wasteful.
+    // Seed via Table::insert (bypass per-row SQL/WAL) so the suite stays CI-friendly; EXPLAIN and
+    // SELECT still go through the full rewrite/planner/executor path. 10k sits at the plan's lower
+    // bound; 100k is reserved for the CTE microbenchmark once packaging continues.
+    constexpr std::int64_t kRowCount = 10000;
+
+    Parser parser;
+    auto executor = makeExecutor("cte-scale");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+
+    auto database = executor.currentDatabase();
+    ASSERT_NE(database, nullptr);
+    auto table = database->table("Employees");
+    ASSERT_NE(table, nullptr);
+
+    table->insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}});
+    for (std::int64_t id = 2; id <= kRowCount; ++id) {
+        // Most rows match the CTE body filter; a materializing engine would build ~95k temps.
+        const double salary = (id % 20 == 0) ? 80000.0 : 110000.0;
+        table->insert({Value{id}, Value{"Emp"}, Value{salary}});
+    }
+    ASSERT_TRUE(table->createIndex("idx_id", "id"));
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+    EXPECT_EQ(text.find("full table scan"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "SELECT name FROM high WHERE id = 1;"));
     ASSERT_TRUE(result.success);
     ASSERT_EQ(result.rows.size(), 1U);
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
