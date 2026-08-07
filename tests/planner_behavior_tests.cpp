@@ -1,3 +1,5 @@
+#include "test_support.hpp"
+
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
@@ -29,31 +31,7 @@ namespace VertexDB {
 namespace {
 
 QueryExecutor makeExecutor(std::string_view suffix) {
-    const auto root =
-        std::filesystem::temp_directory_path() / ("vertexdb-planner-" + std::string(suffix));
-    std::filesystem::remove_all(root);
-    return QueryExecutor{root};
-}
-
-void seedEmployees(QueryExecutor &executor, Parser &parser, bool indexId = true,
-                   bool indexSalary = false) {
-    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
-    ASSERT_TRUE(
-        executor
-            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
-            .success);
-    ASSERT_TRUE(executor
-                    .execute(parser.parse(
-                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
-                        "90000.0), (3, \"Cara\", 110000.0);"))
-                    .success);
-    if (indexId) {
-        ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
-    }
-    if (indexSalary) {
-        ASSERT_TRUE(
-            executor.execute(parser.parse("CREATE INDEX idx_salary ON Employees(salary);")).success);
-    }
+    return makeTempExecutor("vertexdb-planner-", suffix);
 }
 
 } // namespace

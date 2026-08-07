@@ -10,6 +10,7 @@ VertexDB uses three levels of automated testing:
 
 | File | Concern |
 | --- | --- |
+| `test_support.hpp` / `test_support.cpp` | Shared `makeTempExecutor` / `makeTempRoot` / `seedEmployees` |
 | `parser_tests.cpp` | Tokenization and AST grammar |
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
 | `index_tests.cpp` | Hash / B+ tree unit behavior |

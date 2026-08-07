@@ -113,6 +113,7 @@ if(VERTEXDB_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     add_executable(VertexDB_tests
+        tests/test_support.cpp
         tests/parser_tests.cpp
         tests/storage_tests.cpp
         tests/index_tests.cpp
