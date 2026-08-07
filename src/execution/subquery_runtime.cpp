@@ -1,7 +1,9 @@
 #include "VertexDB/execution/subquery_runtime.hpp"
 
+#include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/parser/predicate.hpp"
 
 #include <memory>
 #include <stdexcept>
@@ -106,6 +108,21 @@ namespace {
     return name.substr(dot + 1);
 }
 
+[[nodiscard]] std::optional<std::string_view> qualifier(std::string_view name) {
+    const auto dot = name.find('.');
+    if (dot == std::string_view::npos) {
+        return std::nullopt;
+    }
+    return name.substr(0, dot);
+}
+
+[[nodiscard]] bool refersToCurrentOuter(std::string_view column, const Table &outerTable) {
+    if (const auto table = qualifier(column)) {
+        return equalsIgnoreCase(*table, outerTable.name());
+    }
+    return outerTable.columnIndex(unqualifiedName(column)).has_value();
+}
+
 [[nodiscard]] Value outerColumnValue(std::string_view column, const Row &outerRow,
                                      const Table &outerTable) {
     auto index = outerTable.columnIndex(unqualifiedName(column));
@@ -128,16 +145,37 @@ Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const
             } else if constexpr (std::is_same_v<T, OrPred>) {
                 return makeOr(bindOuterReferences(*node.left, outerRow, outerTable),
                               bindOuterReferences(*node.right, outerRow, outerTable));
-            } else if constexpr (std::is_same_v<T, InSubqueryPred> ||
-                                 std::is_same_v<T, ExistsPred>) {
-                throw std::runtime_error("multi-level correlated subqueries are not supported");
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                InSubqueryPred bound = node;
+                if (bound.subquery) {
+                    auto sub = bindOuterReferences(*bound.subquery, outerRow, outerTable);
+                    bound.referencesOuter = sub.hasOuterRefs;
+                    bound.subquery = std::make_shared<Select>(std::move(sub));
+                } else {
+                    bound.referencesOuter = false;
+                }
+                return bound;
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
+                ExistsPred bound = node;
+                if (bound.subquery) {
+                    auto sub = bindOuterReferences(*bound.subquery, outerRow, outerTable);
+                    bound.referencesOuter = sub.hasOuterRefs;
+                    bound.subquery = std::make_shared<Select>(std::move(sub));
+                } else {
+                    bound.referencesOuter = false;
+                }
+                return bound;
             } else if constexpr (std::is_same_v<T, ComparisonPred>) {
                 ComparisonPred bound = node;
-                bound.referencesOuter = false;
-                if (node.rhsColumn) {
+                if (node.rhsColumn && node.referencesOuter &&
+                    refersToCurrentOuter(*node.rhsColumn, outerTable)) {
                     bound.rhsColumn.reset();
                     bound.value = outerColumnValue(*node.rhsColumn, outerRow, outerTable);
+                    bound.referencesOuter = false;
+                } else if (!node.referencesOuter) {
+                    bound.referencesOuter = false;
                 }
+                // Else: still refers to a mid-level outer; leave for a later bind frame.
                 return bound;
             } else {
                 return node;
@@ -152,6 +190,9 @@ Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &o
     bound.hasOuterRefs = false;
     if (bound.where) {
         bound.where = bindOuterReferences(*bound.where, outerRow, outerTable);
+        if (predicateReferencesOuter(*bound.where)) {
+            bound.hasOuterRefs = true;
+        }
     }
     return bound;
 }

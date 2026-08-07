@@ -208,6 +208,7 @@ void Parser::markOuterRefs(Select &select, std::string_view innerTable,
 
 void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                            bool nestedUnderCorrelated) {
+    (void)nestedUnderCorrelated;
     std::visit(
         [&](auto &node) {
             using T = std::decay_t<decltype(node)>;
@@ -218,7 +219,7 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                                  std::is_same_v<T, ExistsPred>) {
                 if (node.subquery && node.subquery->hasOuterRefs) {
                     node.referencesOuter = true;
-                    if (nestedUnderCorrelated) {
+                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
                         throw std::runtime_error(
                             "multi-level correlated subqueries are not supported");
                     }
@@ -232,7 +233,8 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                     }
                 }
                 if (outer) {
-                    if (nestedUnderCorrelated || outerTableStack_.size() > 1) {
+                    // Allow up to two outer FROM frames (main + one mid-level subquery).
+                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
                         throw std::runtime_error(
                             "multi-level correlated subqueries are not supported");
                     }

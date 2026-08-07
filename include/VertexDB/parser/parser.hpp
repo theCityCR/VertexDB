@@ -32,6 +32,8 @@ class Parser {
     [[nodiscard]] Select parseSelect();
     [[nodiscard]] Select parseSelectAfterSelectKeyword();
     [[nodiscard]] Select parseWithSelect();
+    // depth 0 = top-level WITH; depth 1 = one nested WITH inside a CTE body (max supported).
+    [[nodiscard]] Select parseWithSelectAtDepth(int depth);
     [[nodiscard]] Update parseUpdate();
     [[nodiscard]] Delete parseDelete();
     [[nodiscard]] PrepareStatement parsePrepare();
@@ -59,6 +61,9 @@ class Parser {
     std::vector<std::string> outerTableStack_;
     // Positional `?` parameter indices assigned while parsing prepared SQL.
     std::size_t nextParameterIndex_{0};
+
+    // Max outer FROM frames while parsing nested IN/EXISTS (two-level correlation).
+    static constexpr std::size_t kMaxOuterCorrelationDepth = 2;
 };
 
 } // namespace VertexDB

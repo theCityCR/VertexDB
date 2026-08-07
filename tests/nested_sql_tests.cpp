@@ -375,12 +375,61 @@ TEST(NestedSqlTests, CorrelatedExistsAndInMatchOuterRow) {
     EXPECT_EQ(inResult.rows[0][0], Value{"Alice"});
 }
 
-TEST(NestedSqlTests, MultiLevelCorrelationIsRejected) {
+TEST(NestedSqlTests, TwoLevelCorrelatedExistsBindsOutermost) {
+    Parser parser;
+    auto executor = makeExecutor("two-level-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (1, 5000.0), (2, 1000.0);"))
+            .success);
+
+    // Innermost correlates to outermost Employees through one mid-level EXISTS.
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "    SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+        "  )"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[1][0], Value{"Bob"});
+
+    // Mid-level correlation: innermost refers to Bonuses, not the outermost Employees.
+    auto mid = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "  SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id AND amount > 2000.0 AND "
+        "EXISTS ("
+        "    SELECT id FROM Employees WHERE id = Bonuses.emp_id"
+        "  )"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(mid.success);
+    ASSERT_EQ(mid.rows.size(), 1U);
+    EXPECT_EQ(mid.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, ThreeLevelCorrelationIsRejected) {
     Parser parser;
     EXPECT_THROW(
         (void)parser.parse(
-            "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE EXISTS "
-            "(SELECT id FROM Employees e2 WHERE e2.id = Employees.id));"),
+            "SELECT name FROM Employees WHERE EXISTS ("
+            "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
+            "    SELECT emp_id FROM Bonuses WHERE EXISTS ("
+            "      SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+            "    )"
+            "  )"
+            ");"),
         std::runtime_error);
 }
 
@@ -521,13 +570,40 @@ TEST(NestedSqlTests, InlinedCteOuterExpressionPredicateUsesExpressionIndex) {
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
+TEST(NestedSqlTests, NestedWithInlinesOneLevel) {
+    Parser parser;
+    auto executor = makeExecutor("nested-with");
+    seedEmployees(executor, parser, true, false);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN WITH outer_cte AS ("
+        "  WITH inner_cte AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "  SELECT id, name FROM inner_cte WHERE id = 1"
+        ") SELECT name FROM outer_cte;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("inlined CTE"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "WITH outer_cte AS ("
+        "  WITH inner_cte AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "  SELECT id, name FROM inner_cte WHERE id = 1"
+        ") SELECT name FROM outer_cte;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, NestedWithDeeperThanOneLevelIsRejected) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "WITH a AS (WITH b AS (WITH c AS (SELECT id FROM Employees) SELECT id FROM c) "
+                     "SELECT id FROM b) SELECT id FROM a;"),
+                 std::runtime_error);
+}
+
 TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
     Parser parser;
-
-    // Nested WITH remains unsupported.
-    EXPECT_THROW((void)parser.parse("WITH outer_cte AS (WITH inner_cte AS (SELECT id FROM Employees) "
-                                    "SELECT id FROM inner_cte) SELECT id FROM outer_cte;"),
-                 std::runtime_error);
 
     // Derived tables require an alias.
     EXPECT_THROW((void)parser.parse("SELECT id FROM (SELECT id FROM Employees);"),
@@ -539,13 +615,6 @@ TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
         "SELECT * FROM high JOIN Departments ON id = id;");
     ASSERT_TRUE(std::holds_alternative<Select>(query));
     EXPECT_THROW((void)rewriteSelect(std::get<Select>(query)), std::runtime_error);
-
-    // Multi-level correlation is rejected with a clear error.
-    EXPECT_THROW(
-        (void)parser.parse(
-            "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE EXISTS "
-            "(SELECT id FROM Employees e2 WHERE e2.id = Employees.id));"),
-        std::runtime_error);
 }
 
 TEST(NestedSqlTests, MaterializedCteFencesBaseTableIndex) {

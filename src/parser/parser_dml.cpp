@@ -185,7 +185,9 @@ Select Parser::parseSelectAfterSelectKeyword() {
             limit,                std::move(derivedCtes)};
 }
 
-Select Parser::parseWithSelect() {
+Select Parser::parseWithSelect() { return parseWithSelectAtDepth(0); }
+
+Select Parser::parseWithSelectAtDepth(int depth) {
     std::vector<CteEntry> ctes;
     do {
         const auto name = advance();
@@ -201,10 +203,15 @@ Select Parser::parseWithSelect() {
             mode = MaterializeMode::Materialized;
         }
         expect(TokenType::LeftParen);
+        Select body;
         if (match(TokenType::Identifier, "WITH")) {
-            throw std::runtime_error("nested WITH inside CTE is not supported");
+            if (depth >= 1) {
+                throw std::runtime_error("nested WITH deeper than one level is not supported");
+            }
+            body = parseWithSelectAtDepth(depth + 1);
+        } else {
+            body = parseSelect();
         }
-        auto body = parseSelect();
         expect(TokenType::RightParen);
         ctes.push_back(CteEntry{name.lexeme, std::make_shared<Select>(std::move(body)), mode});
     } while (match(TokenType::Comma));

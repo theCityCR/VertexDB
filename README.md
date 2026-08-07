@@ -114,9 +114,10 @@ Or feed an example script:
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
   for range/`IN` selectivity; multi-index AND intersection and top-level equality `OR` union are
   supported. Mixed/non-indexable top-level `OR` still scans
-- Nested SQL is intentionally limited: no nested `WITH`, multi-level correlation, outer `JOIN`
-  against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS` subqueries; expression indexes cover
-  column / unary minus / `+/-` literal only (no regex/substring indexes)
+- Nested SQL is intentionally limited: nested `WITH` deeper than one level, correlation deeper than
+  two outer frames, outer `JOIN` against a CTE/derived alias, or `JOIN`/`WITH` inside `IN`/`EXISTS`
+  subqueries; expression indexes cover column / unary minus / `+/-` literal only (no regex/substring
+  indexes)
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep equi-join chains only (no outer/cross joins)
 
@@ -124,8 +125,8 @@ Or feed an example script:
 
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
-aggregates and multi-join, histograms / multi-index AND and top-level OR union, and documented
-benchmarks.
+aggregates and multi-join, histograms / multi-index AND and top-level OR union, one-level nested
+`WITH` and two-level correlation, and documented benchmarks.
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).

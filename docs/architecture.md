@@ -128,9 +128,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
    chains, `WITH` materialize modes, `IN`/`EXISTS`, expression indexes, and `EXPLAIN`). Prepared
    statements store that AST with `?` parameter slots for later binding.
-4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables; the executor
-   materializes uncorrelated `IN` subqueries and evaluates single-level correlated `IN`/`EXISTS`
-   per outer row.
+4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including one
+   nested `WITH`); the executor materializes uncorrelated `IN` subqueries and evaluates correlated
+   `IN`/`EXISTS` per outer row with up to two outer binding frames.
 5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and per-join
    algorithms for left-deep equi-join chains; `SelectEngine` runs filters/joins, then optional hash
    aggregation, then `ORDER BY`/`LIMIT`.

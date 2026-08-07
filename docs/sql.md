@@ -89,10 +89,12 @@ base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into 
 notes `materialized CTE <name>`. Derived tables `FROM (SELECT …) [AS] alias` normalize to the same
 inline path. `WHERE col IN (SELECT …)` materializes uncorrelated subqueries (which themselves may
 use indexes) and probes the outer column via hash index `IN` lookup when indexed. Correlated
-`IN` / `EXISTS` with single-level outer refs (`table.column` or unambiguous unqualified names) bind
-outer values per candidate row; multi-level correlation is rejected. CTE and derived-table bodies
-may include equi-joins (including left-deep multi-join chains). Nested `WITH`, outer `JOIN` against a
-CTE/derived alias, and `JOIN` inside `IN`/`EXISTS` subqueries are not supported.
+`IN` / `EXISTS` with outer refs (`table.column` or unambiguous unqualified names) bind outer values
+per candidate row for up to two outer FROM frames (main query plus one mid-level subquery). Deeper
+correlation is rejected. CTE and derived-table bodies may include equi-joins (including left-deep
+multi-join chains). One level of nested `WITH` inside a CTE body is supported; deeper nesting,
+`WITH` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias, and `JOIN` inside
+`IN`/`EXISTS` subqueries are not.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds the same structures on an evaluated expression key, where
@@ -166,5 +168,5 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 
 - Better diagnostics with source positions.
 - Specialized indexes for substring/regex predicates.
-- Multi-level correlated subqueries.
+- Correlation deeper than two outer frames / `WITH` inside subqueries.
 - Outer / non-equi joins.

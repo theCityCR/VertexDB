@@ -115,10 +115,11 @@ per-join planning for left-deep multi-join chains.
 A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) and derived tables
 (`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`. 
 `AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Uncorrelated
-`IN (SELECT …)` subqueries materialize into value lists; correlated `IN`/`EXISTS` bind a single
-outer scope per row. Expression indexes match `(expr) =/>/< const` predicates. CTE/derived bodies
-may carry equi-joins (including multi-join chains) through inlining. Aggregates/`GROUP BY` are
-planned as a post-join hash aggregate (`EXPLAIN` reports `aggregation`).
+`IN (SELECT …)` subqueries materialize into value lists; correlated `IN`/`EXISTS` bind outer scopes
+per row for up to two FROM frames. One nested `WITH` inside a CTE body reuses the same inliner.
+Expression indexes match `(expr) =/>/< const` predicates. CTE/derived bodies may carry equi-joins
+(including multi-join chains) through inlining. Aggregates/`GROUP BY` are planned as a post-join
+hash aggregate (`EXPLAIN` reports `aggregation`).
 
 ### CTE index demo
 

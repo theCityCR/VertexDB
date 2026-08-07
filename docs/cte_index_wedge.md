@@ -136,9 +136,9 @@ inline path so nested SQL does not silently drop indexes. Details:
 
 ### Limitations (honest)
 
-- Nested `WITH`, outer `JOIN` against a CTE/derived alias, and multi-level correlated subqueries are
-  unsupported; `IN` subqueries remain without inner joins. CTE/derived bodies may include left-deep
-  equi-join chains.
+- Nested `WITH` deeper than one level, outer `JOIN` against a CTE/derived alias, and correlation
+  deeper than two outer frames are unsupported; `IN` subqueries remain without inner joins.
+  CTE/derived bodies may include left-deep equi-join chains.
 - Cost-based access paths using live row counts, index distinct keys, and optional `ANALYZE`
   histograms; multi-index AND intersection when cheaper than a single index + residual.
 - This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
@@ -162,7 +162,7 @@ Items **1–5** are done. The one-liner:
 ## Out of scope for this wedge
 
 - Mixed/non-indexable top-level `OR` and partial OR indexing remain out of scope for this wedge.
-- Multi-level correlated subqueries or regex/substring indexes.
+- Correlation deeper than two outer frames or regex/substring indexes.
 - Winning only because VertexDB always picks hash lookup when Postgres sometimes does not—that is
   a heuristic quirk, not a product story.
 
