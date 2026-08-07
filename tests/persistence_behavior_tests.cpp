@@ -28,9 +28,13 @@
 namespace VertexDB {
 namespace {
 
+[[nodiscard]] std::filesystem::path tempRoot(std::string_view suffix) {
+    return std::filesystem::temp_directory_path() /
+           ("vertexdb-persistence-" + std::string(suffix));
+}
+
 QueryExecutor makeExecutor(std::string_view suffix) {
-    const auto root =
-        std::filesystem::temp_directory_path() / ("vertexdb-persistence-" + std::string(suffix));
+    const auto root = tempRoot(suffix);
     std::filesystem::remove_all(root);
     return QueryExecutor{root};
 }
@@ -564,8 +568,7 @@ TEST(PersistenceBehaviorTests, ExpressionIndexSurvivesSaveLoad) {
     ASSERT_EQ(before.rows.size(), 1U);
 
     ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
-    const auto root =
-        std::filesystem::temp_directory_path() / "vertexdb-desired-expr-index-save";
+    const auto root = tempRoot("expr-index-save");
     QueryExecutor reloaded{root};
     ASSERT_TRUE(reloaded.execute(parser.parse("LOAD DATABASE company;")).success);
 
@@ -598,8 +601,7 @@ TEST(PersistenceBehaviorTests, HistogramStatsPersistInSnapshotV4) {
     ASSERT_TRUE(executor.execute(parser.parse("ANALYZE TABLE Employees;")).success);
     ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
 
-    const auto root =
-        std::filesystem::temp_directory_path() / "vertexdb-desired-hist-persist-v4";
+    const auto root = tempRoot("hist-persist-v4");
     QueryExecutor loaded{root};
     ASSERT_TRUE(loaded.execute(parser.parse("LOAD DATABASE company;")).success);
     auto table = loaded.currentDatabase()->table("Employees");
