@@ -9,6 +9,7 @@
 #include <iterator>
 #include <map>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace VertexDB {
@@ -228,10 +229,22 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                                    std::back_inserter(next));
                     unified = std::move(next);
                 }
-                if (!unified) {
-                    return {};
+                std::vector<RowId> ids = unified ? std::move(*unified) : std::vector<RowId>{};
+                if (!plan.residual()) {
+                    return ids.empty() ? std::vector<Row>{} : rowsByIdForRead(table, ids);
                 }
-                return applyResidual(rowsByIdForRead(table, *unified));
+                // Residual OR: index union covers indexable arms; complementary scan adds rows
+                // matching only the non-indexable residual (AND-style applyResidual would be wrong).
+                std::unordered_set<RowId> seen(ids.begin(), ids.end());
+                for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
+                    if (seen.contains(rowId)) {
+                        continue;
+                    }
+                    if (matches(row, table, *plan.residual())) {
+                        ids.push_back(rowId);
+                    }
+                }
+                return ids.empty() ? std::vector<Row>{} : rowsByIdForRead(table, ids);
             } else {
                 std::vector<Row> rows;
                 const auto snapshot = rowsSnapshotForRead(table);
@@ -470,6 +483,10 @@ std::shared_ptr<Table> SelectEngine::requireTable(
 
 std::vector<Row> SelectEngine::rowsSnapshotForRead(const Table &table) const {
     return table.rowsSnapshot(owner_.readSnapshot(), owner_.session_.transactionManager());
+}
+
+std::vector<std::pair<RowId, Row>> SelectEngine::visibleEntriesForRead(const Table &table) const {
+    return table.visibleEntries(owner_.readSnapshot(), owner_.session_.transactionManager());
 }
 
 std::vector<Row> SelectEngine::rowsByIdForRead(const Table &table,

@@ -487,7 +487,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionReturnsRowsMatchingAnyProbe) {
     EXPECT_EQ(result.rows[2][0], Value{std::string{"only-dept"}});
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctFallsBackToScan) {
+TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctUsesPartialUnion) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 10; ++i) {
         table.insert({Value{i}, Value{"n" + std::to_string(i)}});
@@ -499,8 +499,67 @@ TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctFallsBackToScan) {
                makeComparison("name", ComparisonOperator::Equal, Value{std::string{"n2"}}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
-    EXPECT_NE(plan.estimates.explanation.find("OR predicate"), std::string::npos);
+    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 1U);
+    EXPECT_EQ(std::get<UnionPlan>(plan.path).unionProbes.front().column, "id");
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("id"), std::string::npos);
+    ASSERT_FALSE(plan.estimates.notes.empty());
+    EXPECT_NE(plan.estimates.notes.front().find("residual OR"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, TopLevelOrPartialUnionReturnsIndexableAndResidualRows) {
+    auto executor = makeExecutor("partial-or-union-result");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, city INT);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, \"alice\", 0), (2, \"bob\", 0), (3, \"carol\", 0), (4, \"dave\", 0);"))
+                    .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1 OR name = \"bob\";"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index union on"), std::string::npos);
+    EXPECT_NE(text.find("id"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id = 1 OR name = \"bob\" ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"alice"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"bob"}});
+}
+
+TEST(PlannerBehaviorTests, TopLevelOrPartialUnionDoesNotDropIndexOnlyMatches) {
+    // Residual must be complementary (OR), not an AND filter on index hits.
+    auto executor = makeExecutor("partial-or-complementary");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE T (id INT, flag INT, name STRING);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON T(id);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO T VALUES (1, 0, \"indexed\"), (2, 1, \"residual\"), "
+                        "(3, 0, \"neither\");"))
+                    .success);
+
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM T WHERE id = 1 OR flag = 1 ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"indexed"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"residual"}});
 }
 
 TEST(PlannerBehaviorTests, TopLevelOrIndexUnionIncludesExpressionEquality) {

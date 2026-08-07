@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace VertexDB {
@@ -50,6 +51,7 @@ class SelectEngine {
     [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
                                                const RewriteResult &rewrite) const;
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>> visibleEntriesForRead(const Table &table) const;
     [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,
                                                    std::span<const RowId> rowIds) const;
 

@@ -79,8 +79,9 @@ expression-equality) conjuncts are indexed and their estimated intersection is c
 index + residual, the planner chooses a multi-index intersect of sorted `RowId` lists; `EXPLAIN`
 lists the intersected columns. Remaining conjuncts evaluate as a residual filter. Top-level `OR`
 of equality (or expression-equality) index probes uses a multi-index union of sorted `RowId` lists
-when every disjunct is indexable and cheaper than a full scan; `EXPLAIN` lists the unioned
-columns. Mixed or non-indexable top-level `OR` still forces a full scan. An `OR` nested under
+when the indexable subset is cheaper than a full scan; `EXPLAIN` lists the unioned columns.
+Non-indexable disjuncts become a residual OR complementary scan (partial OR, `residual: yes`).
+When no disjunct is indexable, the planner keeps a full scan. An `OR` nested under
 `AND` may remain as a residual while another conjunct uses an index.
 
 `WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use

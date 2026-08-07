@@ -43,6 +43,17 @@ std::optional<Predicate> buildAndTree(const std::vector<const Predicate *> &conj
     return tree;
 }
 
+std::optional<Predicate> buildOrTree(const std::vector<const Predicate *> &disjuncts) {
+    if (disjuncts.empty()) {
+        return std::nullopt;
+    }
+    Predicate tree = *disjuncts.front();
+    for (std::size_t i = 1; i < disjuncts.size(); ++i) {
+        tree = makeOr(std::move(tree), *disjuncts[i]);
+    }
+    return tree;
+}
+
 [[nodiscard]] double averageRowsPerKey(std::size_t rowCount, std::size_t distinctKeys) {
     if (rowCount == 0) {
         return 1.0;
@@ -226,41 +237,86 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
         return plan;
     }
 
-    // Top-level OR: union equality index probes when every disjunct is indexable.
+    // Top-level OR: union equality index probes; non-indexable arms become a residual OR
+    // complementary scan (partial OR) when the indexable subset is cheaper than a full scan.
     if (std::holds_alternative<OrPred>(*query.where)) {
         std::vector<const Predicate *> disjuncts;
         collectOrDisjuncts(*query.where, disjuncts);
-        const bool allEquality =
-            !disjuncts.empty() &&
-            std::all_of(disjuncts.begin(), disjuncts.end(), [&](const Predicate *pred) {
-                return isEqualityIndexProbe(*pred, indexes);
-            });
-        if (!allEquality) {
+
+        std::vector<const Predicate *> indexable;
+        std::vector<const Predicate *> residualDisjuncts;
+        indexable.reserve(disjuncts.size());
+        residualDisjuncts.reserve(disjuncts.size());
+        for (const Predicate *pred : disjuncts) {
+            if (isEqualityIndexProbe(*pred, indexes)) {
+                indexable.push_back(pred);
+            } else {
+                residualDisjuncts.push_back(pred);
+            }
+        }
+
+        if (indexable.empty()) {
             plan.estimates.residual = query.where;
             plan.estimates.explanation = "full table scan (OR predicate)";
             return plan;
         }
 
-        // Independence: N * (1 - Π(1 - s_i)) with s_i ≈ 1/D_i.
+        // Path choice uses indexable arms only (independence: N * (1 - Π(1 - s_i))).
         const double N =
             static_cast<double>(std::max<std::size_t>(plan.estimates.estimatedRows, 1));
-        double missProduct = 1.0;
-        for (const Predicate *pred : disjuncts) {
+        double indexMissProduct = 1.0;
+        for (const Predicate *pred : indexable) {
             const double fanout = equalityFanout(*pred, stats, indexes, plan.estimates.estimatedRows);
             const double selectivity = std::clamp(fanout / N, 0.0, 1.0);
+            indexMissProduct *= 1.0 - selectivity;
+        }
+        const double indexUnionCost = std::max(N * (1.0 - indexMissProduct), 1.0);
+        if (!(indexUnionCost < plan.estimates.estimatedCost)) {
+            plan.estimates.residual = query.where;
+            plan.estimates.explanation = "full table scan (OR predicate)";
+            return plan;
+        }
+
+        // Estimated rows fold residual arms under independence when stats exist; unknown
+        // residual equality defaults to moderately selective so EXPLAIN is not forced to N.
+        double missProduct = indexMissProduct;
+        for (const Predicate *pred : residualDisjuncts) {
+            double selectivity = 0.5;
+            if (const auto *comparison = std::get_if<ComparisonPred>(pred);
+                comparison != nullptr && !comparison->rhsColumn &&
+                comparison->op == ComparisonOperator::Equal) {
+                const bool haveDistinct =
+                    comparison->expression
+                        ? indexes.indexDistinctCount(*comparison->expression).has_value()
+                        : (indexes.indexDistinctCount(comparison->column).has_value() ||
+                           stats.columnHistogram(comparison->column).has_value());
+                if (haveDistinct) {
+                    selectivity = std::clamp(
+                        equalityFanout(*pred, stats, indexes, plan.estimates.estimatedRows) / N, 0.0,
+                        1.0);
+                } else {
+                    selectivity = 0.1;
+                }
+            } else if (const auto *comparison = std::get_if<ComparisonPred>(pred);
+                       comparison != nullptr && !comparison->rhsColumn &&
+                       !comparison->expression &&
+                       (comparison->op == ComparisonOperator::Less ||
+                        comparison->op == ComparisonOperator::Greater) &&
+                       stats.columnHistogram(comparison->column)) {
+                selectivity = std::clamp(
+                    rangeCost(stats, comparison->column, comparison->op, comparison->value,
+                              plan.estimates.estimatedRows) /
+                        N,
+                    0.0, 1.0);
+            }
             missProduct *= 1.0 - selectivity;
         }
         const double unionCost = std::max(N * (1.0 - missProduct), 1.0);
-        if (!(unionCost < plan.estimates.estimatedCost)) {
-            plan.estimates.residual = query.where;
-            plan.estimates.explanation = "full table scan (OR predicate)";
-            return plan;
-        }
 
         UnionPlan unionPlan;
-        unionPlan.unionProbes.reserve(disjuncts.size());
+        unionPlan.unionProbes.reserve(indexable.size());
         std::ostringstream labels;
-        for (const Predicate *pred : disjuncts) {
+        for (const Predicate *pred : indexable) {
             auto probe = makeEqualityProbe(*pred);
             if (!labels.str().empty()) {
                 labels << ", ";
@@ -272,7 +328,11 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
         plan.estimates.estimatedCost = unionCost;
         plan.estimates.estimatedRows = rowsFromCost(unionCost, stats.rowCount());
         plan.estimates.explanation = "multi-index union on " + labels.str();
-        plan.estimates.residual = std::nullopt;
+        plan.estimates.residual = buildOrTree(residualDisjuncts);
+        if (plan.estimates.residual) {
+            plan.estimates.notes.push_back(
+                "residual OR complementary scan for non-indexable disjuncts");
+        }
         return plan;
     }
 

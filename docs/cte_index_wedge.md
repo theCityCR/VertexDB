@@ -161,7 +161,7 @@ Items **1–5** are done. The one-liner:
 
 ## Out of scope for this wedge
 
-- Mixed/non-indexable top-level `OR` and partial OR indexing remain out of scope for this wedge.
+- Mixed/non-indexable top-level `OR` partial indexing is an engine feature outside this wedge demo.
 - Correlation deeper than two outer frames or regex/substring indexes.
 - Winning only because VertexDB always picks hash lookup when Postgres sometimes does not—that is
   a heuristic quirk, not a product story.

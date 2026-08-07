@@ -50,7 +50,8 @@ CLI
 
 - `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
   cost-based access-path / join selection through the `RelationStats` and `IndexCatalogView`
-  interfaces, including optional `ANALYZE` histograms, multi-index AND intersect / OR union, and
+  interfaces, including optional `ANALYZE` histograms, multi-index AND intersect / OR union
+  (including partial OR with residual complementary scan), and
   residual filters.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
