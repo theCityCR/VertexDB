@@ -40,50 +40,52 @@ std::string sqlLiteral(const Value &value) {
 }
 
 std::string predicateLiteral(const Predicate &predicate) {
-    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        const auto op = predicate.kind == Predicate::Kind::And ? " AND " : " OR ";
-        return "(" + predicateLiteral(*predicate.left) + op + predicateLiteral(*predicate.right) +
-               ")";
-    }
-    if (predicate.kind == Predicate::Kind::InList) {
-        std::ostringstream out;
-        out << predicate.column << " IN (";
-        for (std::size_t i = 0; i < predicate.inValues.size(); ++i) {
-            if (i > 0) {
-                out << ", ";
+    return std::visit(
+        [&](const auto &node) -> std::string {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                const auto op = std::is_same_v<T, AndPred> ? " AND " : " OR ";
+                return "(" + predicateLiteral(*node.left) + op +
+                       predicateLiteral(*node.right) + ")";
+            } else if constexpr (std::is_same_v<T, InListPred>) {
+                std::ostringstream out;
+                out << node.column << " IN (";
+                for (std::size_t i = 0; i < node.inValues.size(); ++i) {
+                    if (i > 0) {
+                        out << ", ";
+                    }
+                    out << sqlLiteral(node.inValues[i]);
+                }
+                out << ")";
+                return out.str();
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                return node.column + " IN (SELECT ...)";
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
+                return "EXISTS (SELECT ...)";
+            } else {
+                std::string op;
+                switch (node.op) {
+                case ComparisonOperator::Equal:
+                    op = "=";
+                    break;
+                case ComparisonOperator::Greater:
+                    op = ">";
+                    break;
+                case ComparisonOperator::Less:
+                    op = "<";
+                    break;
+                }
+                std::string left = node.column;
+                if (node.expression) {
+                    left = "(" + indexExpressionToString(*node.expression) + ")";
+                }
+                if (node.rhsColumn) {
+                    return left + " " + op + " " + *node.rhsColumn;
+                }
+                return left + " " + op + " " + sqlLiteral(node.value);
             }
-            out << sqlLiteral(predicate.inValues[i]);
-        }
-        out << ")";
-        return out.str();
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery) {
-        return predicate.column + " IN (SELECT ...)";
-    }
-    if (predicate.kind == Predicate::Kind::Exists) {
-        return "EXISTS (SELECT ...)";
-    }
-
-    std::string op;
-    switch (predicate.op) {
-    case ComparisonOperator::Equal:
-        op = "=";
-        break;
-    case ComparisonOperator::Greater:
-        op = ">";
-        break;
-    case ComparisonOperator::Less:
-        op = "<";
-        break;
-    }
-    std::string left = predicate.column;
-    if (predicate.expression) {
-        left = "(" + indexExpressionToString(*predicate.expression) + ")";
-    }
-    if (predicate.rhsColumn) {
-        return left + " " + op + " " + *predicate.rhsColumn;
-    }
-    return left + " " + op + " " + sqlLiteral(predicate.value);
+        },
+        predicate);
 }
 
 std::string createIndexSql(const CreateIndex &command) {

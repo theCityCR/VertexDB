@@ -1,6 +1,7 @@
 #pragma once
 
-// Cost-based access-path and join selection. CTE/derived rewrite is in rewriter.hpp.
+// Variant-based costed access-path selection. Each path stores only the probe
+// fields valid for that physical operation. CTE/derived rewrite is in rewriter.hpp.
 
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/relation_stats.hpp"
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace VertexDB {
@@ -33,19 +35,49 @@ struct IndexEqualityProbe {
     Value value;
 };
 
-struct QueryPlan {
-    AccessPath accessPath{AccessPath::FullScan};
-    std::optional<Predicate> residual;
-    std::string indexColumn;
-    std::optional<IndexExpression> indexExpression;
-    ComparisonOperator indexOp{ComparisonOperator::Equal};
-    Value indexValue;
-    std::vector<Value> indexValues;
-    std::vector<IndexEqualityProbe> intersectProbes;
+struct PlanEstimates {
     std::size_t estimatedRows{};
     double estimatedCost{};
     std::string explanation{"full table scan"};
     std::vector<std::string> notes;
+    std::optional<Predicate> residual;
+};
+
+struct FullScanPlan {};
+
+struct HashEqPlan {
+    std::string indexColumn;
+    std::optional<IndexExpression> indexExpression;
+    Value indexValue;
+};
+
+struct OrderedRangePlan {
+    std::string indexColumn;
+    std::optional<IndexExpression> indexExpression;
+    ComparisonOperator indexOp{};
+    Value indexValue;
+};
+
+struct HashInPlan {
+    std::string indexColumn;
+    std::optional<IndexExpression> indexExpression;
+    std::vector<Value> indexValues;
+};
+
+struct IntersectPlan {
+    std::vector<IndexEqualityProbe> intersectProbes;
+};
+
+using AccessPathPlan =
+    std::variant<FullScanPlan, HashEqPlan, OrderedRangePlan, HashInPlan, IntersectPlan>;
+
+struct QueryPlan {
+    AccessPathPlan path{FullScanPlan{}};
+    PlanEstimates estimates{};
+
+    [[nodiscard]] AccessPath accessPath() const;
+    [[nodiscard]] std::optional<Predicate> &residual() { return estimates.residual; }
+    [[nodiscard]] const std::optional<Predicate> &residual() const { return estimates.residual; }
 };
 
 struct JoinPlan {

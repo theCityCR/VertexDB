@@ -28,7 +28,7 @@ TEST(ParserTests, ParsesSelectWithPredicateAndLimit) {
     EXPECT_EQ(command.columns.front().kind, SelectExpr::Kind::Column);
     EXPECT_EQ(command.columns.front().column, "name");
     ASSERT_TRUE(command.where.has_value());
-    EXPECT_EQ(command.where->column, "salary");
+    EXPECT_EQ(std::get<ComparisonPred>(*command.where).column, "salary");
     ASSERT_TRUE(command.limit.has_value());
     EXPECT_EQ(*command.limit, 5U);
 }
@@ -52,7 +52,7 @@ TEST(ParserTests, ParsesMultiRowInsertNullableColumnsAndCompoundPredicates) {
     ASSERT_TRUE(std::holds_alternative<Select>(select));
     const auto &selectCommand = std::get<Select>(select);
     ASSERT_TRUE(selectCommand.where.has_value());
-    EXPECT_EQ(selectCommand.where->kind, Predicate::Kind::Or);
+    EXPECT_EQ(predicateKind(*selectCommand.where), PredicateKind::Or);
 }
 
 TEST(ParserTests, ParsesOrderByAndTransactionCommands) {

@@ -34,29 +34,39 @@ Select bindSelect(const Select &select, const std::vector<Value> &parameters, st
 
 Predicate bindPredicate(const Predicate &predicate, const std::vector<Value> &parameters,
                         std::vector<bool> &seen) {
-    Predicate bound = predicate;
-    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        bound.left = std::make_shared<Predicate>(bindPredicate(*predicate.left, parameters, seen));
-        bound.right = std::make_shared<Predicate>(bindPredicate(*predicate.right, parameters, seen));
-        return bound;
-    }
-    if (predicate.kind == Predicate::Kind::InList) {
-        for (auto &value : bound.inValues) {
-            value = bindValue(value, parameters, seen);
-        }
-        return bound;
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery || predicate.kind == Predicate::Kind::Exists) {
-        if (predicate.subquery) {
-            bound.subquery = std::make_shared<Select>(bindSelect(*predicate.subquery, parameters, seen));
-        }
-        return bound;
-    }
-    bound.value = bindValue(predicate.value, parameters, seen);
-    if (predicate.expression) {
-        bound.expression = bindIndexExpression(*predicate.expression, parameters, seen);
-    }
-    return bound;
+    return std::visit(
+        [&](const auto &node) -> Predicate {
+            using T = std::decay_t<decltype(node)>;
+            T bound = node;
+            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                bound.left =
+                    std::make_shared<Predicate>(bindPredicate(*node.left, parameters, seen));
+                bound.right =
+                    std::make_shared<Predicate>(bindPredicate(*node.right, parameters, seen));
+            } else if constexpr (std::is_same_v<T, InListPred>) {
+                for (auto &value : bound.inValues) {
+                    value = bindValue(value, parameters, seen);
+                }
+                if (bound.expression) {
+                    bound.expression =
+                        bindIndexExpression(*bound.expression, parameters, seen);
+                }
+            } else if constexpr (std::is_same_v<T, InSubqueryPred> ||
+                                 std::is_same_v<T, ExistsPred>) {
+                if (node.subquery) {
+                    bound.subquery =
+                        std::make_shared<Select>(bindSelect(*node.subquery, parameters, seen));
+                }
+            } else {
+                bound.value = bindValue(node.value, parameters, seen);
+                if (node.expression) {
+                    bound.expression =
+                        bindIndexExpression(*node.expression, parameters, seen);
+                }
+            }
+            return bound;
+        },
+        predicate);
 }
 
 Select bindSelect(const Select &select, const std::vector<Value> &parameters, std::vector<bool> &seen) {

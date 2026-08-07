@@ -51,6 +51,11 @@ CLI
   cost-based access-path / join selection through the `RelationStats` and `IndexCatalogView`
   interfaces, including optional `ANALYZE` histograms, multi-index AND intersect, and residual
   filters.
+
+SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
+or existence node owns only the fields valid for that shape. Physical access paths are likewise a
+variant (`FullScanPlan`, equality/range/IN probes, or intersection), while estimates and residual
+filters live in the shared `PlanEstimates` metadata.
 - `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
   façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and

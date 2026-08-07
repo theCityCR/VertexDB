@@ -6,6 +6,7 @@
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
+#include "VertexDB/parser/predicate.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -28,58 +29,6 @@ struct CteEntry {
     std::string name;
     std::shared_ptr<Select> body;
     MaterializeMode materializeMode{MaterializeMode::DefaultInline};
-};
-
-struct Predicate {
-    enum class Kind {
-        Comparison,
-        And,
-        Or,
-        InSubquery,
-        InList,
-        Exists,
-    };
-
-    Predicate() = default;
-    Predicate(std::string columnName, ComparisonOperator comparison, Value comparisonValue)
-        : column(std::move(columnName)), op(comparison), value(std::move(comparisonValue)) {}
-    Predicate(Kind predicateKind, std::shared_ptr<Predicate> leftPredicate,
-              std::shared_ptr<Predicate> rightPredicate)
-        : kind(predicateKind), left(std::move(leftPredicate)), right(std::move(rightPredicate)) {}
-    Predicate(std::string columnName, std::shared_ptr<Select> sub)
-        : kind(Kind::InSubquery), column(std::move(columnName)), subquery(std::move(sub)) {}
-    Predicate(std::string columnName, std::vector<Value> values)
-        : kind(Kind::InList), column(std::move(columnName)), inValues(std::move(values)) {}
-    static Predicate makeExists(std::shared_ptr<Select> sub) {
-        Predicate predicate;
-        predicate.kind = Kind::Exists;
-        predicate.subquery = std::move(sub);
-        return predicate;
-    }
-    static Predicate makeExpressionComparison(IndexExpression expr, ComparisonOperator comparison,
-                                              Value comparisonValue) {
-        Predicate predicate;
-        predicate.kind = Kind::Comparison;
-        predicate.expression = std::move(expr);
-        predicate.column = predicate.expression->column;
-        predicate.op = comparison;
-        predicate.value = std::move(comparisonValue);
-        return predicate;
-    }
-
-    Kind kind{Kind::Comparison};
-    std::string column;
-    ComparisonOperator op{};
-    Value value;
-    std::shared_ptr<Predicate> left;
-    std::shared_ptr<Predicate> right;
-    std::shared_ptr<Select> subquery;
-    std::vector<Value> inValues;
-    // When set, Comparison compares column/expression against an outer (or unqualified) column
-    // instead of a literal value.
-    std::optional<std::string> rhsColumn;
-    std::optional<IndexExpression> expression;
-    bool referencesOuter{false};
 };
 
 struct CreateDatabase {

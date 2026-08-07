@@ -37,7 +37,7 @@ TEST(NestedSqlTests, ParsesWithAndInSubqueryAndExplain) {
     EXPECT_EQ(withSelect.ctes[0].name, "high");
     EXPECT_EQ(withSelect.table, "high");
     ASSERT_TRUE(withSelect.where.has_value());
-    EXPECT_EQ(withSelect.where->kind, Predicate::Kind::Comparison);
+    EXPECT_EQ(predicateKind(*withSelect.where), PredicateKind::Comparison);
 
     auto inQuery =
         parser.parse("SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE "
@@ -45,9 +45,10 @@ TEST(NestedSqlTests, ParsesWithAndInSubqueryAndExplain) {
     ASSERT_TRUE(std::holds_alternative<Select>(inQuery));
     const auto &inSelect = std::get<Select>(inQuery);
     ASSERT_TRUE(inSelect.where.has_value());
-    EXPECT_EQ(inSelect.where->kind, Predicate::Kind::InSubquery);
-    ASSERT_TRUE(inSelect.where->subquery);
-    EXPECT_EQ(inSelect.where->subquery->table, "Employees");
+    EXPECT_EQ(predicateKind(*inSelect.where), PredicateKind::InSubquery);
+    const auto &inSubquery = std::get<InSubqueryPred>(*inSelect.where);
+    ASSERT_TRUE(inSubquery.subquery);
+    EXPECT_EQ(inSubquery.subquery->table, "Employees");
 
     auto explain = parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;");
     ASSERT_TRUE(std::holds_alternative<ExplainQuery>(explain));
@@ -63,7 +64,7 @@ TEST(NestedSqlTests, RewriterInlinesCteAndPushesPredicates) {
     const auto rewritten = rewriteSelect(select);
     EXPECT_EQ(rewritten.query.table, "Employees");
     ASSERT_TRUE(rewritten.query.where.has_value());
-    EXPECT_EQ(rewritten.query.where->kind, Predicate::Kind::And);
+    EXPECT_EQ(predicateKind(*rewritten.query.where), PredicateKind::And);
     ASSERT_FALSE(rewritten.notes.empty());
     EXPECT_NE(rewritten.notes.front().find("inlined CTE"), std::string::npos);
 }
@@ -191,7 +192,7 @@ TEST(NestedSqlTests, DerivedTableInlinesLikeCte) {
     const auto rewritten = rewriteSelect(std::get<Select>(query));
     EXPECT_EQ(rewritten.query.table, "Employees");
     ASSERT_TRUE(rewritten.query.where.has_value());
-    EXPECT_EQ(rewritten.query.where->kind, Predicate::Kind::And);
+    EXPECT_EQ(predicateKind(*rewritten.query.where), PredicateKind::And);
     ASSERT_FALSE(rewritten.notes.empty());
     EXPECT_NE(rewritten.notes.front().find("inlined CTE high"), std::string::npos);
 }
@@ -260,13 +261,13 @@ TEST(NestedSqlTests, PlannerChoosesHashIndexInLookup) {
     Select query{"Employees",
                  {},
                  {SelectExpr::makeStar()},
-                 Predicate{"id", std::vector<Value>{Value{1}, Value{3}}},
+                 makeInList("id", {Value{1}, Value{3}}),
                  {},
                  {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexInLookup);
-    EXPECT_EQ(plan.indexValues.size(), 2U);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexInLookup);
+    EXPECT_EQ(std::get<HashInPlan>(plan.path).indexValues.size(), 2U);
 }
 
 TEST(NestedSqlTests, ParsesMaterializedAndNotMaterializedCte) {
@@ -604,7 +605,7 @@ TEST(NestedSqlTests, DerivedTableInlinesLikeCteAndUsesBaseIndex) {
         "WHERE id = 1;")));
     EXPECT_EQ(rewritten.query.table, "Employees");
     ASSERT_TRUE(rewritten.query.where.has_value());
-    EXPECT_EQ(rewritten.query.where->kind, Predicate::Kind::And);
+    EXPECT_EQ(predicateKind(*rewritten.query.where), PredicateKind::And);
     ASSERT_FALSE(rewritten.notes.empty());
     EXPECT_NE(rewritten.notes.front().find("inlined CTE"), std::string::npos);
 

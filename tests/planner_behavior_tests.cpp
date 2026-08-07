@@ -70,7 +70,7 @@ class StubIndexCatalog final : public IndexCatalogView {
 TEST(PlannerBehaviorTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) {
     Select query{"Employees", {},
                  {SelectExpr::makeStar()},
-                 Predicate{"id", ComparisonOperator::Equal, Value{42}},
+                 makeComparison("id", ComparisonOperator::Equal, Value{42}),
                  {},
                  {}};
     const StubRelationStats stats;
@@ -78,8 +78,8 @@ TEST(PlannerBehaviorTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) 
 
     const auto plan = QueryPlanner{}.planSelect(query, stats, indexes);
 
-    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
-    EXPECT_EQ(plan.estimatedRows, 1U);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.estimates.estimatedRows, 1U);
 }
 
 TEST(PlannerBehaviorTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConjuncts) {
@@ -134,12 +134,13 @@ TEST(PlannerBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
 
     QueryPlanner planner;
     Select less{"Employees", {},
-                {SelectExpr::makeStar()},       Predicate{"salary", ComparisonOperator::Less, Value{100000.0}},
+                {SelectExpr::makeStar()},
+                makeComparison("salary", ComparisonOperator::Less, Value{100000.0}),
                 {},          {}};
     const auto plan = planner.planSelect(less, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::OrderedIndexRange);
-    EXPECT_EQ(plan.indexOp, ComparisonOperator::Less);
-    EXPECT_FALSE(plan.residual.has_value());
+    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_EQ(std::get<OrderedRangePlan>(plan.path).indexOp, ComparisonOperator::Less);
+    EXPECT_FALSE(plan.residual().has_value());
 
     Parser parser;
     auto executor = makeExecutor("less-than");
@@ -164,15 +165,14 @@ TEST(PlannerBehaviorTests, OrPredicateFullScanIsDocumentedLimitation) {
     table.insert({Value{2}});
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
 
-    Predicate orPredicate{
-        Predicate::Kind::Or,
-        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{1}}),
-        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{2}})};
+    Predicate orPredicate =
+        makeOr(makeComparison("id", ComparisonOperator::Equal, Value{1}),
+               makeComparison("id", ComparisonOperator::Equal, Value{2}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, orPredicate, {}, {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::FullScan);
-    EXPECT_NE(plan.explanation.find("OR predicate"), std::string::npos);
+    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
+    EXPECT_NE(plan.estimates.explanation.find("OR predicate"), std::string::npos);
 
     Parser parser;
     auto executor = makeExecutor("or-explain");
@@ -210,10 +210,11 @@ TEST(PlannerBehaviorTests, IndexPreferredOverFullScanWhenCostsAreTied) {
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
 
     Select query{"Employees", {},
-                 {SelectExpr::makeStar()},       Predicate{"id", ComparisonOperator::Equal, Value{1}},
+                 {SelectExpr::makeStar()},
+                 makeComparison("id", ComparisonOperator::Equal, Value{1}),
                  {},          {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
 }
 
 TEST(PlannerBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidualTree) {
@@ -223,20 +224,19 @@ TEST(PlannerBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidua
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
     ASSERT_TRUE(table.createIndex("idx_salary", "salary"));
 
-    Predicate leafId{"id", ComparisonOperator::Equal, Value{1}};
-    Predicate leafDept{"dept", ComparisonOperator::Equal, Value{10}};
-    Predicate leafSalary{"salary", ComparisonOperator::Greater, Value{100000.0}};
-    Predicate mid{Predicate::Kind::And, std::make_shared<Predicate>(leafId),
-                  std::make_shared<Predicate>(leafDept)};
-    Predicate where{Predicate::Kind::And, std::make_shared<Predicate>(mid),
-                    std::make_shared<Predicate>(leafSalary)};
+    Predicate leafId = makeComparison("id", ComparisonOperator::Equal, Value{1});
+    Predicate leafDept = makeComparison("dept", ComparisonOperator::Equal, Value{10});
+    Predicate leafSalary =
+        makeComparison("salary", ComparisonOperator::Greater, Value{100000.0});
+    Predicate mid = makeAnd(leafId, leafDept);
+    Predicate where = makeAnd(mid, leafSalary);
 
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
-    EXPECT_EQ(plan.indexColumn, "id");
-    ASSERT_TRUE(plan.residual.has_value());
-    EXPECT_EQ(plan.residual->kind, Predicate::Kind::And);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::And);
 }
 
 TEST(PlannerBehaviorTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
@@ -287,17 +287,16 @@ TEST(PlannerBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCard
     EXPECT_EQ(table.indexDistinctCount("id"), std::optional<std::size_t>{100});
     EXPECT_EQ(table.indexDistinctCount("dept"), std::optional<std::size_t>{2});
 
-    Predicate where{
-        Predicate::Kind::And,
-        std::make_shared<Predicate>(Predicate{"dept", ComparisonOperator::Equal, Value{1}}),
-        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{50}})};
+    Predicate where =
+        makeAnd(makeComparison("dept", ComparisonOperator::Equal, Value{1}),
+                makeComparison("id", ComparisonOperator::Equal, Value{50}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
-    EXPECT_EQ(plan.indexColumn, "id");
-    EXPECT_LT(plan.estimatedCost, 2.0);
-    ASSERT_TRUE(plan.residual.has_value());
-    EXPECT_EQ(plan.residual->column, "dept");
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
+    EXPECT_LT(plan.estimates.estimatedCost, 2.0);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(std::get<ComparisonPred>(*plan.residual()).column, "dept");
 }
 
 TEST(PlannerBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
@@ -308,16 +307,14 @@ TEST(PlannerBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
     ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
 
-    Predicate where{
-        Predicate::Kind::And,
-        std::make_shared<Predicate>(
-            Predicate{"dept", std::vector<Value>{Value{0}, Value{1}, Value{2}}}),
-        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{7}})};
+    Predicate where =
+        makeAnd(makeInList("dept", {Value{0}, Value{1}, Value{2}}),
+                makeComparison("id", ComparisonOperator::Equal, Value{7}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::HashIndexLookup);
-    EXPECT_EQ(plan.indexColumn, "id");
-    EXPECT_LT(plan.estimatedCost, 3.0);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
+    EXPECT_LT(plan.estimates.estimatedCost, 3.0);
 }
 
 TEST(PlannerBehaviorTests, StatsDrivenJoinChoosesNestedLoopIndexProbe) {
@@ -421,18 +418,16 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
     bPlus.literal = Value{0};
     ASSERT_TRUE(table.createIndex("idx_b_plus", bPlus));
 
-    Predicate where{
-        Predicate::Kind::And,
-        std::make_shared<Predicate>(Predicate{"a", ComparisonOperator::Equal, Value{1}}),
-        std::make_shared<Predicate>(
-            Predicate::makeExpressionComparison(bPlus, ComparisonOperator::Equal, Value{1}))};
+    Predicate where =
+        makeAnd(makeComparison("a", ComparisonOperator::Equal, Value{1}),
+                makeExpressionComparison(bPlus, ComparisonOperator::Equal, Value{1}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::MultiIndexIntersect);
-    ASSERT_EQ(plan.intersectProbes.size(), 2U);
-    EXPECT_NE(plan.explanation.find("multi-index intersect on"), std::string::npos);
-    EXPECT_NE(plan.explanation.find("a"), std::string::npos);
-    EXPECT_NE(plan.explanation.find("b"), std::string::npos);
+    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexIntersect);
+    ASSERT_EQ(std::get<IntersectPlan>(plan.path).intersectProbes.size(), 2U);
+    EXPECT_NE(plan.estimates.explanation.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("a"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("b"), std::string::npos);
 }
 
 TEST(PlannerBehaviorTests, TopLevelOrIndexUnionRemainsDocumentedLimitation) {
@@ -443,14 +438,13 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionRemainsDocumentedLimitation) {
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
     ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
 
-    Predicate where{
-        Predicate::Kind::Or,
-        std::make_shared<Predicate>(Predicate{"id", ComparisonOperator::Equal, Value{1}}),
-        std::make_shared<Predicate>(Predicate{"dept", ComparisonOperator::Equal, Value{0}})};
+    Predicate where =
+        makeOr(makeComparison("id", ComparisonOperator::Equal, Value{1}),
+               makeComparison("dept", ComparisonOperator::Equal, Value{0}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::FullScan);
-    EXPECT_NE(plan.explanation.find("OR"), std::string::npos);
+    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
+    EXPECT_NE(plan.estimates.explanation.find("OR"), std::string::npos);
 }
 
 TEST(PlannerBehaviorTests, MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes) {
@@ -491,18 +485,18 @@ TEST(PlannerBehaviorTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) 
     }
     ASSERT_TRUE(table.createIndex("idx_score", "score"));
 
-    Predicate where{"score", ComparisonOperator::Greater, Value{80}};
+    Predicate where = makeComparison("score", ComparisonOperator::Greater, Value{80});
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
 
     const auto before = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(before.accessPath, AccessPath::OrderedIndexRange);
-    EXPECT_NEAR(before.estimatedCost, 30.0, 0.5); // N/3 fallback
+    EXPECT_EQ(before.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_NEAR(before.estimates.estimatedCost, 30.0, 0.5); // N/3 fallback
 
     table.analyze();
     const auto after = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(after.accessPath, AccessPath::OrderedIndexRange);
-    EXPECT_LT(after.estimatedCost, before.estimatedCost);
-    EXPECT_LE(after.estimatedCost, 15.0);
+    EXPECT_EQ(after.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_LT(after.estimates.estimatedCost, before.estimates.estimatedCost);
+    EXPECT_LE(after.estimates.estimatedCost, 15.0);
 }
 
 TEST(PlannerBehaviorTests, ExpressionIndexSubtractEqualityLookup) {
@@ -559,11 +553,11 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
     }
     ASSERT_TRUE(table.createIndex("idx_score", "score"));
     table.analyze();
-    Predicate where{"score", ComparisonOperator::Less, Value{10.0}};
+    Predicate where = makeComparison("score", ComparisonOperator::Less, Value{10.0});
     Select query{"Scores", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath, AccessPath::OrderedIndexRange);
-    EXPECT_LT(plan.estimatedCost, 64.0 / 3.0);
+    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedIndexRange);
+    EXPECT_LT(plan.estimates.estimatedCost, 64.0 / 3.0);
 }
 
 } // namespace VertexDB

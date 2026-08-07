@@ -21,24 +21,28 @@ Select SubqueryRuntime::prepareSelect(const Select &command, RewriteResult &rewr
 }
 
 Predicate SubqueryRuntime::materializePredicate(const Predicate &predicate) const {
-    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        return Predicate{predicate.kind,
-                         std::make_shared<Predicate>(materializePredicate(*predicate.left)),
-                         std::make_shared<Predicate>(materializePredicate(*predicate.right))};
-    }
-    if (predicate.kind == Predicate::Kind::Exists) {
-        return predicate;
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery) {
-        if (!predicate.subquery) {
-            throw std::runtime_error("IN subquery is missing");
-        }
-        if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
-            return predicate;
-        }
-        return Predicate{predicate.column, evaluateSubqueryValues(*predicate.subquery)};
-    }
-    return predicate;
+    return std::visit(
+        [&](const auto &node) -> Predicate {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred>) {
+                return makeAnd(materializePredicate(*node.left),
+                               materializePredicate(*node.right));
+            } else if constexpr (std::is_same_v<T, OrPred>) {
+                return makeOr(materializePredicate(*node.left),
+                              materializePredicate(*node.right));
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                if (!node.subquery) {
+                    throw std::runtime_error("IN subquery is missing");
+                }
+                if (node.referencesOuter || node.subquery->hasOuterRefs) {
+                    return node;
+                }
+                return makeInList(node.column, evaluateSubqueryValues(*node.subquery));
+            } else {
+                return node;
+            }
+        },
+        predicate);
 }
 
 std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquery) const {
@@ -115,26 +119,31 @@ namespace {
 
 Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
                                                const Table &outerTable) const {
-    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        return Predicate{predicate.kind,
-                         std::make_shared<Predicate>(
-                             bindOuterReferences(*predicate.left, outerRow, outerTable)),
-                         std::make_shared<Predicate>(
-                             bindOuterReferences(*predicate.right, outerRow, outerTable))};
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery || predicate.kind == Predicate::Kind::Exists) {
-        throw std::runtime_error("multi-level correlated subqueries are not supported");
-    }
-    if (predicate.kind != Predicate::Kind::Comparison) {
-        return predicate;
-    }
-    Predicate bound = predicate;
-    bound.referencesOuter = false;
-    if (predicate.rhsColumn) {
-        bound.rhsColumn.reset();
-        bound.value = outerColumnValue(*predicate.rhsColumn, outerRow, outerTable);
-    }
-    return bound;
+    return std::visit(
+        [&](const auto &node) -> Predicate {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred>) {
+                return makeAnd(bindOuterReferences(*node.left, outerRow, outerTable),
+                               bindOuterReferences(*node.right, outerRow, outerTable));
+            } else if constexpr (std::is_same_v<T, OrPred>) {
+                return makeOr(bindOuterReferences(*node.left, outerRow, outerTable),
+                              bindOuterReferences(*node.right, outerRow, outerTable));
+            } else if constexpr (std::is_same_v<T, InSubqueryPred> ||
+                                 std::is_same_v<T, ExistsPred>) {
+                throw std::runtime_error("multi-level correlated subqueries are not supported");
+            } else if constexpr (std::is_same_v<T, ComparisonPred>) {
+                ComparisonPred bound = node;
+                bound.referencesOuter = false;
+                if (node.rhsColumn) {
+                    bound.rhsColumn.reset();
+                    bound.value = outerColumnValue(*node.rhsColumn, outerRow, outerTable);
+                }
+                return bound;
+            } else {
+                return node;
+            }
+        },
+        predicate);
 }
 
 Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &outerRow,

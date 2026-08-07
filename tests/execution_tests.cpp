@@ -278,7 +278,7 @@ TEST(ExecutionTests, ExecutesPreparedStatementsWithParameters) {
     const auto ast = executor.preparedAst("by_id");
     ASSERT_TRUE(ast.has_value());
     ASSERT_TRUE(std::holds_alternative<Select>(*ast));
-    EXPECT_TRUE(std::get<Select>(*ast).where->value.isParameter());
+    EXPECT_TRUE(std::get<ComparisonPred>(*std::get<Select>(*ast).where).value.isParameter());
 
     std::filesystem::remove_all(root);
 }

@@ -43,7 +43,7 @@ Predicate Parser::parseOrPredicate() {
     while (match(TokenType::Identifier, "OR")) {
         auto left = std::make_shared<Predicate>(std::move(predicate));
         auto right = std::make_shared<Predicate>(parseAndPredicate());
-        predicate = Predicate{Predicate::Kind::Or, std::move(left), std::move(right)};
+        predicate = makeOr(std::move(left), std::move(right));
     }
     return predicate;
 }
@@ -53,7 +53,7 @@ Predicate Parser::parseAndPredicate() {
     while (match(TokenType::Identifier, "AND")) {
         auto left = std::make_shared<Predicate>(std::move(predicate));
         auto right = std::make_shared<Predicate>(parsePrimaryPredicate());
-        predicate = Predicate{Predicate::Kind::And, std::move(left), std::move(right)};
+        predicate = makeAnd(std::move(left), std::move(right));
     }
     return predicate;
 }
@@ -79,7 +79,7 @@ Predicate Parser::parsePrimaryPredicate() {
                 } else {
                     throw std::runtime_error("expected comparison operator");
                 }
-                return Predicate::makeExpressionComparison(std::move(expression), op, parseValue());
+                return makeExpressionComparison(std::move(expression), op, parseValue());
             } catch (const std::runtime_error &) {
                 current_ = saved;
             }
@@ -96,9 +96,10 @@ Predicate Parser::parseExistsPredicate() {
     expect(TokenType::Identifier, "SELECT");
     auto subquery = std::make_shared<Select>(parseSubquerySelect(true));
     expect(TokenType::RightParen);
-    auto predicate = Predicate::makeExists(std::move(subquery));
-    if (predicate.subquery && predicate.subquery->hasOuterRefs) {
-        predicate.referencesOuter = true;
+    auto predicate = makeExists(std::move(subquery));
+    auto &exists = std::get<ExistsPred>(predicate);
+    if (exists.subquery && exists.subquery->hasOuterRefs) {
+        exists.referencesOuter = true;
     }
     return predicate;
 }
@@ -146,9 +147,10 @@ Predicate Parser::parseComparisonPredicate() {
             throw std::runtime_error("IN subquery must project exactly one column");
         }
         expect(TokenType::RightParen);
-        Predicate predicate{column.lexeme, std::move(subquery)};
-        if (predicate.subquery && predicate.subquery->hasOuterRefs) {
-            predicate.referencesOuter = true;
+        Predicate predicate = makeInSubquery(column.lexeme, std::move(subquery));
+        auto &inSubquery = std::get<InSubqueryPred>(predicate);
+        if (inSubquery.subquery && inSubquery.subquery->hasOuterRefs) {
+            inSubquery.referencesOuter = true;
         }
         return predicate;
     }
@@ -167,14 +169,9 @@ Predicate Parser::parseComparisonPredicate() {
     // RHS may be a literal or a column reference (including outer table.column).
     if (peek().type == TokenType::Identifier && !equalsIgnoreCase(peek().lexeme, "NULL")) {
         const auto rhs = advance();
-        Predicate predicate;
-        predicate.kind = Predicate::Kind::Comparison;
-        predicate.column = column.lexeme;
-        predicate.op = op;
-        predicate.rhsColumn = rhs.lexeme;
-        return predicate;
+        return ComparisonPred{column.lexeme, op, {}, rhs.lexeme};
     }
-    return {column.lexeme, op, parseValue()};
+    return makeComparison(column.lexeme, op, parseValue());
 }
 
 Select Parser::parseSubquerySelect(bool /*allowOuterRefs*/) {
@@ -203,7 +200,7 @@ void Parser::markOuterRefs(Select &select, std::string_view innerTable,
                            bool nestedUnderCorrelated) {
     if (select.where) {
         markOuterRefs(*select.where, innerTable, nestedUnderCorrelated);
-        if (select.where->referencesOuter) {
+        if (predicateReferencesOuter(*select.where)) {
             select.hasOuterRefs = true;
         }
     }
@@ -211,48 +208,39 @@ void Parser::markOuterRefs(Select &select, std::string_view innerTable,
 
 void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                            bool nestedUnderCorrelated) {
-    if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        markOuterRefs(*predicate.left, innerTable, nestedUnderCorrelated);
-        markOuterRefs(*predicate.right, innerTable, nestedUnderCorrelated);
-        predicate.referencesOuter =
-            predicate.left->referencesOuter || predicate.right->referencesOuter;
-        return;
-    }
-
-    if (predicate.kind == Predicate::Kind::InSubquery || predicate.kind == Predicate::Kind::Exists) {
-        if (predicate.subquery && predicate.subquery->hasOuterRefs) {
-            predicate.referencesOuter = true;
-            if (nestedUnderCorrelated) {
-                throw std::runtime_error("multi-level correlated subqueries are not supported");
+    std::visit(
+        [&](auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                markOuterRefs(*node.left, innerTable, nestedUnderCorrelated);
+                markOuterRefs(*node.right, innerTable, nestedUnderCorrelated);
+            } else if constexpr (std::is_same_v<T, InSubqueryPred> ||
+                                 std::is_same_v<T, ExistsPred>) {
+                if (node.subquery && node.subquery->hasOuterRefs) {
+                    node.referencesOuter = true;
+                    if (nestedUnderCorrelated) {
+                        throw std::runtime_error(
+                            "multi-level correlated subqueries are not supported");
+                    }
+                }
+            } else if constexpr (std::is_same_v<T, ComparisonPred>) {
+                bool outer = refersToOuterTable(node.column, innerTable, outerTableStack_);
+                if (node.rhsColumn) {
+                    if (refersToOuterTable(*node.rhsColumn, innerTable, outerTableStack_) ||
+                        (!qualifier(*node.rhsColumn) && !outerTableStack_.empty())) {
+                        outer = true;
+                    }
+                }
+                if (outer) {
+                    if (nestedUnderCorrelated || outerTableStack_.size() > 1) {
+                        throw std::runtime_error(
+                            "multi-level correlated subqueries are not supported");
+                    }
+                    node.referencesOuter = true;
+                }
             }
-        }
-        return;
-    }
-
-    if (predicate.kind != Predicate::Kind::Comparison) {
-        return;
-    }
-
-    bool outer = false;
-    if (refersToOuterTable(predicate.column, innerTable, outerTableStack_)) {
-        outer = true;
-    }
-    if (predicate.rhsColumn) {
-        if (refersToOuterTable(*predicate.rhsColumn, innerTable, outerTableStack_)) {
-            outer = true;
-        } else if (!qualifier(*predicate.rhsColumn) && !outerTableStack_.empty()) {
-            // Unqualified RHS inside a subquery is an outer reference when a scope exists
-            // (shape: inner_col = outer_col).
-            outer = true;
-        }
-    }
-    if (!outer) {
-        return;
-    }
-    if (nestedUnderCorrelated || outerTableStack_.size() > 1) {
-        throw std::runtime_error("multi-level correlated subqueries are not supported");
-    }
-    predicate.referencesOuter = true;
+        },
+        predicate);
 }
 
 Value Parser::parseValue() {

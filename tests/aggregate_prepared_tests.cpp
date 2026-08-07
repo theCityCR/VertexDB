@@ -149,8 +149,9 @@ TEST(AggregatePreparedTests, PreparedStatementStoresTypedAstWithoutReparse) {
     ASSERT_TRUE(std::holds_alternative<Select>(*ast));
     const auto &select = std::get<Select>(*ast);
     ASSERT_TRUE(select.where.has_value());
-    EXPECT_TRUE(select.where->value.isParameter());
-    EXPECT_EQ(select.where->value.parameterIndex(), 0U);
+    const auto &comparison = std::get<ComparisonPred>(*select.where);
+    EXPECT_TRUE(comparison.value.isParameter());
+    EXPECT_EQ(comparison.value.parameterIndex(), 0U);
 
     auto result = executor.execute(parser.parse("EXECUTE by_id VALUES (1);"));
     ASSERT_TRUE(result.success);
@@ -236,13 +237,16 @@ TEST(AggregatePreparedTests, PreparedMultiParamBindAndArityRejection) {
     ASSERT_TRUE(std::holds_alternative<Select>(*ast));
     const auto &select = std::get<Select>(*ast);
     ASSERT_TRUE(select.where.has_value());
-    EXPECT_EQ(select.where->kind, Predicate::Kind::And);
-    ASSERT_TRUE(select.where->left);
-    ASSERT_TRUE(select.where->right);
-    EXPECT_TRUE(select.where->left->value.isParameter());
-    EXPECT_TRUE(select.where->right->value.isParameter());
-    EXPECT_EQ(select.where->left->value.parameterIndex(), 0U);
-    EXPECT_EQ(select.where->right->value.parameterIndex(), 1U);
+    EXPECT_EQ(predicateKind(*select.where), PredicateKind::And);
+    const auto &andPred = std::get<AndPred>(*select.where);
+    ASSERT_TRUE(andPred.left);
+    ASSERT_TRUE(andPred.right);
+    const auto &left = std::get<ComparisonPred>(*andPred.left);
+    const auto &right = std::get<ComparisonPred>(*andPred.right);
+    EXPECT_TRUE(left.value.isParameter());
+    EXPECT_TRUE(right.value.isParameter());
+    EXPECT_EQ(left.value.parameterIndex(), 0U);
+    EXPECT_EQ(right.value.parameterIndex(), 1U);
 
     auto ok = executor.execute(parser.parse("EXECUTE by_id_salary VALUES (1, 120000.0);"));
     ASSERT_TRUE(ok.success);
@@ -400,37 +404,35 @@ TEST(AggregatePreparedTests, SqlLiteralHelpersCoverNullDoubleAndEscapes) {
     EXPECT_EQ(sqlLiteral(Value{3.0}), "3.0");
     EXPECT_EQ(sqlLiteral(Value{std::string{"a\"b\\c"}}), "\"a\\\"b\\\\c\"");
 
-    Predicate comparison{"id", ComparisonOperator::Equal, Value{1}};
+    Predicate comparison = makeComparison("id", ComparisonOperator::Equal, Value{1});
     EXPECT_NE(predicateLiteral(comparison).find("id"), std::string::npos);
-    Predicate greater{"salary", ComparisonOperator::Greater, Value{1.0}};
+    Predicate greater = makeComparison("salary", ComparisonOperator::Greater, Value{1.0});
     EXPECT_NE(predicateLiteral(greater).find(">"), std::string::npos);
-    Predicate less{"salary", ComparisonOperator::Less, Value{1.0}};
+    Predicate less = makeComparison("salary", ComparisonOperator::Less, Value{1.0});
     EXPECT_NE(predicateLiteral(less).find("<"), std::string::npos);
 
     IndexExpression exprCmp;
     exprCmp.kind = IndexExpression::Kind::Negate;
     exprCmp.column = "salary";
-    auto exprPred =
-        Predicate::makeExpressionComparison(exprCmp, ComparisonOperator::Equal, Value{-1.0});
+    auto exprPred = makeExpressionComparison(exprCmp, ComparisonOperator::Equal, Value{-1.0});
     EXPECT_NE(predicateLiteral(exprPred).find("-salary"), std::string::npos);
 
     Predicate withRhs = comparison;
-    withRhs.rhsColumn = "other.id";
+    std::get<ComparisonPred>(withRhs).rhsColumn = "other.id";
     EXPECT_NE(predicateLiteral(withRhs).find("other.id"), std::string::npos);
 
-    Predicate inList{"id", {Value{1}, Value{2}}};
+    Predicate inList = makeInList("id", {Value{1}, Value{2}});
     EXPECT_NE(predicateLiteral(inList).find("IN"), std::string::npos);
 
     Select sub;
     sub.table = "Employees";
     sub.columns = {SelectExpr::makeColumn("id")};
-    Predicate inSub{"id", std::make_shared<Select>(sub)};
+    Predicate inSub = makeInSubquery("id", std::make_shared<Select>(sub));
     EXPECT_NE(predicateLiteral(inSub).find("IN (SELECT"), std::string::npos);
-    EXPECT_NE(predicateLiteral(Predicate::makeExists(std::make_shared<Select>(sub))).find("EXISTS"),
+    EXPECT_NE(predicateLiteral(makeExists(std::make_shared<Select>(sub))).find("EXISTS"),
               std::string::npos);
 
-    Predicate both{Predicate::Kind::And, std::make_shared<Predicate>(comparison),
-                   std::make_shared<Predicate>(inList)};
+    Predicate both = makeAnd(comparison, inList);
     EXPECT_NE(predicateLiteral(both).find("AND"), std::string::npos);
 
     CreateIndex index{"idx_id", "Employees", "id"};

@@ -16,8 +16,7 @@ std::optional<Predicate> andPredicates(std::optional<Predicate> left,
     if (!right) {
         return left;
     }
-    return Predicate{Predicate::Kind::And, std::make_shared<Predicate>(std::move(*left)),
-                     std::make_shared<Predicate>(std::move(*right))};
+    return makeAnd(std::move(*left), std::move(*right));
 }
 
 Select stripCtes(Select query) {

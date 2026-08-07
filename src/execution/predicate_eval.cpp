@@ -19,49 +19,50 @@ bool compareValues(const Value &left, ComparisonOperator op, const Value &right)
 }
 
 bool evalPredicate(const Predicate &predicate, const Row &row, const ColumnLookup &lookup) {
-    if (predicate.kind == Predicate::Kind::And) {
-        return evalPredicate(*predicate.left, row, lookup) &&
-               evalPredicate(*predicate.right, row, lookup);
-    }
-    if (predicate.kind == Predicate::Kind::Or) {
-        return evalPredicate(*predicate.left, row, lookup) ||
-               evalPredicate(*predicate.right, row, lookup);
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery) {
-        throw std::runtime_error("IN subquery must be materialized before evaluation");
-    }
-    if (predicate.kind == Predicate::Kind::Exists) {
-        throw std::runtime_error("EXISTS must be evaluated by the executor");
-    }
-
-    Value leftValue;
-    if (predicate.expression) {
-        leftValue = evaluateIndexExpression(*predicate.expression, row, lookup);
-    } else {
-        const auto index = lookup(predicate.column);
-        if (!index) {
-            throw std::runtime_error("unknown predicate column");
-        }
-        leftValue = row[*index];
-    }
-
-    if (predicate.kind == Predicate::Kind::InList) {
-        for (const auto &value : predicate.inValues) {
-            if (leftValue == value) {
-                return true;
+    return std::visit(
+        [&](const auto &node) -> bool {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred>) {
+                return evalPredicate(*node.left, row, lookup) &&
+                       evalPredicate(*node.right, row, lookup);
+            } else if constexpr (std::is_same_v<T, OrPred>) {
+                return evalPredicate(*node.left, row, lookup) ||
+                       evalPredicate(*node.right, row, lookup);
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                throw std::runtime_error("IN subquery must be materialized before evaluation");
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
+                throw std::runtime_error("EXISTS must be evaluated by the executor");
+            } else {
+                Value leftValue;
+                if (node.expression) {
+                    leftValue = evaluateIndexExpression(*node.expression, row, lookup);
+                } else {
+                    const auto index = lookup(node.column);
+                    if (!index) {
+                        throw std::runtime_error("unknown predicate column");
+                    }
+                    leftValue = row[*index];
+                }
+                if constexpr (std::is_same_v<T, InListPred>) {
+                    for (const auto &value : node.inValues) {
+                        if (leftValue == value) {
+                            return true;
+                        }
+                    }
+                    return false;
+                } else {
+                    if (node.rhsColumn) {
+                        const auto rightIndex = lookup(*node.rhsColumn);
+                        if (!rightIndex) {
+                            throw std::runtime_error("unknown predicate column");
+                        }
+                        return compareValues(leftValue, node.op, row[*rightIndex]);
+                    }
+                    return compareValues(leftValue, node.op, node.value);
+                }
             }
-        }
-        return false;
-    }
-
-    if (predicate.rhsColumn) {
-        const auto rightIndex = lookup(*predicate.rhsColumn);
-        if (!rightIndex) {
-            throw std::runtime_error("unknown predicate column");
-        }
-        return compareValues(leftValue, predicate.op, row[*rightIndex]);
-    }
-    return compareValues(leftValue, predicate.op, predicate.value);
+        },
+        predicate);
 }
 
 } // namespace VertexDB

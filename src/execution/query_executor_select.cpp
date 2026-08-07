@@ -137,95 +137,86 @@ SelectEngine::resolveProjectionFromNames(const Select &command,
 std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &table,
                                            const QueryPlan &plan) const {
     auto applyResidual = [&](std::vector<Row> rows) {
-        if (!plan.residual) {
+        if (!plan.residual()) {
             return rows;
         }
         std::vector<Row> filtered;
         filtered.reserve(rows.size());
         for (auto &row : rows) {
-            if (matches(row, table, *plan.residual)) {
+            if (matches(row, table, *plan.residual())) {
                 filtered.push_back(std::move(row));
             }
         }
         return filtered;
     };
 
-    if (plan.accessPath == AccessPath::HashIndexLookup) {
-        if (plan.indexExpression) {
-            if (auto rowIds = table.indexedLookup(*plan.indexExpression, plan.indexValue)) {
-                return applyResidual(rowsByIdForRead(table, *rowIds));
-            }
-            return {};
-        }
-        if (auto rowIds = table.indexedLookup(plan.indexColumn, plan.indexValue)) {
-            return applyResidual(rowsByIdForRead(table, *rowIds));
-        }
-        return {};
-    }
-    if (plan.accessPath == AccessPath::OrderedIndexRange) {
-        if (plan.indexExpression) {
-            if (auto rowIds = table.orderedLookup(*plan.indexExpression, plan.indexOp,
-                                                  plan.indexValue)) {
-                return applyResidual(rowsByIdForRead(table, *rowIds));
-            }
-            return {};
-        }
-        if (auto rowIds =
-                table.orderedLookup(plan.indexColumn, plan.indexOp, plan.indexValue)) {
-            return applyResidual(rowsByIdForRead(table, *rowIds));
-        }
-        return {};
-    }
-    if (plan.accessPath == AccessPath::HashIndexInLookup) {
-        std::vector<RowId> combined;
-        for (const auto &value : plan.indexValues) {
-            if (auto rowIds = table.indexedLookup(plan.indexColumn, value)) {
-                combined.insert(combined.end(), rowIds->begin(), rowIds->end());
-            }
-        }
-        return applyResidual(rowsByIdForRead(table, combined));
-    }
-    if (plan.accessPath == AccessPath::MultiIndexIntersect) {
-        if (plan.intersectProbes.empty()) {
-            return {};
-        }
-        std::optional<std::vector<RowId>> intersection;
-        for (const auto &probe : plan.intersectProbes) {
-            std::optional<std::vector<RowId>> rowIds;
-            if (probe.expression) {
-                rowIds = table.indexedLookup(*probe.expression, probe.value);
+    return std::visit(
+        [&](const auto &path) -> std::vector<Row> {
+            using T = std::decay_t<decltype(path)>;
+            if constexpr (std::is_same_v<T, HashEqPlan>) {
+                auto rowIds = path.indexExpression
+                                  ? table.indexedLookup(*path.indexExpression, path.indexValue)
+                                  : table.indexedLookup(path.indexColumn, path.indexValue);
+                return rowIds ? applyResidual(rowsByIdForRead(table, *rowIds))
+                              : std::vector<Row>{};
+            } else if constexpr (std::is_same_v<T, OrderedRangePlan>) {
+                auto rowIds =
+                    path.indexExpression
+                        ? table.orderedLookup(*path.indexExpression, path.indexOp, path.indexValue)
+                        : table.orderedLookup(path.indexColumn, path.indexOp, path.indexValue);
+                return rowIds ? applyResidual(rowsByIdForRead(table, *rowIds))
+                              : std::vector<Row>{};
+            } else if constexpr (std::is_same_v<T, HashInPlan>) {
+                std::vector<RowId> combined;
+                for (const auto &value : path.indexValues) {
+                    auto rowIds = path.indexExpression
+                                      ? table.indexedLookup(*path.indexExpression, value)
+                                      : table.indexedLookup(path.indexColumn, value);
+                    if (rowIds) {
+                        combined.insert(combined.end(), rowIds->begin(), rowIds->end());
+                    }
+                }
+                return applyResidual(rowsByIdForRead(table, combined));
+            } else if constexpr (std::is_same_v<T, IntersectPlan>) {
+                if (path.intersectProbes.empty()) {
+                    return {};
+                }
+                std::optional<std::vector<RowId>> intersection;
+                for (const auto &probe : path.intersectProbes) {
+                    auto rowIds = probe.expression
+                                      ? table.indexedLookup(*probe.expression, probe.value)
+                                      : table.indexedLookup(probe.column, probe.value);
+                    if (!rowIds) {
+                        return {};
+                    }
+                    std::sort(rowIds->begin(), rowIds->end());
+                    if (!intersection) {
+                        intersection = std::move(*rowIds);
+                        continue;
+                    }
+                    std::vector<RowId> next;
+                    next.reserve(std::min(intersection->size(), rowIds->size()));
+                    std::set_intersection(intersection->begin(), intersection->end(),
+                                          rowIds->begin(), rowIds->end(),
+                                          std::back_inserter(next));
+                    intersection = std::move(next);
+                    if (intersection->empty()) {
+                        return {};
+                    }
+                }
+                return applyResidual(rowsByIdForRead(table, *intersection));
             } else {
-                rowIds = table.indexedLookup(probe.column, probe.value);
+                std::vector<Row> rows;
+                const auto snapshot = rowsSnapshotForRead(table);
+                for (const auto &row : snapshot) {
+                    if (!command.where || matches(row, table, *command.where)) {
+                        rows.push_back(row);
+                    }
+                }
+                return rows;
             }
-            if (!rowIds) {
-                return {};
-            }
-            std::sort(rowIds->begin(), rowIds->end());
-            if (!intersection) {
-                intersection = std::move(*rowIds);
-                continue;
-            }
-            std::vector<RowId> next;
-            next.reserve(std::min(intersection->size(), rowIds->size()));
-            std::set_intersection(intersection->begin(), intersection->end(), rowIds->begin(),
-                                  rowIds->end(), std::back_inserter(next));
-            intersection = std::move(next);
-            if (intersection->empty()) {
-                return {};
-            }
-        }
-        return applyResidual(rowsByIdForRead(table, *intersection));
-    }
-
-    std::vector<Row> rows;
-    const auto snapshot = rowsSnapshotForRead(table);
-    for (const auto &row : snapshot) {
-        if (command.where && !matches(row, table, *command.where)) {
-            continue;
-        }
-        rows.push_back(row);
-    }
-    return rows;
+        },
+        plan.path);
 }
 
 QueryResult SelectEngine::finalizeSelectResult(const Select &command,
@@ -372,66 +363,62 @@ QueryResult SelectEngine::executeJoinSelect(const Select &command) {
 }
 
 bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &predicate) const {
-    if (predicate.kind == Predicate::Kind::And) {
-        return matches(row, table, *predicate.left) && matches(row, table, *predicate.right);
-    }
-    if (predicate.kind == Predicate::Kind::Or) {
-        return matches(row, table, *predicate.left) || matches(row, table, *predicate.right);
-    }
-    if (predicate.kind == Predicate::Kind::Exists) {
-        if (!predicate.subquery) {
-            throw std::runtime_error("EXISTS subquery is missing");
-        }
-        if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
-            const Select bound =
-                owner_.subqueryRuntime_.bindOuterReferences(*predicate.subquery, row, table);
-            return owner_.subqueryRuntime_.evaluateExists(bound);
-        }
-        return owner_.subqueryRuntime_.evaluateExists(*predicate.subquery);
-    }
-    if (predicate.kind == Predicate::Kind::InSubquery) {
-        if (!predicate.subquery) {
-            throw std::runtime_error("IN subquery is missing");
-        }
-        std::vector<Value> values;
-        if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
-            const Select bound =
-                owner_.subqueryRuntime_.bindOuterReferences(*predicate.subquery, row, table);
-            values = owner_.subqueryRuntime_.evaluateSubqueryValues(bound);
-        } else {
-            values = owner_.subqueryRuntime_.evaluateSubqueryValues(*predicate.subquery);
-        }
-        const auto index = table.columnIndex(predicate.column);
-        if (!index) {
-            throw std::runtime_error("unknown predicate column");
-        }
-        for (const auto &value : values) {
-            if (row[*index] == value) {
-                return true;
+    return std::visit(
+        [&](const auto &node) -> bool {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred>) {
+                return matches(row, table, *node.left) && matches(row, table, *node.right);
+            } else if constexpr (std::is_same_v<T, OrPred>) {
+                return matches(row, table, *node.left) || matches(row, table, *node.right);
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
+                if (!node.subquery) {
+                    throw std::runtime_error("EXISTS subquery is missing");
+                }
+                if (node.referencesOuter || node.subquery->hasOuterRefs) {
+                    const Select bound =
+                        owner_.subqueryRuntime_.bindOuterReferences(*node.subquery, row, table);
+                    return owner_.subqueryRuntime_.evaluateExists(bound);
+                }
+                return owner_.subqueryRuntime_.evaluateExists(*node.subquery);
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                if (!node.subquery) {
+                    throw std::runtime_error("IN subquery is missing");
+                }
+                const Select *subquery = node.subquery.get();
+                std::optional<Select> bound;
+                if (node.referencesOuter || node.subquery->hasOuterRefs) {
+                    bound = owner_.subqueryRuntime_.bindOuterReferences(*node.subquery, row, table);
+                    subquery = &*bound;
+                }
+                const auto values = owner_.subqueryRuntime_.evaluateSubqueryValues(*subquery);
+                const auto index = table.columnIndex(node.column);
+                if (!index) {
+                    throw std::runtime_error("unknown predicate column");
+                }
+                return std::find(values.begin(), values.end(), row[*index]) != values.end();
+            } else {
+                return evalPredicate(predicate, row, [&](std::string_view column) {
+                    auto index = table.columnIndex(column);
+                    if (index) {
+                        return index;
+                    }
+                    const auto dot = column.find('.');
+                    if (dot != std::string_view::npos &&
+                        equalsIgnoreCase(column.substr(0, dot), table.name())) {
+                        return table.columnIndex(column.substr(dot + 1));
+                    }
+                    return std::optional<std::size_t>{};
+                });
             }
-        }
-        return false;
-    }
-    return evalPredicate(predicate, row, [&](std::string_view column) {
-        auto index = table.columnIndex(column);
-        if (index) {
-            return index;
-        }
-        // Allow table.column against the current table schema.
-        const auto dot = column.find('.');
-        if (dot != std::string_view::npos &&
-            equalsIgnoreCase(column.substr(0, dot), table.name())) {
-            return table.columnIndex(column.substr(dot + 1));
-        }
-        return std::optional<std::size_t>{};
-    });
+        },
+        predicate);
 }
 
 QueryPlan SelectEngine::planPreparedSelect(const Select &command, const Table &table,
                                            const RewriteResult &rewrite) const {
     auto plan = owner_.planner_.planSelect(command, table);
     for (const auto &note : rewrite.notes) {
-        plan.notes.push_back(note);
+        plan.estimates.notes.push_back(note);
     }
     return plan;
 }
