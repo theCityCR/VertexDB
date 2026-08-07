@@ -637,4 +637,46 @@ TEST(PersistenceBehaviorTests, LoadDatabaseWithoutNameReloadsActiveDatabase) {
     EXPECT_EQ(result.rows[0][0], Value{1});
 }
 
+TEST(PersistenceBehaviorTests, LoadFirstDatabaseAndMetadataHelpers) {
+    const auto root = tempRoot("load-first-meta");
+    std::filesystem::remove_all(root);
+    StorageManager storage{root};
+
+    EXPECT_FALSE(storage.metadataExists("company"));
+    EXPECT_THROW(storage.loadFirstDatabase(), std::runtime_error);
+
+    std::filesystem::create_directories(root);
+    EXPECT_THROW(storage.loadFirstDatabase(), std::runtime_error);
+
+    Database database{"company"};
+    ASSERT_TRUE(database.createTable("Employees", {{"id", ColumnType::Int}}));
+    auto table = database.table("Employees");
+    (void)table->insert({Value{static_cast<std::int64_t>(7)}});
+    storage.saveDatabase(database);
+
+    EXPECT_TRUE(storage.metadataExists("company"));
+    EXPECT_FALSE(storage.metadataExists("missing"));
+    auto loaded = storage.loadFirstDatabase();
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->name(), "company");
+    ASSERT_NE(loaded->table("Employees"), nullptr);
+    EXPECT_EQ(loaded->table("Employees")->rowCount(), 1U);
+
+    // Executor starts with no active DB, then LOAD without a name uses loadFirstDatabase.
+    const auto anonRoot = tempRoot("load-anon");
+    std::filesystem::remove_all(anonRoot);
+    QueryExecutor blank{anonRoot};
+    StorageManager anonStorage{anonRoot};
+    anonStorage.saveDatabase(database);
+    Parser parser;
+    ASSERT_TRUE(blank.execute(parser.parse("LOAD DATABASE;")).success);
+    auto result = blank.execute(parser.parse("SELECT id FROM Employees;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(7)});
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(anonRoot);
+}
+
 } // namespace VertexDB
