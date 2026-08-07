@@ -205,6 +205,33 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                     }
                 }
                 return applyResidual(rowsByIdForRead(table, *intersection));
+            } else if constexpr (std::is_same_v<T, UnionPlan>) {
+                if (path.unionProbes.empty()) {
+                    return {};
+                }
+                std::optional<std::vector<RowId>> unified;
+                for (const auto &probe : path.unionProbes) {
+                    auto rowIds = probe.expression
+                                      ? table.indexedLookup(*probe.expression, probe.value)
+                                      : table.indexedLookup(probe.column, probe.value);
+                    if (!rowIds) {
+                        continue;
+                    }
+                    std::sort(rowIds->begin(), rowIds->end());
+                    if (!unified) {
+                        unified = std::move(*rowIds);
+                        continue;
+                    }
+                    std::vector<RowId> next;
+                    next.reserve(unified->size() + rowIds->size());
+                    std::set_union(unified->begin(), unified->end(), rowIds->begin(), rowIds->end(),
+                                   std::back_inserter(next));
+                    unified = std::move(next);
+                }
+                if (!unified) {
+                    return {};
+                }
+                return applyResidual(rowsByIdForRead(table, *unified));
             } else {
                 std::vector<Row> rows;
                 const auto snapshot = rowsSnapshotForRead(table);

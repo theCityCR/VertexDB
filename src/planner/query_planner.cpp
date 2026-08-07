@@ -23,6 +23,15 @@ void collectAndConjuncts(const Predicate &predicate, std::vector<const Predicate
     out.push_back(&predicate);
 }
 
+void collectOrDisjuncts(const Predicate &predicate, std::vector<const Predicate *> &out) {
+    if (const auto *orPred = std::get_if<OrPred>(&predicate)) {
+        collectOrDisjuncts(*orPred->left, out);
+        collectOrDisjuncts(*orPred->right, out);
+        return;
+    }
+    out.push_back(&predicate);
+}
+
 std::optional<Predicate> buildAndTree(const std::vector<const Predicate *> &conjuncts) {
     if (conjuncts.empty()) {
         return std::nullopt;
@@ -197,8 +206,10 @@ AccessPath QueryPlan::accessPath() const {
                 return AccessPath::OrderedIndexRange;
             } else if constexpr (std::is_same_v<T, HashInPlan>) {
                 return AccessPath::HashIndexInLookup;
-            } else {
+            } else if constexpr (std::is_same_v<T, IntersectPlan>) {
                 return AccessPath::MultiIndexIntersect;
+            } else {
+                return AccessPath::MultiIndexUnion;
             }
         },
         path);
@@ -215,10 +226,53 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
         return plan;
     }
 
-    // OR trees are not split for indexing in v1.
+    // Top-level OR: union equality index probes when every disjunct is indexable.
     if (std::holds_alternative<OrPred>(*query.where)) {
-        plan.estimates.residual = query.where;
-        plan.estimates.explanation = "full table scan (OR predicate)";
+        std::vector<const Predicate *> disjuncts;
+        collectOrDisjuncts(*query.where, disjuncts);
+        const bool allEquality =
+            !disjuncts.empty() &&
+            std::all_of(disjuncts.begin(), disjuncts.end(), [&](const Predicate *pred) {
+                return isEqualityIndexProbe(*pred, indexes);
+            });
+        if (!allEquality) {
+            plan.estimates.residual = query.where;
+            plan.estimates.explanation = "full table scan (OR predicate)";
+            return plan;
+        }
+
+        // Independence: N * (1 - Π(1 - s_i)) with s_i ≈ 1/D_i.
+        const double N =
+            static_cast<double>(std::max<std::size_t>(plan.estimates.estimatedRows, 1));
+        double missProduct = 1.0;
+        for (const Predicate *pred : disjuncts) {
+            const double fanout = equalityFanout(*pred, stats, indexes, plan.estimates.estimatedRows);
+            const double selectivity = std::clamp(fanout / N, 0.0, 1.0);
+            missProduct *= 1.0 - selectivity;
+        }
+        const double unionCost = std::max(N * (1.0 - missProduct), 1.0);
+        if (!(unionCost < plan.estimates.estimatedCost)) {
+            plan.estimates.residual = query.where;
+            plan.estimates.explanation = "full table scan (OR predicate)";
+            return plan;
+        }
+
+        UnionPlan unionPlan;
+        unionPlan.unionProbes.reserve(disjuncts.size());
+        std::ostringstream labels;
+        for (const Predicate *pred : disjuncts) {
+            auto probe = makeEqualityProbe(*pred);
+            if (!labels.str().empty()) {
+                labels << ", ";
+            }
+            labels << probeLabel(probe);
+            unionPlan.unionProbes.push_back(std::move(probe));
+        }
+        plan.path = std::move(unionPlan);
+        plan.estimates.estimatedCost = unionCost;
+        plan.estimates.estimatedRows = rowsFromCost(unionCost, stats.rowCount());
+        plan.estimates.explanation = "multi-index union on " + labels.str();
+        plan.estimates.residual = std::nullopt;
         return plan;
     }
 

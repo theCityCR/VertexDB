@@ -158,8 +158,7 @@ TEST(PlannerBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
     EXPECT_EQ(result.rows[0][0], Value{"Bob"});
 }
 
-TEST(PlannerBehaviorTests, OrPredicateFullScanIsDocumentedLimitation) {
-    // Intentional v1 limitation (docs/sql.md): OR is not split for indexing.
+TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesMultiIndexUnion) {
     Table table{"Employees", {{"id", ColumnType::Int}}};
     table.insert({Value{1}});
     table.insert({Value{2}});
@@ -171,8 +170,10 @@ TEST(PlannerBehaviorTests, OrPredicateFullScanIsDocumentedLimitation) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, orPredicate, {}, {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
-    EXPECT_NE(plan.estimates.explanation.find("OR predicate"), std::string::npos);
+    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
+    EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
+    EXPECT_FALSE(plan.residual().has_value());
 
     Parser parser;
     auto executor = makeExecutor("or-explain");
@@ -180,8 +181,9 @@ TEST(PlannerBehaviorTests, OrPredicateFullScanIsDocumentedLimitation) {
     auto explain = executor.execute(
         parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1 OR id = 2;"));
     ASSERT_TRUE(explain.success);
-    EXPECT_NE(explain.rows.front().front().toString().find("full table scan (OR predicate)"),
+    EXPECT_NE(explain.rows.front().front().toString().find("multi-index union on"),
               std::string::npos);
+    EXPECT_NE(explain.rows.front().front().toString().find("residual: no"), std::string::npos);
 }
 
 TEST(PlannerBehaviorTests, InSubqueryFallsBackToScanWhenOuterColumnUnindexed) {
@@ -430,7 +432,7 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
     EXPECT_NE(plan.estimates.explanation.find("b"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrIndexUnionRemainsDocumentedLimitation) {
+TEST(PlannerBehaviorTests, TopLevelOrIndexUnionAcrossColumns) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
     for (int i = 1; i <= 20; ++i) {
         table.insert({Value{i}, Value{i % 2}});
@@ -443,8 +445,84 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionRemainsDocumentedLimitation) {
                makeComparison("dept", ComparisonOperator::Equal, Value{0}));
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
+    EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("id"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("dept"), std::string::npos);
+    EXPECT_FALSE(plan.residual().has_value());
+}
+
+TEST(PlannerBehaviorTests, TopLevelOrIndexUnionReturnsRowsMatchingAnyProbe) {
+    auto executor = makeExecutor("multi-index-union-result");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, 9, \"only-dept\"), (2, 9, 1, \"only-city\"), "
+                        "(3, 1, 1, \"both\"), (4, 0, 0, \"neither\");"))
+                    .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE dept = 1 OR city = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index union on"), std::string::npos);
+    EXPECT_NE(text.find("dept"), std::string::npos);
+    EXPECT_NE(text.find("city"), std::string::npos);
+
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE dept = 1 OR city = 1 ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 3U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"both"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"only-city"}});
+    EXPECT_EQ(result.rows[2][0], Value{std::string{"only-dept"}});
+}
+
+TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctFallsBackToScan) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    for (int i = 1; i <= 10; ++i) {
+        table.insert({Value{i}, Value{"n" + std::to_string(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    Predicate where =
+        makeOr(makeComparison("id", ComparisonOperator::Equal, Value{1}),
+               makeComparison("name", ComparisonOperator::Equal, Value{std::string{"n2"}}));
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
-    EXPECT_NE(plan.estimates.explanation.find("OR"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("OR predicate"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, TopLevelOrIndexUnionIncludesExpressionEquality) {
+    Table table{"Employees", {{"a", ColumnType::Int}, {"b", ColumnType::Int}, {"name", ColumnType::String}}};
+    for (int i = 1; i <= 100; ++i) {
+        table.insert({Value{i % 10}, Value{i % 10}, Value{"n" + std::to_string(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_a", "a"));
+    IndexExpression bPlus;
+    bPlus.kind = IndexExpression::Kind::Add;
+    bPlus.column = "b";
+    bPlus.literal = Value{0};
+    ASSERT_TRUE(table.createIndex("idx_b_plus", bPlus));
+
+    Predicate where =
+        makeOr(makeComparison("a", ComparisonOperator::Equal, Value{1}),
+               makeExpressionComparison(bPlus, ComparisonOperator::Equal, Value{2}));
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::MultiIndexUnion);
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
+    EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
 }
 
 TEST(PlannerBehaviorTests, MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes) {

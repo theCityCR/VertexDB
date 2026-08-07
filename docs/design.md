@@ -30,8 +30,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
 - Transactions: commit-aware MVCC snapshot isolation, undo-log DML rollback, transaction-batched
   page-image WAL flush on `COMMIT`
-- Planner: cost-based access paths (including multi-index AND intersect), residual filters, join
-  algorithm selection, expression-index matching, and `EXPLAIN`
+- Planner: cost-based access paths (including multi-index AND intersect and top-level OR union),
+  residual filters, join algorithm selection, expression-index matching, and `EXPLAIN`
 - Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks, CI
 
 ## Known Limitations
@@ -39,8 +39,10 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Schema changes, index creation, and save/load are rejected inside an open transaction.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
   `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
-- Top-level `OR` predicates force a full scan (no index union yet). Nested `OR` under `AND` may
-  remain as a residual while another conjunct uses an index.
+- Top-level `OR` of equality (or expression-equality) index probes uses multi-index union when
+  every disjunct is indexable and cheaper than a full scan. Mixed/non-indexable top-level `OR`
+  still forces a full scan. Nested `OR` under `AND` may remain as a residual while another
+  conjunct uses an index.
 - Nested SQL is limited: no nested `WITH`, no multi-level correlated subqueries, no outer `JOIN`
   against a CTE/derived alias, no `JOIN` inside `IN`/`EXISTS` subqueries, and no regex/substring
   indexes. Single-level correlation and expression indexes (`column`, `-column`, `column+/-literal`)
@@ -50,8 +52,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-1. Top-level `OR` index union (or documented cost model for partial OR indexing).
-2. Deeper correlation / nested `WITH` where it fits the educational scope.
+1. Deeper correlation / nested `WITH` where it fits the educational scope.
+2. Partial top-level `OR` indexing (union indexable arms + residual for the rest), or a documented
+   cost model that keeps mixed `OR` on a full scan.
 3. Keep benchmark reports current as planner and storage change ([benchmarks.md](benchmarks.md)).
 
 CTE inlining so outer predicates hit base-table indexes is packaged as a demo wedge: see

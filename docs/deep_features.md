@@ -102,10 +102,12 @@ When ≥2 indexable equality conjuncts exist, the planner estimates intersection
 (\(N \cdot \prod 1/D_i\)) and chooses `MultiIndexIntersect` when that cost beats the best single
 index path. Tie-breaks still prefer any index over a full scan and equality over range/`IN` when
 costs match. For non-intersect `AND` plans the cheapest indexable conjunct drives the access path;
-remaining conjuncts become a residual filter. Top-level `OR` predicates remain full scans (no index
-union); an `OR` nested under `AND` may stay as a residual while another conjunct uses an index.
-`EXPLAIN` surfaces the chosen path (including intersected columns), residual status, `est_rows` /
-`cost`, and rewrite notes such as CTE inlining.
+remaining conjuncts become a residual filter. Top-level `OR` of equality index probes estimates
+union under independence (\(N \cdot (1 - \prod(1 - 1/D_i))\)) and chooses `MultiIndexUnion` when
+that cost beats a full scan and every disjunct is indexable. Mixed top-level `OR` remains a full
+scan; an `OR` nested under `AND` may stay as a residual while another conjunct uses an index.
+`EXPLAIN` surfaces the chosen path (including intersected or unioned columns), residual status,
+`est_rows` / `cost`, and rewrite notes such as CTE inlining.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe, including
 per-join planning for left-deep multi-join chains.

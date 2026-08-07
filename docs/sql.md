@@ -78,8 +78,10 @@ selectivity or \(N/3\), `IN` â‰ˆ histogram ndistinct or \(K\cdot N/D\)). When â‰
 expression-equality) conjuncts are indexed and their estimated intersection is cheaper than a single
 index + residual, the planner chooses a multi-index intersect of sorted `RowId` lists; `EXPLAIN`
 lists the intersected columns. Remaining conjuncts evaluate as a residual filter. Top-level `OR`
-predicates still force a full scan (no index union); an `OR` nested under `AND` may remain as a
-residual while another conjunct uses an index.
+of equality (or expression-equality) index probes uses a multi-index union of sorted `RowId` lists
+when every disjunct is indexable and cheaper than a full scan; `EXPLAIN` lists the unioned
+columns. Mixed or non-indexable top-level `OR` still forces a full scan. An `OR` nested under
+`AND` may remain as a residual while another conjunct uses an index.
 
 `WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use
 base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into an ephemeral table

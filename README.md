@@ -112,8 +112,8 @@ Or feed an example script:
   durable prefix
 - Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
-  for range/`IN` selectivity; multi-index AND intersection is supported. Top-level `OR` index
-  unions are not implemented
+  for range/`IN` selectivity; multi-index AND intersection and top-level equality `OR` union are
+  supported. Mixed/non-indexable top-level `OR` still scans
 - Nested SQL is intentionally limited: no nested `WITH`, multi-level correlation, outer `JOIN`
   against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS` subqueries; expression indexes cover
   column / unary minus / `+/-` literal only (no regex/substring indexes)
@@ -124,7 +124,8 @@ Or feed an example script:
 
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
-aggregates and multi-join, histograms / multi-index AND, and documented benchmarks.
+aggregates and multi-join, histograms / multi-index AND and top-level OR union, and documented
+benchmarks.
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).
