@@ -16,6 +16,7 @@ SubqueryRuntime::SubqueryRuntime(QueryExecutor &owner) noexcept : owner_(owner) 
 Select SubqueryRuntime::prepareSelect(const Select &command, RewriteResult &rewrite) const {
     rewrite = rewriteSelect(command);
     Select prepared = rewrite.query;
+    normalizeSelectScopeQualifiers(prepared);
     if (prepared.where) {
         prepared.where = materializePredicate(*prepared.where);
     }
@@ -116,9 +117,10 @@ namespace {
     return name.substr(0, dot);
 }
 
-[[nodiscard]] bool refersToCurrentOuter(std::string_view column, const Table &outerTable) {
+[[nodiscard]] bool refersToCurrentOuter(std::string_view column, const Table &outerTable,
+                                        std::string_view outerScope) {
     if (const auto table = qualifier(column)) {
-        return equalsIgnoreCase(*table, outerTable.name());
+        return equalsIgnoreCase(*table, outerScope) || equalsIgnoreCase(*table, outerTable.name());
     }
     return outerTable.columnIndex(unqualifiedName(column)).has_value();
 }
@@ -135,20 +137,22 @@ namespace {
 } // namespace
 
 Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
-                                               const Table &outerTable) const {
+                                               const Table &outerTable,
+                                               std::string_view outerScope) const {
     return std::visit(
         [&](const auto &node) -> Predicate {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, AndPred>) {
-                return makeAnd(bindOuterReferences(*node.left, outerRow, outerTable),
-                               bindOuterReferences(*node.right, outerRow, outerTable));
+                return makeAnd(bindOuterReferences(*node.left, outerRow, outerTable, outerScope),
+                               bindOuterReferences(*node.right, outerRow, outerTable, outerScope));
             } else if constexpr (std::is_same_v<T, OrPred>) {
-                return makeOr(bindOuterReferences(*node.left, outerRow, outerTable),
-                              bindOuterReferences(*node.right, outerRow, outerTable));
+                return makeOr(bindOuterReferences(*node.left, outerRow, outerTable, outerScope),
+                              bindOuterReferences(*node.right, outerRow, outerTable, outerScope));
             } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
                 InSubqueryPred bound = node;
                 if (bound.subquery) {
-                    auto sub = bindOuterReferences(*bound.subquery, outerRow, outerTable);
+                    auto sub =
+                        bindOuterReferences(*bound.subquery, outerRow, outerTable, outerScope);
                     bound.referencesOuter = sub.hasOuterRefs;
                     bound.subquery = std::make_shared<Select>(std::move(sub));
                 } else {
@@ -158,7 +162,8 @@ Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const
             } else if constexpr (std::is_same_v<T, ExistsPred>) {
                 ExistsPred bound = node;
                 if (bound.subquery) {
-                    auto sub = bindOuterReferences(*bound.subquery, outerRow, outerTable);
+                    auto sub =
+                        bindOuterReferences(*bound.subquery, outerRow, outerTable, outerScope);
                     bound.referencesOuter = sub.hasOuterRefs;
                     bound.subquery = std::make_shared<Select>(std::move(sub));
                 } else {
@@ -168,7 +173,7 @@ Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const
             } else if constexpr (std::is_same_v<T, ComparisonPred>) {
                 ComparisonPred bound = node;
                 if (node.rhsColumn && node.referencesOuter &&
-                    refersToCurrentOuter(*node.rhsColumn, outerTable)) {
+                    refersToCurrentOuter(*node.rhsColumn, outerTable, outerScope)) {
                     bound.rhsColumn.reset();
                     bound.value = outerColumnValue(*node.rhsColumn, outerRow, outerTable);
                     bound.referencesOuter = false;
@@ -185,16 +190,37 @@ Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const
 }
 
 Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &outerRow,
-                                            const Table &outerTable) const {
+                                            const Table &outerTable,
+                                            std::string_view outerScope) const {
     Select bound = subquery;
     bound.hasOuterRefs = false;
+    for (auto &cte : bound.ctes) {
+        if (!cte.body) {
+            continue;
+        }
+        auto body = bindOuterReferences(*cte.body, outerRow, outerTable, outerScope);
+        if (body.hasOuterRefs) {
+            bound.hasOuterRefs = true;
+        }
+        cte.body = std::make_shared<Select>(std::move(body));
+    }
     if (bound.where) {
-        bound.where = bindOuterReferences(*bound.where, outerRow, outerTable);
+        bound.where = bindOuterReferences(*bound.where, outerRow, outerTable, outerScope);
         if (predicateReferencesOuter(*bound.where)) {
             bound.hasOuterRefs = true;
         }
     }
     return bound;
+}
+
+Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &outerRow,
+                                            const Table &outerTable) const {
+    return bindOuterReferences(subquery, outerRow, outerTable, outerTable.name());
+}
+
+Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
+                                               const Table &outerTable) const {
+    return bindOuterReferences(predicate, outerRow, outerTable, outerTable.name());
 }
 
 std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const std::string &name,

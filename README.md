@@ -95,7 +95,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 166 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 171 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
@@ -118,9 +118,9 @@ Or feed an example script:
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
 - Nested SQL is intentionally limited: nested `WITH` deeper than one level, correlation deeper than
-  two outer frames, outer `JOIN` against a CTE/derived alias, or `JOIN`/`WITH` inside `IN`/`EXISTS`
+  two outer frames, outer `JOIN` against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS`
   subqueries; expression indexes cover column / unary minus / `+/-` literal only (no regex/substring
-  indexes)
+  indexes). `FROM` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are supported.
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep equi-join chains only (no outer/cross joins)
 

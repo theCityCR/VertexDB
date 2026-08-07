@@ -15,7 +15,7 @@ VertexDB uses three levels of automated testing:
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
 | `index_tests.cpp` | Hash / B+ tree unit behavior |
 | `execution_tests.cpp` | End-to-end DML/SELECT smoke and concurrency |
-| `nested_sql_tests.cpp` | CTE/derived inlining, nested `WITH`, two-level correlated `IN`/`EXISTS`, refusals |
+| `nested_sql_tests.cpp` | CTE/derived inlining, nested `WITH`, aliases, `WITH` in `IN`/`EXISTS`, correlation, refusals |
 | `planner_behavior_tests.cpp` | Access paths, residuals, stats/cost, multi-index intersect/union, `EXPLAIN` |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK, MVCC visibility, deferred WAL |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
@@ -29,7 +29,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 166 discovered GoogleTest cases across the files above.
+The current suite contains 171 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

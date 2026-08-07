@@ -36,6 +36,10 @@ void sortRowsByColumn(std::vector<Row> &rows, std::size_t columnIndex, bool asce
 
 void validateAggregation(const Select &command);
 
+// Strip FROM-scope qualifiers (`e.id` → `id`) using the select's table / alias so planning and
+// execution see bare column names. Qualifiers that name an outer scope are left intact.
+void normalizeSelectScopeQualifiers(Select &select);
+
 [[nodiscard]] QueryResult aggregateRows(const Select &command, const std::vector<std::string> &sourceColumns,
                                         std::vector<Row> rows);
 

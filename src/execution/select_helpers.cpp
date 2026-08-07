@@ -1,8 +1,12 @@
 #include "VertexDB/execution/select_helpers.hpp"
 
+#include "VertexDB/common/string_utils.hpp"
+#include "VertexDB/parser/predicate.hpp"
+
 #include <algorithm>
 #include <map>
 #include <stdexcept>
+#include <type_traits>
 
 namespace VertexDB {
 namespace {
@@ -187,6 +191,124 @@ QueryResult messageResult(bool success, std::string message) {
     result.success = success;
     result.message = std::move(message);
     return result;
+}
+
+namespace {
+
+[[nodiscard]] std::string_view unqualifiedColumn(std::string_view name) {
+    const auto dot = name.rfind('.');
+    if (dot == std::string_view::npos) {
+        return name;
+    }
+    return name.substr(dot + 1);
+}
+
+[[nodiscard]] std::optional<std::string_view> columnQualifier(std::string_view name) {
+    const auto dot = name.find('.');
+    if (dot == std::string_view::npos) {
+        return std::nullopt;
+    }
+    return name.substr(0, dot);
+}
+
+void stripLocalQualifier(std::string &name, std::string_view scope, std::string_view table,
+                         bool stripTableName) {
+    if (const auto qual = columnQualifier(name)) {
+        if (equalsIgnoreCase(*qual, scope) ||
+            (stripTableName && equalsIgnoreCase(*qual, table))) {
+            name = std::string{unqualifiedColumn(name)};
+        }
+    }
+}
+
+void normalizePredicateScopeQualifiers(Predicate &predicate, std::string_view scope,
+                                       std::string_view table, bool stripTableName);
+
+void normalizePredicateScopeQualifiers(Predicate &predicate, std::string_view scope,
+                                       std::string_view table, bool stripTableName) {
+    std::visit(
+        [&](auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                normalizePredicateScopeQualifiers(*node.left, scope, table, stripTableName);
+                normalizePredicateScopeQualifiers(*node.right, scope, table, stripTableName);
+            } else if constexpr (std::is_same_v<T, ComparisonPred>) {
+                stripLocalQualifier(node.column, scope, table, stripTableName);
+                if (node.rhsColumn) {
+                    stripLocalQualifier(*node.rhsColumn, scope, table, stripTableName);
+                }
+            } else if constexpr (std::is_same_v<T, InListPred>) {
+                stripLocalQualifier(node.column, scope, table, stripTableName);
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                stripLocalQualifier(node.column, scope, table, stripTableName);
+                if (node.subquery) {
+                    normalizeSelectScopeQualifiers(*node.subquery);
+                }
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
+                if (node.subquery) {
+                    normalizeSelectScopeQualifiers(*node.subquery);
+                }
+            }
+        },
+        predicate);
+}
+
+void normalizeNestedSelectsInPredicate(Predicate &predicate) {
+    std::visit(
+        [&](auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                normalizeNestedSelectsInPredicate(*node.left);
+                normalizeNestedSelectsInPredicate(*node.right);
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                if (node.subquery) {
+                    normalizeSelectScopeQualifiers(*node.subquery);
+                }
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
+                if (node.subquery) {
+                    normalizeSelectScopeQualifiers(*node.subquery);
+                }
+            }
+        },
+        predicate);
+}
+
+} // namespace
+
+void normalizeSelectScopeQualifiers(Select &select) {
+    for (auto &cte : select.ctes) {
+        if (cte.body) {
+            normalizeSelectScopeQualifiers(*cte.body);
+        }
+    }
+
+    // Only rewrite alias-qualified names (`e.id`). Never strip the physical table qualifier on
+    // join queries (`Employees.id` must stay distinct from `Departments.id`).
+    if (select.tableAlias) {
+        const std::string_view scope = *select.tableAlias;
+        const bool stripTableName = select.joins.empty();
+        for (auto &expr : select.columns) {
+            if (expr.kind == SelectExpr::Kind::Column) {
+                stripLocalQualifier(expr.column, scope, select.table, stripTableName);
+            } else if (expr.kind == SelectExpr::Kind::Aggregate && expr.aggregateArg) {
+                stripLocalQualifier(*expr.aggregateArg, scope, select.table, stripTableName);
+            }
+        }
+        for (auto &column : select.groupBy) {
+            stripLocalQualifier(column, scope, select.table, stripTableName);
+        }
+        if (select.orderBy) {
+            stripLocalQualifier(select.orderBy->column, scope, select.table, stripTableName);
+        }
+        if (select.where) {
+            normalizePredicateScopeQualifiers(*select.where, scope, select.table, stripTableName);
+        }
+        return;
+    }
+
+    if (select.where) {
+        normalizeNestedSelectsInPredicate(*select.where);
+    }
 }
 
 void validateAggregation(const Select &command) {

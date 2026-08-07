@@ -4,6 +4,7 @@
 #include "parse_utils.hpp"
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 namespace VertexDB {
@@ -97,6 +98,7 @@ Select Parser::parseSelectAfterSelectKeyword() {
     expect(TokenType::Identifier, "FROM");
 
     std::string tableName;
+    std::optional<std::string> tableAlias;
     std::vector<CteEntry> derivedCtes;
     if (match(TokenType::LeftParen)) {
         // Derived table: FROM (SELECT ...) [AS] alias — normalize to a synthetic CTE.
@@ -118,6 +120,11 @@ Select Parser::parseSelectAfterSelectKeyword() {
             throw std::runtime_error("expected table name");
         }
         tableName = table.lexeme;
+        (void)match(TokenType::Identifier, "AS");
+        if (peek().type == TokenType::Identifier &&
+            !parser_detail::isSelectClauseKeyword(peek().lexeme)) {
+            tableAlias = advance().lexeme;
+        }
     }
 
     std::vector<JoinClause> joins;
@@ -144,7 +151,7 @@ Select Parser::parseSelectAfterSelectKeyword() {
     std::optional<OrderBy> orderBy;
     std::optional<std::size_t> limit;
     const auto previousFromTable = currentFromTable_;
-    currentFromTable_ = tableName;
+    currentFromTable_ = tableAlias.value_or(tableName);
     if (match(TokenType::Identifier, "WHERE")) {
         where = parsePredicate();
     }
@@ -180,9 +187,11 @@ Select Parser::parseSelectAfterSelectKeyword() {
         }
         limit = static_cast<std::size_t>(parser_detail::parseIntLiteral(count.lexeme));
     }
-    return {std::move(tableName), std::move(joins),   std::move(columns),
-            std::move(where),     std::move(groupBy), std::move(orderBy),
-            limit,                std::move(derivedCtes)};
+    Select query{std::move(tableName), std::move(joins),   std::move(columns),
+                 std::move(where),     std::move(groupBy), std::move(orderBy),
+                 limit,                std::move(derivedCtes)};
+    query.tableAlias = std::move(tableAlias);
+    return query;
 }
 
 Select Parser::parseWithSelect() { return parseWithSelectAtDepth(0); }

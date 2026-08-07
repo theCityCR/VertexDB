@@ -1,5 +1,7 @@
 #pragma once
 
+#include "VertexDB/common/string_utils.hpp"
+
 #include <charconv>
 #include <cstdint>
 #include <stdexcept>
@@ -15,6 +17,13 @@ inline std::int64_t parseIntLiteral(std::string_view text) {
         throw std::runtime_error("invalid integer literal");
     }
     return result;
+}
+
+[[nodiscard]] inline bool isSelectClauseKeyword(std::string_view lexeme) {
+    return equalsIgnoreCase(lexeme, "WHERE") || equalsIgnoreCase(lexeme, "JOIN") ||
+           equalsIgnoreCase(lexeme, "GROUP") || equalsIgnoreCase(lexeme, "ORDER") ||
+           equalsIgnoreCase(lexeme, "LIMIT") || equalsIgnoreCase(lexeme, "UNION") ||
+           equalsIgnoreCase(lexeme, "HAVING") || equalsIgnoreCase(lexeme, "ON");
 }
 
 } // namespace parser_detail

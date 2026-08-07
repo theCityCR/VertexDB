@@ -155,8 +155,17 @@ struct Select {
     std::optional<std::size_t> limit;
     // CTE bodies are stored by shared_ptr to avoid an incomplete-type cycle.
     std::vector<CteEntry> ctes;
+    // Optional FROM alias (`FROM Employees AS e`); correlation / qualifiers use this scope name.
+    std::optional<std::string> tableAlias;
     bool hasOuterRefs{false};
 };
+
+[[nodiscard]] inline std::string_view selectScopeName(const Select &select) noexcept {
+    if (select.tableAlias) {
+        return *select.tableAlias;
+    }
+    return select.table;
+}
 
 struct Update {
     std::string table;

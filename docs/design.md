@@ -14,13 +14,13 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer, AST, grammar tests, table-management commands, predicates, ordering, limits,
   left-deep equi-joins, aggregates/`GROUP BY`, `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`,
-  one level of nested `WITH`), derived tables, `IN`/`EXISTS` subqueries (including two-level
-  correlation), expression indexes, `EXPLAIN`, transactions, prepared statements (typed AST + `?`
-  slots), save/load, and exit
+  one level of nested `WITH`), derived tables, `FROM` table aliases, `IN`/`EXISTS` subqueries
+  (including `WITH` inside them and two-level correlation), expression indexes, `EXPLAIN`,
+  transactions, prepared statements (typed AST + `?` slots), save/load, and exit
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete, table management, multi-join chains, CTE/derived-table inlining or materialization,
-  correlated `IN`/`EXISTS`, expression-index maintenance, prepared AST binding, save/load, recovery,
-  and transactional read routing
+  correlated `IN`/`EXISTS` with alias scopes, expression-index maintenance, prepared AST binding,
+  save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup (column and expression keys), plus hash index `IN` multi-lookup
 - Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
@@ -47,19 +47,20 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   cheaper than a scan, the planner keeps a full scan. Nested `OR` under `AND` may remain as a
   residual while another conjunct uses an index.
 - Nested SQL is limited: nested `WITH` deeper than one level, correlation deeper than two outer
-  frames, outer `JOIN` against a CTE/derived alias, `JOIN` / `WITH` inside `IN`/`EXISTS` subqueries,
-  and regex/substring indexes are unsupported. One nested `WITH`, two-level correlated `IN`/`EXISTS`,
-  and expression indexes (`column`, `-column`, `column+/-literal`) are supported. CTE/derived bodies
-  may include equi-joins.
+  frames, outer `JOIN` against a CTE/derived alias, `JOIN` inside `IN`/`EXISTS` subqueries, and
+  regex/substring indexes are unsupported. Supported nested forms include one nested `WITH`,
+  `WITH` / derived tables inside `IN`/`EXISTS`, `FROM` table aliases (`AS` optional) for correlation
+  scopes, two-level correlated `IN`/`EXISTS`, and expression indexes (`column`, `-column`,
+  `column+/-literal`). CTE/derived bodies may include equi-joins.
 - Aggregates/`GROUP BY` are supported; joins are left-deep equi-join chains only (no outer/cross
   joins). General DDL beyond the current table/index commands is still out of scope.
 
 ## Next Steps
 
-1. Broader nested SQL only where it still fits the educational scope (e.g. table aliases in
-   subqueries, `WITH` inside `IN`/`EXISTS`).
-2. Re-run the Release benchmark summary in [benchmarks.md](benchmarks.md) when planner or storage
+1. Re-run the Release benchmark summary in [benchmarks.md](benchmarks.md) when planner or storage
    paths change.
+2. Optional nested-SQL polish still in educational scope: join-table aliases, clearer diagnostics
+   with source positions, or correlation deeper than two frames.
 
 CTE inlining so outer predicates hit base-table indexes is packaged as a demo wedge: see
 [cte_index_wedge.md](cte_index_wedge.md) and [cte_materialize_comparison.md](cte_materialize_comparison.md).

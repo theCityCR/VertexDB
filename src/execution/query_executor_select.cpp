@@ -137,6 +137,7 @@ SelectEngine::resolveProjectionFromNames(const Select &command,
 
 std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &table,
                                            const QueryPlan &plan) const {
+    const std::string_view scope = selectScopeName(command);
     auto applyResidual = [&](std::vector<Row> rows) {
         if (!plan.residual()) {
             return rows;
@@ -144,7 +145,7 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
         std::vector<Row> filtered;
         filtered.reserve(rows.size());
         for (auto &row : rows) {
-            if (matches(row, table, *plan.residual())) {
+            if (matches(row, table, *plan.residual(), scope)) {
                 filtered.push_back(std::move(row));
             }
         }
@@ -240,7 +241,7 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                     if (seen.contains(rowId)) {
                         continue;
                     }
-                    if (matches(row, table, *plan.residual())) {
+                    if (matches(row, table, *plan.residual(), scope)) {
                         ids.push_back(rowId);
                     }
                 }
@@ -249,7 +250,7 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                 std::vector<Row> rows;
                 const auto snapshot = rowsSnapshotForRead(table);
                 for (const auto &row : snapshot) {
-                    if (!command.where || matches(row, table, *command.where)) {
+                    if (!command.where || matches(row, table, *command.where, scope)) {
                         rows.push_back(row);
                     }
                 }
@@ -402,21 +403,25 @@ QueryResult SelectEngine::executeJoinSelect(const Select &command) {
     return finalizeSelectResult(command, std::move(joinedColumns), std::move(joinedRows));
 }
 
-bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &predicate) const {
+bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &predicate,
+                           std::string_view scopeName) const {
+    const std::string_view scope = scopeName.empty() ? std::string_view{table.name()} : scopeName;
     return std::visit(
         [&](const auto &node) -> bool {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, AndPred>) {
-                return matches(row, table, *node.left) && matches(row, table, *node.right);
+                return matches(row, table, *node.left, scope) &&
+                       matches(row, table, *node.right, scope);
             } else if constexpr (std::is_same_v<T, OrPred>) {
-                return matches(row, table, *node.left) || matches(row, table, *node.right);
+                return matches(row, table, *node.left, scope) ||
+                       matches(row, table, *node.right, scope);
             } else if constexpr (std::is_same_v<T, ExistsPred>) {
                 if (!node.subquery) {
                     throw std::runtime_error("EXISTS subquery is missing");
                 }
                 if (node.referencesOuter || node.subquery->hasOuterRefs) {
-                    const Select bound =
-                        owner_.subqueryRuntime_.bindOuterReferences(*node.subquery, row, table);
+                    const Select bound = owner_.subqueryRuntime_.bindOuterReferences(
+                        *node.subquery, row, table, scope);
                     return owner_.subqueryRuntime_.evaluateExists(bound);
                 }
                 return owner_.subqueryRuntime_.evaluateExists(*node.subquery);
@@ -427,7 +432,8 @@ bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &
                 const Select *subquery = node.subquery.get();
                 std::optional<Select> bound;
                 if (node.referencesOuter || node.subquery->hasOuterRefs) {
-                    bound = owner_.subqueryRuntime_.bindOuterReferences(*node.subquery, row, table);
+                    bound = owner_.subqueryRuntime_.bindOuterReferences(*node.subquery, row, table,
+                                                                        scope);
                     subquery = &*bound;
                 }
                 const auto values = owner_.subqueryRuntime_.evaluateSubqueryValues(*subquery);
@@ -443,9 +449,12 @@ bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &
                         return index;
                     }
                     const auto dot = column.find('.');
-                    if (dot != std::string_view::npos &&
-                        equalsIgnoreCase(column.substr(0, dot), table.name())) {
-                        return table.columnIndex(column.substr(dot + 1));
+                    if (dot != std::string_view::npos) {
+                        const auto qual = column.substr(0, dot);
+                        if (equalsIgnoreCase(qual, table.name()) ||
+                            equalsIgnoreCase(qual, scope)) {
+                            return table.columnIndex(column.substr(dot + 1));
+                        }
                     }
                     return std::optional<std::size_t>{};
                 });

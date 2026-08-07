@@ -755,14 +755,104 @@ TEST(NestedSqlTests, MultiCteInliningAndUnusedCteNote) {
 
 TEST(NestedSqlTests, NestedWithAndJoinInSubqueryDocumentedRefusals) {
     Parser parser;
-    EXPECT_THROW((void)parser.parse(
-                     "SELECT name FROM Employees WHERE id IN (WITH t AS (SELECT id FROM Employees) "
-                     "SELECT id FROM t);"),
-                 std::runtime_error);
+    // JOIN inside IN/EXISTS remains unsupported.
     EXPECT_THROW((void)parser.parse(
                      "SELECT name FROM Employees WHERE id IN (SELECT Employees.id FROM Employees "
                      "JOIN Departments ON Employees.dept_id = Departments.id);"),
                  std::runtime_error);
+}
+
+TEST(NestedSqlTests, WithInsideInSubqueryInlinesAndFilters) {
+    Parser parser;
+    auto executor = makeExecutor("with-inside-in");
+    seedEmployees(executor, parser, true, false);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "WITH high AS (SELECT id FROM Employees WHERE salary > 100000.0 AND id = 1) "
+        "SELECT id FROM high) ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, WithInsideExistsCorrelatesThroughOuterAlias) {
+    Parser parser;
+    auto executor = makeExecutor("with-inside-exists-alias");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (1, 5000.0), (2, 100.0);"))
+            .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT e.name FROM Employees AS e WHERE EXISTS ("
+        "WITH b AS (SELECT emp_id, amount FROM Bonuses WHERE amount > 1000.0) "
+        "SELECT emp_id FROM b WHERE emp_id = e.id) ORDER BY e.name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, TableAliasParsesAndScopesCorrelation) {
+    Parser parser;
+    auto query = parser.parse(
+        "SELECT e.name FROM Employees AS e WHERE EXISTS ("
+        "SELECT emp_id FROM Bonuses AS b WHERE b.emp_id = e.id);");
+    ASSERT_TRUE(std::holds_alternative<Select>(query));
+    const auto &select = std::get<Select>(query);
+    EXPECT_EQ(select.table, "Employees");
+    ASSERT_TRUE(select.tableAlias.has_value());
+    EXPECT_EQ(*select.tableAlias, "e");
+}
+
+TEST(NestedSqlTests, TableAliasCorrelatedInMatchesOuterRows) {
+    Parser parser;
+    auto executor = makeExecutor("table-alias-correlated-in");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Peer (emp_id INT, label STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Peer VALUES (1, \"a\"), (1, \"b\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT e.name FROM Employees e WHERE e.id IN ("
+        "SELECT p.emp_id FROM Peer AS p WHERE p.emp_id = e.id) ORDER BY e.name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, DerivedTableInsideInSubqueryIsAllowed) {
+    Parser parser;
+    auto executor = makeExecutor("derived-inside-in");
+    seedEmployees(executor, parser, true, false);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "SELECT id FROM (SELECT id FROM Employees WHERE salary > 100000.0 AND id = 1) AS high);"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
 TEST(NestedSqlTests, SiblingCtesInlineRecursively) {

@@ -25,8 +25,8 @@ class SelectEngine {
 
     [[nodiscard]] QueryResult execute(const Select &command);
     [[nodiscard]] QueryResult explain(const ExplainQuery &command);
-    [[nodiscard]] bool matches(const Row &row, const Table &table,
-                               const Predicate &predicate) const;
+    [[nodiscard]] bool matches(const Row &row, const Table &table, const Predicate &predicate,
+                               std::string_view scopeName = {}) const;
     [[nodiscard]] std::shared_ptr<Table>
     requireTable(std::string_view tableName,
                  const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;

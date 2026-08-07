@@ -93,7 +93,6 @@ Predicate Parser::parsePrimaryPredicate() {
 
 Predicate Parser::parseExistsPredicate() {
     expect(TokenType::LeftParen);
-    expect(TokenType::Identifier, "SELECT");
     auto subquery = std::make_shared<Select>(parseSubquerySelect(true));
     expect(TokenType::RightParen);
     auto predicate = makeExists(std::move(subquery));
@@ -140,7 +139,6 @@ Predicate Parser::parseComparisonPredicate() {
     }
     if (match(TokenType::Identifier, "IN")) {
         expect(TokenType::LeftParen);
-        expect(TokenType::Identifier, "SELECT");
         auto subquery = std::make_shared<Select>(parseSubquerySelect(true));
         if (subquery->columns.size() != 1 || isStarProjection(subquery->columns) ||
             subquery->columns.front().kind != SelectExpr::Kind::Column) {
@@ -180,24 +178,35 @@ Select Parser::parseSubquerySelect(bool /*allowOuterRefs*/) {
     }
     outerTableStack_.push_back(currentFromTable_);
     const auto savedFrom = currentFromTable_;
-    auto subquery = parseSelectAfterSelectKeyword();
-    currentFromTable_ = savedFrom;
-    if (!subquery.ctes.empty()) {
-        outerTableStack_.pop_back();
-        throw std::runtime_error("WITH inside subquery is not supported");
+    Select subquery;
+    if (match(TokenType::Identifier, "WITH")) {
+        subquery = parseWithSelectAtDepth(0);
+    } else {
+        expect(TokenType::Identifier, "SELECT");
+        subquery = parseSelectAfterSelectKeyword();
     }
+    currentFromTable_ = savedFrom;
     if (!subquery.joins.empty()) {
         outerTableStack_.pop_back();
         throw std::runtime_error("JOIN inside subquery is not supported");
     }
     const bool nestedUnderCorrelated = outerTableStack_.size() > 1;
-    markOuterRefs(subquery, subquery.table, nestedUnderCorrelated);
+    markOuterRefs(subquery, selectScopeName(subquery), nestedUnderCorrelated);
     outerTableStack_.pop_back();
     return subquery;
 }
 
 void Parser::markOuterRefs(Select &select, std::string_view innerTable,
                            bool nestedUnderCorrelated) {
+    for (auto &cte : select.ctes) {
+        if (!cte.body) {
+            continue;
+        }
+        markOuterRefs(*cte.body, selectScopeName(*cte.body), nestedUnderCorrelated);
+        if (cte.body->hasOuterRefs) {
+            select.hasOuterRefs = true;
+        }
+    }
     if (select.where) {
         markOuterRefs(*select.where, innerTable, nestedUnderCorrelated);
         if (predicateReferencesOuter(*select.where)) {

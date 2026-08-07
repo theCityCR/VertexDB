@@ -82,7 +82,11 @@ TEST(ParserTests, ParsesTableManagementCommands) {
 TEST(ParserTests, RejectsTrailingTokens) {
     Parser parser;
 
-    EXPECT_THROW((void)parser.parse("SELECT * FROM Employees unexpected;"), std::runtime_error);
+    // Alias-aware FROM accepts `FROM t alias`, so trailing junk must follow a completed clause.
+    EXPECT_THROW((void)parser.parse("SELECT * FROM Employees WHERE id = 1 unexpected;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("SELECT * FROM Employees LIMIT 1 unexpected;"),
+                 std::runtime_error);
 }
 
 TEST(ParserTests, ParsesJoinAndPreparedStatements) {
