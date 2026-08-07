@@ -1,7 +1,7 @@
 #pragma once
 
 // Table façade: schema/DML, MVCC, persistence, and planner-facing views.
-// IndexManager and TableStatistics own index/statistics state; Table owns synchronization.
+// IndexManager, TableStatistics, and TableSnapshotIO own focused logic; Table owns synchronization.
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/index_expression.hpp"
@@ -11,6 +11,7 @@
 #include "VertexDB/storage/relation_stats.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/table_snapshot_io.hpp"
 #include "VertexDB/storage/table_statistics.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
 
@@ -23,25 +24,6 @@
 #include <vector>
 
 namespace VertexDB {
-
-struct IndexStoreSnapshot {
-    std::string name;
-    std::string column;
-    BTreeIndexSnapshot btree;
-    HashIndexSnapshot hash;
-};
-
-struct TableIndexStoreSnapshot {
-    std::vector<IndexStoreSnapshot> indexes;
-};
-
-struct PageImageCapture {
-    std::size_t capacity{};
-    std::vector<RowId> freeList;
-    std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages;
-    std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes;
-    std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes;
-};
 
 class Table : public RelationStats, public IndexCatalogView {
   public:
@@ -132,7 +114,6 @@ class Table : public RelationStats, public IndexCatalogView {
   private:
     void addRowToIndexes(RowId rowId);
     void rebuildIndexes();
-    void refreshVersionsFromStore();
     bool registerIndex(std::string name, std::size_t columnIndex,
                        std::optional<IndexExpression> expression, bool rebuild);
 
@@ -141,6 +122,7 @@ class Table : public RelationStats, public IndexCatalogView {
     std::unique_ptr<RowStore> rowStore_;
     IndexManager indexManager_;
     TableStatistics statistics_;
+    TableSnapshotIO snapshotIo_;
     MVCCRowStore versions_;
     mutable std::shared_mutex mutex_;
 };

@@ -38,6 +38,7 @@ add_library(VertexDB
     src/storage/table.cpp
     src/storage/table_indexes.cpp
     src/storage/table_persist.cpp
+    src/storage/table_snapshot_io.cpp
     src/storage/table_statistics.cpp
     src/storage/histogram.cpp
     src/indexing/btree_index.cpp

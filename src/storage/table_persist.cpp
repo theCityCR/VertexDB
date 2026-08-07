@@ -1,10 +1,7 @@
 #include "VertexDB/storage/table.hpp"
 
-#include "VertexDB/common/index_expression.hpp"
-
 #include <mutex>
 #include <shared_mutex>
-#include <stdexcept>
 
 namespace VertexDB {
 
@@ -36,30 +33,13 @@ void Table::clearColumnHistograms() {
 bool Table::applyPhysicalUpsert(RowId rowId, Row row) {
     validateRow(row);
     std::unique_lock lock{mutex_};
-    const bool existed = rowStore_->get(rowId) != nullptr;
-    if (!rowStore_->upsertAt(rowId, std::move(row))) {
-        return false;
-    }
-    versions_.write(rowId, *rowStore_->get(rowId), kSystemTransactionId);
-    if (existed) {
-        rebuildIndexes();
-    } else {
-        addRowToIndexes(rowId);
-    }
-    return true;
+    return snapshotIo_.applyPhysicalUpsert(*rowStore_, indexManager_, versions_, schema_, rowId,
+                                           std::move(row));
 }
 
 bool Table::applyPhysicalErase(RowId rowId) {
     std::unique_lock lock{mutex_};
-    if (rowStore_->get(rowId) == nullptr) {
-        return false;
-    }
-    if (!rowStore_->erase(rowId)) {
-        return false;
-    }
-    (void)versions_.popLatestVersion(rowId);
-    rebuildIndexes();
-    return true;
+    return snapshotIo_.applyPhysicalErase(*rowStore_, indexManager_, versions_, schema_, rowId);
 }
 
 void Table::applyPageImageRedo(
@@ -68,34 +48,9 @@ void Table::applyPageImageRedo(
     std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes,
     std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes) {
     std::unique_lock lock{mutex_};
-    auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get());
-    if (pageStore == nullptr) {
-        throw std::runtime_error("table row store does not support page image redo");
-    }
-    std::optional<std::size_t> capacityOpt;
-    std::optional<std::vector<RowId>> freeListOpt;
-    if (hasHeapMeta) {
-        capacityOpt = capacity;
-        freeListOpt = std::move(freeList);
-    }
-    pageStore->applyPageImages(capacityOpt, std::move(freeListOpt), std::move(heapPages));
-    auto &orderedIndexes = indexManager_.orderedIndexes();
-    auto &hashIndexStores = indexManager_.hashIndexes();
-    for (auto &[name, snapshot] : btreeIndexes) {
-        auto it = orderedIndexes.find(name);
-        if (it == orderedIndexes.end()) {
-            throw std::runtime_error("page image redo references unknown btree index " + name);
-        }
-        it->second.applyDirtyPages(snapshot);
-    }
-    for (auto &[name, snapshot] : hashIndexes) {
-        auto it = hashIndexStores.find(name);
-        if (it == hashIndexStores.end()) {
-            throw std::runtime_error("page image redo references unknown hash index " + name);
-        }
-        it->second.applyDirtyBuckets(snapshot);
-    }
-    refreshVersionsFromStore();
+    snapshotIo_.applyPageImageRedo(*rowStore_, indexManager_, versions_, hasHeapMeta, capacity,
+                                   std::move(freeList), std::move(heapPages),
+                                   std::move(btreeIndexes), std::move(hashIndexes));
 }
 
 void Table::replaceRows(std::vector<Row> rows) {
@@ -103,16 +58,7 @@ void Table::replaceRows(std::vector<Row> rows) {
         validateRow(row);
     }
     std::unique_lock lock{mutex_};
-    rowStore_->replaceRows(std::move(rows));
-    versions_.clear();
-    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
-        const auto *row = rowStore_->get(rowId);
-        if (row == nullptr) {
-            continue;
-        }
-        versions_.write(rowId, *row, kSystemTransactionId);
-    }
-    rebuildIndexes();
+    snapshotIo_.replaceRows(*rowStore_, indexManager_, versions_, schema_, std::move(rows));
 }
 
 void Table::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
@@ -121,25 +67,13 @@ void Table::replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
         validateRow(row);
     }
     std::unique_lock lock{mutex_};
-    rowStore_->replaceSparse(capacity, std::move(freeList), std::move(entries));
-    versions_.clear();
-    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
-        const auto *row = rowStore_->get(rowId);
-        if (row == nullptr) {
-            continue;
-        }
-        versions_.write(rowId, *row, kSystemTransactionId);
-    }
-    rebuildIndexes();
+    snapshotIo_.replaceSparse(*rowStore_, indexManager_, versions_, schema_, capacity,
+                              std::move(freeList), std::move(entries));
 }
 
 PageStoreSnapshot Table::exportPageStore() const {
     std::shared_lock lock{mutex_};
-    const auto *pageStore = dynamic_cast<const PageRowStore *>(rowStore_.get());
-    if (pageStore == nullptr) {
-        throw std::runtime_error("table row store does not support page payload export");
-    }
-    return pageStore->exportPages();
+    return snapshotIo_.exportPageStore(*rowStore_);
 }
 
 void Table::replaceFromPages(PageStoreSnapshot snapshot) {
@@ -157,100 +91,28 @@ void Table::replaceFromPages(PageStoreSnapshot snapshot, bool rebuildIndexesAfte
     }
 
     std::unique_lock lock{mutex_};
-    auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get());
-    if (pageStore == nullptr) {
-        throw std::runtime_error("table row store does not support page payload restore");
-    }
-    pageStore->replaceFromPages(std::move(snapshot));
-    refreshVersionsFromStore();
-    if (rebuildIndexesAfter) {
-        rebuildIndexes();
-    }
+    snapshotIo_.replaceFromPages(*rowStore_, indexManager_, versions_, schema_, std::move(snapshot),
+                                 rebuildIndexesAfter);
 }
 
 TableIndexStoreSnapshot Table::exportIndexPages() const {
     std::shared_lock lock{mutex_};
-    TableIndexStoreSnapshot snapshot;
-    const auto &indexColumns = indexManager_.indexColumns();
-    const auto &indexExpressions = indexManager_.indexExpressions();
-    const auto &orderedIndexes = indexManager_.orderedIndexes();
-    const auto &hashIndexes = indexManager_.hashIndexes();
-    snapshot.indexes.reserve(indexColumns.size());
-    for (const auto &[name, columnIndex] : indexColumns) {
-        IndexStoreSnapshot entry;
-        entry.name = name;
-        if (auto it = indexExpressions.find(name); it != indexExpressions.end()) {
-            entry.column = encodeIndexDefinitionColumn(schema_.at(columnIndex).name, it->second);
-        } else {
-            entry.column = schema_.at(columnIndex).name;
-        }
-        entry.btree = orderedIndexes.at(name).exportPages();
-        entry.hash = hashIndexes.at(name).exportBuckets();
-        snapshot.indexes.push_back(std::move(entry));
-    }
-    return snapshot;
+    return snapshotIo_.exportIndexPages(indexManager_, schema_);
 }
 
 void Table::replaceIndexPages(TableIndexStoreSnapshot snapshot) {
     std::unique_lock lock{mutex_};
-    auto &hashIndexes = indexManager_.hashIndexes();
-    auto &orderedIndexes = indexManager_.orderedIndexes();
-    for (auto &entry : snapshot.indexes) {
-        auto hashIt = hashIndexes.find(entry.name);
-        auto btreeIt = orderedIndexes.find(entry.name);
-        if (hashIt == hashIndexes.end() || btreeIt == orderedIndexes.end()) {
-            throw std::runtime_error("index page restore references unknown index " + entry.name);
-        }
-        btreeIt->second.replaceFromPages(std::move(entry.btree));
-        hashIt->second.replaceFromBuckets(std::move(entry.hash));
-    }
+    snapshotIo_.replaceIndexPages(indexManager_, std::move(snapshot));
 }
 
 void Table::clearDirtyTracking() {
     std::unique_lock lock{mutex_};
-    if (auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get()); pageStore != nullptr) {
-        pageStore->clearDirtyPages();
-    }
-    for (auto &[_, index] : indexManager_.hashIndexes()) {
-        index.clearDirtyPages();
-    }
-    for (auto &[_, index] : indexManager_.orderedIndexes()) {
-        index.clearDirtyPages();
-    }
+    snapshotIo_.clearDirtyTracking(*rowStore_, indexManager_);
 }
 
 PageImageCapture Table::takePageImageCapture() {
     std::unique_lock lock{mutex_};
-    PageImageCapture capture;
-    capture.capacity = rowStore_->capacity();
-    capture.freeList = rowStore_->freeList();
-    auto *pageStore = dynamic_cast<PageRowStore *>(rowStore_.get());
-    if (pageStore == nullptr) {
-        throw std::runtime_error("table row store does not support page image capture");
-    }
-    capture.heapPages = pageStore->takeDirtyPages();
-    for (auto &[name, index] : indexManager_.orderedIndexes()) {
-        if (index.hasDirtyPages()) {
-            capture.btreeIndexes.emplace_back(name, index.takeDirtyPages());
-        }
-    }
-    for (auto &[name, index] : indexManager_.hashIndexes()) {
-        if (index.hasDirtyPages()) {
-            capture.hashIndexes.emplace_back(name, index.takeDirtyBuckets());
-        }
-    }
-    return capture;
-}
-
-void Table::refreshVersionsFromStore() {
-    versions_.clear();
-    for (RowId rowId = 0; rowId < rowStore_->capacity(); ++rowId) {
-        const auto *row = rowStore_->get(rowId);
-        if (row == nullptr) {
-            continue;
-        }
-        versions_.write(rowId, *row, kSystemTransactionId);
-    }
+    return snapshotIo_.takePageImageCapture(*rowStore_, indexManager_);
 }
 
 } // namespace VertexDB

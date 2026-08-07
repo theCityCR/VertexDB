@@ -52,9 +52,9 @@ CLI
   interfaces, including optional `ANALYZE` histograms, multi-index AND intersect, and residual
   filters.
 - `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
-  and page cache abstractions. `Table` is the synchronized façade over row, index, statistics, and
-  MVCC components. `VectorRowStore` and `PageRowStore` are separate TUs sharing sparse-layout
-  validation.
+  snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
+  façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
+  `PageRowStore` are separate TUs sharing sparse-layout validation.
 - `execution`: `QueryExecutor` façade for command dispatch (DDL/DML/txn). Focused TUs:
   `query_executor_select.cpp` (SELECT/join/EXPLAIN), `query_executor_subquery.cpp` (CTE/`IN`/`EXISTS`),
   `query_executor_recovery.cpp` (WAL/undo), plus `predicate_eval`, `select_helpers`, `prepared_bind`,
@@ -71,11 +71,13 @@ Key public headers carry a short ownership banner pointing at sibling TUs.
 
 ## Architectural Boundaries
 
-`Table` owns schema validation and synchronization, composes `IndexManager` and `TableStatistics`,
-and delegates physical row storage to the `RowStore` interface. It implements the read-only
-`RelationStats` and `IndexCatalogView` planner boundaries, so planning does not depend on table
-storage internals. `PageRowStore` is the default implementation: serialized page payloads in an
-in-memory page directory are the source of truth, and the LRU `BufferPool` is the access cache
+`Table` owns schema validation and synchronization, composes `IndexManager`, `TableStatistics`, and
+`TableSnapshotIO`, and delegates physical row storage to the `RowStore` interface. `TableSnapshotIO`
+owns the unlocked snapshot restore/export, dirty-page capture, and physical/page-image redo logic;
+`Table` keeps the public API and locks before forwarding Table-owned state. It implements the
+read-only `RelationStats` and `IndexCatalogView` planner boundaries, so planning does not depend on
+table storage internals. `PageRowStore` is the default implementation: serialized page payloads in
+an in-memory page directory are the source of truth, and the LRU `BufferPool` is the access cache
 (fill-on-miss). Reads deserialize live row slots from those page bytes. Each page holds a fixed
 number of row slots; serialized page byte lengths vary with row content. Both row-store
 implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
