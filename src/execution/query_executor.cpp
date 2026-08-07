@@ -1,6 +1,5 @@
 #include "VertexDB/execution/query_executor.hpp"
 
-#include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/prepared_bind.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
@@ -14,7 +13,8 @@ namespace VertexDB {
 QueryExecutor::QueryExecutor(std::filesystem::path storageRoot)
     : storageManager_(storageRoot), wal_(storageRoot / "VertexDB.wal"),
       recovery_(storageManager_, wal_, session_, database_,
-                [this](const Query &query) { (void)executeUnlocked(query); }) {
+                [this](const Query &query) { (void)executeUnlocked(query); }),
+      selectEngine_(*this), subqueryRuntime_(*this) {
     recovery_.recoverFromStorage();
 }
 
@@ -310,7 +310,7 @@ QueryResult QueryExecutor::executeRollback() {
 QueryResult QueryExecutor::executePrepare(const PrepareStatement &command) {
     // Parse once into a typed AST with Parameter slots; EXECUTE binds without reparsing.
     auto ast = Parser{}.parse(command.sql);
-    preparedStatements_[command.name] = std::move(ast);
+    prepared_.store(command.name, std::move(ast));
     return messageResult(true, "prepared statement " + command.name);
 }
 
@@ -318,11 +318,11 @@ QueryResult QueryExecutor::executePrepared(const ExecutePrepared &command) {
     Query stored;
     {
         const auto lock = lockManager_.acquireRead();
-        auto prepared = preparedStatements_.find(command.name);
-        if (prepared == preparedStatements_.end()) {
+        auto prepared = prepared_.find(command.name);
+        if (!prepared) {
             throw std::runtime_error("unknown prepared statement");
         }
-        stored = prepared->second;
+        stored = std::move(*prepared);
     }
     const Query bound = bindQueryParameters(stored, command.parameters);
     return execute(bound);
@@ -330,12 +330,7 @@ QueryResult QueryExecutor::executePrepared(const ExecutePrepared &command) {
 
 std::optional<Query> QueryExecutor::preparedAst(std::string_view name) const {
     const auto lock = lockManager_.acquireRead();
-    for (const auto &[storedName, query] : preparedStatements_) {
-        if (equalsIgnoreCase(storedName, name)) {
-            return query;
-        }
-    }
-    return std::nullopt;
+    return prepared_.findCaseInsensitive(name);
 }
 
 ReadSnapshot QueryExecutor::readSnapshot() const { return session_.readSnapshot(); }

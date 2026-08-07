@@ -1,7 +1,7 @@
-#include "VertexDB/execution/query_executor.hpp"
+#include "VertexDB/execution/subquery_runtime.hpp"
 
+#include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
-#include "VertexDB/planner/rewriter.hpp"
 
 #include <memory>
 #include <stdexcept>
@@ -9,7 +9,9 @@
 
 namespace VertexDB {
 
-Select QueryExecutor::prepareSelect(const Select &command, RewriteResult &rewrite) const {
+SubqueryRuntime::SubqueryRuntime(QueryExecutor &owner) noexcept : owner_(owner) {}
+
+Select SubqueryRuntime::prepareSelect(const Select &command, RewriteResult &rewrite) const {
     rewrite = rewriteSelect(command);
     Select prepared = rewrite.query;
     if (prepared.where) {
@@ -18,9 +20,10 @@ Select QueryExecutor::prepareSelect(const Select &command, RewriteResult &rewrit
     return prepared;
 }
 
-Predicate QueryExecutor::materializePredicate(const Predicate &predicate) const {
+Predicate SubqueryRuntime::materializePredicate(const Predicate &predicate) const {
     if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
-        return Predicate{predicate.kind, std::make_shared<Predicate>(materializePredicate(*predicate.left)),
+        return Predicate{predicate.kind,
+                         std::make_shared<Predicate>(materializePredicate(*predicate.left)),
                          std::make_shared<Predicate>(materializePredicate(*predicate.right))};
     }
     if (predicate.kind == Predicate::Kind::Exists) {
@@ -38,15 +41,15 @@ Predicate QueryExecutor::materializePredicate(const Predicate &predicate) const 
     return predicate;
 }
 
-std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery) const {
+std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquery) const {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(subquery, rewrite);
     if (!prepared.joins.empty()) {
         throw std::runtime_error("JOIN inside IN subquery is not supported");
     }
-    auto table = requireTable(prepared.table);
-    const auto plan = planPreparedSelect(prepared, *table, rewrite);
-    auto rows = collectRows(prepared, *table, plan);
+    auto table = owner_.selectEngine_.requireTable(prepared.table);
+    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
+    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
 
     if (prepared.columns.size() != 1 || isStarProjection(prepared.columns) ||
         prepared.columns.front().kind != SelectExpr::Kind::Column) {
@@ -76,16 +79,16 @@ std::vector<Value> QueryExecutor::evaluateSubqueryValues(const Select &subquery)
     return values;
 }
 
-bool QueryExecutor::evaluateExists(const Select &subquery) const {
+bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
     RewriteResult rewrite;
     Select prepared = prepareSelect(subquery, rewrite);
     if (!prepared.joins.empty()) {
         throw std::runtime_error("JOIN inside EXISTS subquery is not supported");
     }
     prepared.limit = 1;
-    auto table = requireTable(prepared.table);
-    const auto plan = planPreparedSelect(prepared, *table, rewrite);
-    auto rows = collectRows(prepared, *table, plan);
+    auto table = owner_.selectEngine_.requireTable(prepared.table);
+    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
+    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
     return !rows.empty();
 }
 
@@ -110,8 +113,8 @@ namespace {
 
 } // namespace
 
-Predicate QueryExecutor::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
-                                             const Table &outerTable) const {
+Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
+                                               const Table &outerTable) const {
     if (predicate.kind == Predicate::Kind::And || predicate.kind == Predicate::Kind::Or) {
         return Predicate{predicate.kind,
                          std::make_shared<Predicate>(
@@ -134,8 +137,8 @@ Predicate QueryExecutor::bindOuterReferences(const Predicate &predicate, const R
     return bound;
 }
 
-Select QueryExecutor::bindOuterReferences(const Select &subquery, const Row &outerRow,
-                                          const Table &outerTable) const {
+Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &outerRow,
+                                            const Table &outerTable) const {
     Select bound = subquery;
     bound.hasOuterRefs = false;
     if (bound.where) {
@@ -144,22 +147,23 @@ Select QueryExecutor::bindOuterReferences(const Select &subquery, const Row &out
     return bound;
 }
 
-std::shared_ptr<Table> QueryExecutor::materializeCteTable(const std::string &name,
-                                                          const Select &body) const {
+std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const std::string &name,
+                                                           const Select &body) const {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(body, rewrite);
     QueryResult bodyResult;
     if (!prepared.joins.empty()) {
-        bodyResult = const_cast<QueryExecutor *>(this)->executeJoinSelect(prepared);
+        bodyResult = owner_.selectEngine_.executeJoinSelect(prepared);
     } else {
-        auto source = requireTable(prepared.table);
-        const auto plan = planPreparedSelect(prepared, *source, rewrite);
+        auto source = owner_.selectEngine_.requireTable(prepared.table);
+        const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *source, rewrite);
         std::vector<std::string> sourceColumns;
         for (const auto &column : source->schema()) {
             sourceColumns.push_back(column.name);
         }
-        auto rows = collectRows(prepared, *source, plan);
-        bodyResult = finalizeSelectResult(prepared, std::move(sourceColumns), std::move(rows));
+        auto rows = owner_.selectEngine_.collectRows(prepared, *source, plan);
+        bodyResult = owner_.selectEngine_.finalizeSelectResult(
+            prepared, std::move(sourceColumns), std::move(rows));
         if (!bodyResult.success) {
             throw std::runtime_error(bodyResult.message);
         }
@@ -178,7 +182,8 @@ std::shared_ptr<Table> QueryExecutor::materializeCteTable(const std::string &nam
             }
         } else {
             std::vector<std::string> projectedNames;
-            const auto projection = resolveProjection(prepared, *source, projectedNames);
+            const auto projection =
+                owner_.selectEngine_.resolveProjection(prepared, *source, projectedNames);
             schema.reserve(projection.size());
             for (std::size_t i = 0; i < projection.size(); ++i) {
                 const auto &sourceColumn = source->schema()[projection[i]];

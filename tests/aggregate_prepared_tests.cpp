@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "VertexDB/execution/prepared_statement_catalog.hpp"
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
@@ -35,6 +36,19 @@ QueryExecutor makeExecutor(std::string_view suffix) {
 }
 
 } // namespace
+
+TEST(AggregatePreparedTests, PreparedCatalogOwnsAndFindsParsedStatements) {
+    PreparedStatementCatalog catalog;
+    Query query = Parser{}.parse("SELECT * FROM Employees;");
+
+    catalog.store("ByDepartment", query);
+
+    EXPECT_TRUE(catalog.exists("ByDepartment"));
+    EXPECT_FALSE(catalog.exists("bydepartment"));
+    EXPECT_TRUE(catalog.find("ByDepartment").has_value());
+    EXPECT_FALSE(catalog.find("bydepartment").has_value());
+    EXPECT_TRUE(catalog.findCaseInsensitive("bydepartment").has_value());
+}
 
 TEST(AggregatePreparedTests, AggregatesAndGroupByProduceGroupedResults) {
     auto executor = makeExecutor("aggregates-groupby");

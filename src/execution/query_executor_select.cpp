@@ -14,11 +14,31 @@
 namespace VertexDB {
 
 QueryResult QueryExecutor::executeSelect(const Select &command) {
+    return selectEngine_.execute(command);
+}
+
+QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
+    return selectEngine_.explain(command);
+}
+
+bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate &predicate) const {
+    return selectEngine_.matches(row, table, predicate);
+}
+
+std::shared_ptr<Table> QueryExecutor::requireTable(
+    std::string_view tableName,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
+    return selectEngine_.requireTable(tableName, temps);
+}
+
+SelectEngine::SelectEngine(QueryExecutor &owner) noexcept : owner_(owner) {}
+
+QueryResult SelectEngine::execute(const Select &command) {
     RewriteResult rewrite;
-    const Select prepared = prepareSelect(command, rewrite);
+    const Select prepared = owner_.subqueryRuntime_.prepareSelect(command, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
     for (const auto &[name, body] : rewrite.materialize) {
-        temps.emplace(name, materializeCteTable(name, body));
+        temps.emplace(name, owner_.subqueryRuntime_.materializeCteTable(name, body));
     }
     if (!prepared.joins.empty()) {
         return executeJoinSelect(prepared);
@@ -35,12 +55,12 @@ QueryResult QueryExecutor::executeSelect(const Select &command) {
     return finalizeSelectResult(prepared, std::move(sourceColumns), std::move(rows));
 }
 
-QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
+QueryResult SelectEngine::explain(const ExplainQuery &command) {
     RewriteResult rewrite;
-    const Select prepared = prepareSelect(command.query, rewrite);
+    const Select prepared = owner_.subqueryRuntime_.prepareSelect(command.query, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
     for (const auto &[name, body] : rewrite.materialize) {
-        temps.emplace(name, materializeCteTable(name, body));
+        temps.emplace(name, owner_.subqueryRuntime_.materializeCteTable(name, body));
     }
 
     QueryResult result;
@@ -56,9 +76,9 @@ QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
             auto rightTable = requireTable(join.table, temps);
             JoinPlan joinPlan;
             if (joinIndex == 0) {
-                joinPlan = planner_.planJoin(*leftTable, *rightTable, join);
+                joinPlan = owner_.planner_.planJoin(*leftTable, *rightTable, join);
             } else {
-                joinPlan = planner_.planJoinAgainstRows(leftRows, *rightTable, join);
+                joinPlan = owner_.planner_.planJoinAgainstRows(leftRows, *rightTable, join);
             }
             result.rows.push_back({Value{formatJoinPlanExplanation(joinPlan)}});
             leftRows = joinPlan.estimatedRows;
@@ -78,8 +98,8 @@ QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
     return result;
 }
 
-std::vector<std::size_t> QueryExecutor::resolveProjection(const Select &command, const Table &table,
-                                                          std::vector<std::string> &columns) const {
+std::vector<std::size_t> SelectEngine::resolveProjection(const Select &command, const Table &table,
+                                                         std::vector<std::string> &columns) const {
     std::vector<std::string> sourceColumns;
     for (const auto &column : table.schema()) {
         sourceColumns.push_back(column.name);
@@ -88,9 +108,9 @@ std::vector<std::size_t> QueryExecutor::resolveProjection(const Select &command,
 }
 
 std::vector<std::size_t>
-QueryExecutor::resolveProjectionFromNames(const Select &command,
-                                          const std::vector<std::string> &sourceColumns,
-                                          std::vector<std::string> &projectedColumns) const {
+SelectEngine::resolveProjectionFromNames(const Select &command,
+                                         const std::vector<std::string> &sourceColumns,
+                                         std::vector<std::string> &projectedColumns) const {
     std::vector<std::size_t> projection;
     if (isStarProjection(command.columns)) {
         for (std::size_t i = 0; i < sourceColumns.size(); ++i) {
@@ -114,8 +134,8 @@ QueryExecutor::resolveProjectionFromNames(const Select &command,
     return projection;
 }
 
-std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &table,
-                                            const QueryPlan &plan) const {
+std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &table,
+                                           const QueryPlan &plan) const {
     auto applyResidual = [&](std::vector<Row> rows) {
         if (!plan.residual) {
             return rows;
@@ -208,9 +228,9 @@ std::vector<Row> QueryExecutor::collectRows(const Select &command, const Table &
     return rows;
 }
 
-QueryResult QueryExecutor::finalizeSelectResult(const Select &command,
-                                                std::vector<std::string> sourceColumns,
-                                                std::vector<Row> rows) const {
+QueryResult SelectEngine::finalizeSelectResult(const Select &command,
+                                               std::vector<std::string> sourceColumns,
+                                               std::vector<Row> rows) const {
     if (hasAggregates(command.columns) || !command.groupBy.empty()) {
         auto result = aggregateRows(command, sourceColumns, std::move(rows));
         if (command.orderBy) {
@@ -238,8 +258,8 @@ QueryResult QueryExecutor::finalizeSelectResult(const Select &command,
     return projectWithLimit(std::move(rows), projection, std::move(projectedColumns), command.limit);
 }
 
-void QueryExecutor::collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
-                                    std::vector<Row> &joinedRows) const {
+void SelectEngine::collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
+                                   std::vector<Row> &joinedRows) const {
     if (command.joins.empty()) {
         throw std::runtime_error("collectJoinRows requires at least one join");
     }
@@ -263,9 +283,9 @@ void QueryExecutor::collectJoinRows(const Select &command, std::vector<std::stri
 
         JoinPlan joinPlan;
         if (joinIndex == 0) {
-            joinPlan = planner_.planJoin(*leftTable, *rightTable, join);
+            joinPlan = owner_.planner_.planJoin(*leftTable, *rightTable, join);
         } else {
-            joinPlan = planner_.planJoinAgainstRows(joinedRows.size(), *rightTable, join);
+            joinPlan = owner_.planner_.planJoinAgainstRows(joinedRows.size(), *rightTable, join);
         }
 
         std::vector<std::string> nextColumns = joinedColumns;
@@ -344,14 +364,14 @@ void QueryExecutor::collectJoinRows(const Select &command, std::vector<std::stri
     }
 }
 
-QueryResult QueryExecutor::executeJoinSelect(const Select &command) {
+QueryResult SelectEngine::executeJoinSelect(const Select &command) {
     std::vector<std::string> joinedColumns;
     std::vector<Row> joinedRows;
     collectJoinRows(command, joinedColumns, joinedRows);
     return finalizeSelectResult(command, std::move(joinedColumns), std::move(joinedRows));
 }
 
-bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate &predicate) const {
+bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &predicate) const {
     if (predicate.kind == Predicate::Kind::And) {
         return matches(row, table, *predicate.left) && matches(row, table, *predicate.right);
     }
@@ -363,10 +383,11 @@ bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate 
             throw std::runtime_error("EXISTS subquery is missing");
         }
         if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
-            const Select bound = bindOuterReferences(*predicate.subquery, row, table);
-            return evaluateExists(bound);
+            const Select bound =
+                owner_.subqueryRuntime_.bindOuterReferences(*predicate.subquery, row, table);
+            return owner_.subqueryRuntime_.evaluateExists(bound);
         }
-        return evaluateExists(*predicate.subquery);
+        return owner_.subqueryRuntime_.evaluateExists(*predicate.subquery);
     }
     if (predicate.kind == Predicate::Kind::InSubquery) {
         if (!predicate.subquery) {
@@ -374,10 +395,11 @@ bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate 
         }
         std::vector<Value> values;
         if (predicate.referencesOuter || predicate.subquery->hasOuterRefs) {
-            const Select bound = bindOuterReferences(*predicate.subquery, row, table);
-            values = evaluateSubqueryValues(bound);
+            const Select bound =
+                owner_.subqueryRuntime_.bindOuterReferences(*predicate.subquery, row, table);
+            values = owner_.subqueryRuntime_.evaluateSubqueryValues(bound);
         } else {
-            values = evaluateSubqueryValues(*predicate.subquery);
+            values = owner_.subqueryRuntime_.evaluateSubqueryValues(*predicate.subquery);
         }
         const auto index = table.columnIndex(predicate.column);
         if (!index) {
@@ -405,16 +427,16 @@ bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate 
     });
 }
 
-QueryPlan QueryExecutor::planPreparedSelect(const Select &command, const Table &table,
-                                            const RewriteResult &rewrite) const {
-    auto plan = planner_.planSelect(command, table);
+QueryPlan SelectEngine::planPreparedSelect(const Select &command, const Table &table,
+                                           const RewriteResult &rewrite) const {
+    auto plan = owner_.planner_.planSelect(command, table);
     for (const auto &note : rewrite.notes) {
         plan.notes.push_back(note);
     }
     return plan;
 }
 
-std::shared_ptr<Table> QueryExecutor::requireTable(
+std::shared_ptr<Table> SelectEngine::requireTable(
     std::string_view tableName,
     const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
     for (const auto &[name, table] : temps) {
@@ -422,23 +444,23 @@ std::shared_ptr<Table> QueryExecutor::requireTable(
             return table;
         }
     }
-    if (!database_) {
+    if (!owner_.database_) {
         throw std::runtime_error("no active database");
     }
-    auto table = database_->table(tableName);
+    auto table = owner_.database_->table(tableName);
     if (!table) {
         throw std::runtime_error("unknown table");
     }
     return table;
 }
 
-std::vector<Row> QueryExecutor::rowsSnapshotForRead(const Table &table) const {
-    return table.rowsSnapshot(readSnapshot(), session_.transactionManager());
+std::vector<Row> SelectEngine::rowsSnapshotForRead(const Table &table) const {
+    return table.rowsSnapshot(owner_.readSnapshot(), owner_.session_.transactionManager());
 }
 
-std::vector<Row> QueryExecutor::rowsByIdForRead(const Table &table,
-                                                std::span<const RowId> rowIds) const {
-    return table.rowsById(rowIds, readSnapshot(), session_.transactionManager());
+std::vector<Row> SelectEngine::rowsByIdForRead(const Table &table,
+                                               std::span<const RowId> rowIds) const {
+    return table.rowsById(rowIds, owner_.readSnapshot(), owner_.session_.transactionManager());
 }
 
 } // namespace VertexDB

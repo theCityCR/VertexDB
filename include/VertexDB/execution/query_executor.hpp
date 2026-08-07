@@ -1,12 +1,15 @@
 #pragma once
 
-// SQL command façade: dispatch, DDL/DML, transactions, prepared EXECUTE.
-// SELECT/join live in query_executor_select.cpp; CTE/IN/EXISTS in
-// query_executor_subquery.cpp; TxnSession and RecoveryService own transactional state.
+// SQL command façade: dispatch and public API only.
+// SelectEngine, SubqueryRuntime, PreparedStatementCatalog, TxnSession, and
+// RecoveryService own the execution subsystems composed by this façade.
 
 #include "VertexDB/concurrency/lock_manager.hpp"
+#include "VertexDB/execution/prepared_statement_catalog.hpp"
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/execution/recovery_service.hpp"
+#include "VertexDB/execution/select_engine.hpp"
+#include "VertexDB/execution/subquery_runtime.hpp"
 #include "VertexDB/execution/txn_session.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/persistence/storage_manager.hpp"
@@ -18,10 +21,8 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace VertexDB {
 
@@ -34,6 +35,9 @@ class QueryExecutor {
     [[nodiscard]] std::optional<Query> preparedAst(std::string_view name) const;
 
   private:
+    friend class SelectEngine;
+    friend class SubqueryRuntime;
+
     [[nodiscard]] QueryResult executeCreateDatabase(const CreateDatabase &command);
     [[nodiscard]] QueryResult executeCreateTable(const CreateTable &command);
     [[nodiscard]] QueryResult executeDropTable(const DropTable &command);
@@ -54,43 +58,14 @@ class QueryExecutor {
     [[nodiscard]] QueryResult executePrepare(const PrepareStatement &command);
     [[nodiscard]] QueryResult executePrepared(const ExecutePrepared &command);
 
-    [[nodiscard]] std::vector<std::size_t>
-    resolveProjection(const Select &command, const Table &table,
-                      std::vector<std::string> &columns) const;
-    [[nodiscard]] std::vector<std::size_t>
-    resolveProjectionFromNames(const Select &command, const std::vector<std::string> &sourceColumns,
-                               std::vector<std::string> &projectedColumns) const;
-    [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
-                                               const QueryPlan &plan) const;
-    [[nodiscard]] QueryResult executeJoinSelect(const Select &command);
-    [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
-                                                   std::vector<std::string> sourceColumns,
-                                                   std::vector<Row> rows) const;
-    void collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
-                         std::vector<Row> &joinedRows) const;
     [[nodiscard]] bool matches(const Row &row, const Table &table,
                                const Predicate &predicate) const;
-    [[nodiscard]] Select prepareSelect(const Select &command, RewriteResult &rewrite) const;
-    [[nodiscard]] Predicate materializePredicate(const Predicate &predicate) const;
-    [[nodiscard]] std::vector<Value> evaluateSubqueryValues(const Select &subquery) const;
-    [[nodiscard]] bool evaluateExists(const Select &subquery) const;
-    [[nodiscard]] Select bindOuterReferences(const Select &subquery, const Row &outerRow,
-                                             const Table &outerTable) const;
-    [[nodiscard]] Predicate bindOuterReferences(const Predicate &predicate, const Row &outerRow,
-                                                const Table &outerTable) const;
-    [[nodiscard]] std::shared_ptr<Table>
-    materializeCteTable(const std::string &name, const Select &body) const;
     [[nodiscard]] std::shared_ptr<Table>
     requireTable(std::string_view tableName,
                  const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
-    [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
-                                               const RewriteResult &rewrite) const;
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
     [[nodiscard]] ReadSnapshot readSnapshot() const;
     [[nodiscard]] TransactionId writeTransactionId();
-    [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
-    [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,
-                                                   std::span<const RowId> rowIds) const;
     [[nodiscard]] bool transactionActive() const noexcept;
     [[nodiscard]] QueryResult rejectIfTransactionActive(std::string_view action) const;
     void appendWal(WalOperation operation, std::string payload);
@@ -104,7 +79,9 @@ class QueryExecutor {
     QueryPlanner planner_;
     TxnSession session_;
     RecoveryService recovery_;
-    std::unordered_map<std::string, Query> preparedStatements_;
+    SelectEngine selectEngine_;
+    SubqueryRuntime subqueryRuntime_;
+    PreparedStatementCatalog prepared_;
     LockManager lockManager_;
 };
 

@@ -55,10 +55,11 @@ CLI
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
   façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
   `PageRowStore` are separate TUs sharing sparse-layout validation.
-- `execution`: `QueryExecutor` façade for command dispatch (DDL/DML/txn), with `TxnSession`
-  owning transaction-manager, snapshot, undo-log, and deferred-WAL state and `RecoveryService`
-  owning WAL replay, redo/undo application, and WAL flushing. Focused executor TUs cover
-  SELECT/join/EXPLAIN, CTE/`IN`/`EXISTS`, and thin recovery forwarding; `predicate_eval`,
+- `execution`: `QueryExecutor` is a stable façade that composes focused execution types.
+  `SelectEngine` owns SELECT/join/EXPLAIN execution, `SubqueryRuntime` owns CTE/`IN`/`EXISTS`
+  preparation and evaluation, and `PreparedStatementCatalog` owns parsed prepared ASTs.
+  `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
+  `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. `predicate_eval`,
   `select_helpers`, `prepared_bind`, and `sql_literal` provide shared execution helpers.
 - `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
@@ -124,6 +125,6 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
    materializes uncorrelated `IN` subqueries and evaluates single-level correlated `IN`/`EXISTS`
    per outer row.
 5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and per-join
-   algorithms for left-deep equi-join chains; `QueryExecutor` runs filters/joins, then optional
-   hash aggregation, then `ORDER BY`/`LIMIT`.
+   algorithms for left-deep equi-join chains; `SelectEngine` runs filters/joins, then optional hash
+   aggregation, then `ORDER BY`/`LIMIT`.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.
