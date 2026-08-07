@@ -697,4 +697,63 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
     EXPECT_LT(plan.estimates.estimatedCost, 64.0 / 3.0);
 }
 
+TEST(PlannerBehaviorTests, TopLevelOrWithNoIndexableDisjunctUsesFullScan) {
+    // Documented: when no disjunct is indexable, the planner keeps a full scan.
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    for (int i = 1; i <= 10; ++i) {
+        table.insert({Value{i}, Value{"n" + std::to_string(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    Predicate where =
+        makeOr(makeComparison("name", ComparisonOperator::Equal, Value{std::string{"n1"}}),
+               makeComparison("name", ComparisonOperator::Equal, Value{std::string{"n2"}}));
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Or);
+    EXPECT_NE(plan.estimates.explanation.find("full table scan (OR predicate)"), std::string::npos);
+
+    Parser parser;
+    auto executor = makeExecutor("or-unindexed-full-scan");
+    seedEmployees(executor, parser, true, false);
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE name = \"Alice\" OR name = \"Bob\";"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("full table scan"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhileConjunctUsesIndex) {
+    // Documented: an OR nested under AND may stay residual while another conjunct uses an index.
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"dept", ColumnType::Int}}};
+    table.insert({Value{1}, Value{std::string{"Alice"}}, Value{10}});
+    table.insert({Value{2}, Value{std::string{"Bob"}}, Value{20}});
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    Predicate nestedOr =
+        makeOr(makeComparison("name", ComparisonOperator::Equal, Value{std::string{"Alice"}}),
+               makeComparison("dept", ComparisonOperator::Equal, Value{20}));
+    Predicate where =
+        makeAnd(makeComparison("id", ComparisonOperator::Equal, Value{1}), nestedOr);
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIndexLookup);
+    EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Or);
+
+    Parser parser;
+    auto executor = makeExecutor("nested-or-residual");
+    seedEmployees(executor, parser, true, false);
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM Employees WHERE id = 1 AND (name = \"Alice\" OR salary > "
+        "100000.0);"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+}
+
 } // namespace VertexDB

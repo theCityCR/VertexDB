@@ -39,9 +39,8 @@ Do not rebuild these:
 3. `EXPLAIN` surfaces access path, residual status, and rewrite notes.
 4. Focused tests:
    - `NestedSqlTests::CteInliningUsesBaseTableIndex`
-   - `DesiredBehaviorTests::CteInliningLeavesBodyFilterAsResidualWhenOuterUsesIndex`
-   - rewriter / residual / `IN (SELECT …)` coverage in `tests/nested_sql_tests.cpp` and
-     `tests/desired_behavior_tests.cpp`
+   - `NestedSqlTests::CteInliningLeavesBodyFilterAsResidualWhenOuterUsesIndex`
+   - rewriter / residual / `IN (SELECT …)` coverage in `tests/nested_sql_tests.cpp`
 5. Semantics documented in `docs/sql.md`, `docs/design.md`, and `docs/deep_features.md`.
 
 ## What to build
@@ -61,7 +60,7 @@ Optional follow-up: add the same `EXPLAIN` block to `examples/company.sql`.
 
 ### 2. Scaled regression test — done
 
-`DesiredBehaviorTests::ScaledCteWinQueryUsesHashIndexAndResidual` seeds 10k employees (mostly
+`NestedSqlTests::ScaledCteWinQueryUsesHashIndexAndResidual` seeds 10k employees (mostly
 high-salary) via `Table::insert`, then asserts `EXPLAIN` still chooses hash index lookup + inlined
 CTE + residual (not a full scan) and that the win query returns Alice through the executor.
 
@@ -149,7 +148,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 | Artifact | Role |
 |----------|------|
 | [`examples/cte_index_win.sql`](../examples/cte_index_win.sql) | Runnable demo |
-| `DesiredBehaviorTests::ScaledCteWinQueryUsesHashIndexAndResidual` | Scaled plan regression |
+| `NestedSqlTests::ScaledCteWinQueryUsesHashIndexAndResidual` | Scaled plan regression |
 | `BM_CteIndexedWinSelect` / `BM_CteNonIndexedSelect` | Cost shape at 1k/100k |
 | [`scripts/compare_cte_materialize.sh`](../scripts/compare_cte_materialize.sh) | Live Postgres/VertexDB plans |
 

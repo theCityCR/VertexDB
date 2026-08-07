@@ -419,6 +419,49 @@ TEST(NestedSqlTests, TwoLevelCorrelatedExistsBindsOutermost) {
     EXPECT_EQ(mid.rows[0][0], Value{"Alice"});
 }
 
+TEST(NestedSqlTests, TwoLevelCorrelatedInBindsOutermost) {
+    Parser parser;
+    auto executor = makeExecutor("two-level-in");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (1, 5000.0), (2, 1000.0);"))
+            .success);
+
+    // Innermost correlates to outermost Employees through one mid-level IN.
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "  SELECT emp_id FROM Bonuses WHERE emp_id IN ("
+        "    SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+        "  )"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[1][0], Value{"Bob"});
+
+    // Mid-level filter plus innermost correlation to outermost Employees.
+    auto filtered = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "  SELECT emp_id FROM Bonuses WHERE amount > 2000.0 AND emp_id IN ("
+        "    SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+        "  )"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(filtered.success);
+    ASSERT_EQ(filtered.rows.size(), 1U);
+    EXPECT_EQ(filtered.rows[0][0], Value{"Alice"});
+}
+
 TEST(NestedSqlTests, ThreeLevelCorrelationIsRejected) {
     Parser parser;
     EXPECT_THROW(
@@ -610,11 +653,17 @@ TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
                  std::runtime_error);
 
     // Outer JOIN against a CTE/derived alias is rejected (body WHERE would mis-scope on the join).
-    auto query = parser.parse(
+    auto cteJoin = parser.parse(
         "WITH high AS (SELECT id, name FROM Employees WHERE id = 1) "
         "SELECT * FROM high JOIN Departments ON id = id;");
-    ASSERT_TRUE(std::holds_alternative<Select>(query));
-    EXPECT_THROW((void)rewriteSelect(std::get<Select>(query)), std::runtime_error);
+    ASSERT_TRUE(std::holds_alternative<Select>(cteJoin));
+    EXPECT_THROW((void)rewriteSelect(std::get<Select>(cteJoin)), std::runtime_error);
+
+    auto derivedJoin = parser.parse(
+        "SELECT * FROM (SELECT id, name FROM Employees WHERE id = 1) AS high "
+        "JOIN Departments ON id = id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(derivedJoin));
+    EXPECT_THROW((void)rewriteSelect(std::get<Select>(derivedJoin)), std::runtime_error);
 }
 
 TEST(NestedSqlTests, MaterializedCteFencesBaseTableIndex) {
@@ -760,6 +809,10 @@ TEST(NestedSqlTests, NestedWithAndJoinInSubqueryDocumentedRefusals) {
                      "SELECT name FROM Employees WHERE id IN (SELECT Employees.id FROM Employees "
                      "JOIN Departments ON Employees.dept_id = Departments.id);"),
                  std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT name FROM Employees WHERE EXISTS (SELECT Employees.id FROM Employees "
+                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
+                 std::runtime_error);
 }
 
 TEST(NestedSqlTests, WithInsideInSubqueryInlinesAndFilters) {
@@ -850,6 +903,34 @@ TEST(NestedSqlTests, DerivedTableInsideInSubqueryIsAllowed) {
     auto result = executor.execute(parser.parse(
         "SELECT name FROM Employees WHERE id IN ("
         "SELECT id FROM (SELECT id FROM Employees WHERE salary > 100000.0 AND id = 1) AS high);"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, DerivedTableInsideExistsIsAllowed) {
+    Parser parser;
+    auto executor = makeExecutor("derived-inside-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (1, 5000.0), (2, 100.0);"))
+            .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "SELECT emp_id FROM (SELECT emp_id, amount FROM Bonuses WHERE amount > 1000.0) AS b "
+        "WHERE emp_id = Employees.id) ORDER BY name;"));
     ASSERT_TRUE(result.success);
     ASSERT_EQ(result.rows.size(), 1U);
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
