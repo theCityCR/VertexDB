@@ -27,7 +27,8 @@ CLI
  |
  +-- Persistence Layer
  |   +-- StorageManager (path / open / rename)
- |   +-- TcrdbCodec (.tcrdb v1–v4 layout)
+ |   +-- TcrdbCodec (.tcrdb v1–v4 orchestrator)
+ |       +-- Value, table, and index codecs
  |   +-- WriteAheadLog
  |
  +-- Concurrency
@@ -69,8 +70,9 @@ filters live in the shared `PlanEstimates` metadata.
 - `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
   forwards its public index API while holding the appropriate lock.
-- `persistence`: `StorageManager` orchestrates snapshot paths; `tcrdb_codec` owns `.tcrdb` v1–v4
-  encode/decode. WAL recovery uses page-image redo plus legacy physical/logical records.
+- `persistence`: `StorageManager` orchestrates snapshot paths; the slim `tcrdb_codec` orchestrates
+  `.tcrdb` v1–v4 encode/decode across focused value, table, and index codec translation units.
+  WAL recovery uses page-image redo plus legacy physical/logical records.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager`.
 - `transaction`: commit sequences, MVCC row versions, and per-transaction undo-log rollback.
 

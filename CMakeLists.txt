@@ -60,6 +60,9 @@ add_library(VertexDB
     src/concurrency/lock_manager.cpp
     src/persistence/storage_manager.cpp
     src/persistence/tcrdb_codec.cpp
+    src/persistence/tcrdb_value_codec.cpp
+    src/persistence/tcrdb_table_codec.cpp
+    src/persistence/tcrdb_index_codec.cpp
     src/persistence/write_ahead_log.cpp
     src/persistence/physical_redo.cpp
     src/persistence/page_image_redo.cpp
