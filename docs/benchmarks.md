@@ -74,53 +74,53 @@ residual after CTE inlining. Without an index, the same SQL is a full scan. See
 [cte_index_wedge.md](cte_index_wedge.md) and the external Postgres comparison in
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
 
-## Summary — 2026-08-07
+## Summary — 2026-08-10
 
-Machine: Apple Silicon host, 12 logical CPUs (Google Benchmark reported 1000 MHz under the agent
-sandbox — clock metadata only). Binary: `build-benchmark/VertexDB_benchmarks` with
-`CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`). Filter as above with `--benchmark_min_time=0.05s`.
-Times are Google Benchmark **CPU time**. Executor `Update`/`Delete` benches are omitted from this
-table (multi‑minute iterations under page-image WAL); they remain in the binary for local runs.
+Machine: Apple Silicon host, 12 logical CPUs (Google Benchmark reported 2600 MHz). Binary:
+`build-benchmark/VertexDB_benchmarks` with `CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`). Filter as
+above with `--benchmark_min_time=0.05s`. Times are Google Benchmark **CPU time**. Executor
+`Update`/`Delete` benches are omitted from this table (multi‑minute iterations under page-image
+WAL); they remain in the binary for local runs.
 
 | Benchmark | Arg | CPU time |
 | --- | ---: | ---: |
-| `BM_IndexedPointLookup` | 1,000 | ~239 ns |
-| `BM_IndexedPointLookup` | 100,000 | ~247 ns |
-| `BM_FilteredSelect` | 1,000 | ~5.1 µs |
-| `BM_FilteredSelect` | 100,000 | ~4.4 µs |
-| `BM_NonIndexedFilteredSelect` | 1,000 | ~369 µs |
-| `BM_NonIndexedFilteredSelect` | 100,000 | ~36 ms |
-| `BM_ConcurrentPointLookups` | 1 | ~38 µs |
-| `BM_ConcurrentPointLookups` | 2 | ~70 µs |
-| `BM_ConcurrentPointLookups` | 12 | ~343 µs |
-| `BM_CteIndexedWinSelect` | 1,000 | ~8.4 µs |
-| `BM_CteIndexedWinSelect` | 100,000 | ~7.1 µs |
-| `BM_CteNonIndexedSelect` | 1,000 | ~349 µs |
-| `BM_CteNonIndexedSelect` | 100,000 | ~85 ms |
-| `BM_CteMaterializedSelect` | 1,000 | ~124 ms |
-| `BM_CteMaterializedSelect` | 10,000 | ~1.31 s |
-| `BM_VectorRowStoreInsert` | 1,000 | ~303 µs |
-| `BM_VectorRowStoreInsert` | 100,000 | ~29 ms |
-| `BM_PageRowStoreInsert` | 1,000 | ~52 ms |
-| `BM_PageRowStoreInsert` | 10,000 | ~576 ms |
-| `BM_VectorRowStoreSelect` | 1,000 / 100,000 | ~2.7–3.0 ns |
-| `BM_PageRowStoreSelect` | 1,000 / 100,000 | ~13–15 ns |
-| `BM_BTreeRangeQuery` | 1,000 | ~13 µs |
-| `BM_BTreeRangeQuery` | 100,000 | ~407 µs |
-| `BM_TransactionSnapshotRead` | 1,000 | ~3.3 µs |
-| `BM_TransactionSnapshotRead` | 10,000 | ~3.6 µs |
-| `BM_TransactionRollback` | 100 | ~513 ms |
-| `BM_TransactionRollback` | 1,000 | ~5.4 s |
+| `BM_IndexedPointLookup` | 1,000 | ~166 ns |
+| `BM_IndexedPointLookup` | 100,000 | ~163 ns |
+| `BM_FilteredSelect` | 1,000 | ~3.2 µs |
+| `BM_FilteredSelect` | 100,000 | ~3.5 µs |
+| `BM_NonIndexedFilteredSelect` | 1,000 | ~235 µs |
+| `BM_NonIndexedFilteredSelect` | 100,000 | ~31 ms |
+| `BM_ConcurrentPointLookups` | 1 | ~29 µs |
+| `BM_ConcurrentPointLookups` | 2 | ~51 µs |
+| `BM_ConcurrentPointLookups` | 12 | ~235 µs |
+| `BM_CteIndexedWinSelect` | 1,000 | ~6.1 µs |
+| `BM_CteIndexedWinSelect` | 100,000 | ~5.9 µs |
+| `BM_CteNonIndexedSelect` | 1,000 | ~297 µs |
+| `BM_CteNonIndexedSelect` | 100,000 | ~38 ms |
+| `BM_CteMaterializedSelect` | 1,000 | ~118 ms |
+| `BM_CteMaterializedSelect` | 10,000 | ~1.58 s |
+| `BM_VectorRowStoreInsert` | 1,000 | ~166 µs |
+| `BM_VectorRowStoreInsert` | 100,000 | ~19 ms |
+| `BM_PageRowStoreInsert` | 1,000 | ~33 ms |
+| `BM_PageRowStoreInsert` | 10,000 | ~378 ms |
+| `BM_VectorRowStoreSelect` | 1,000 / 100,000 | ~2.6–2.7 ns |
+| `BM_PageRowStoreSelect` | 1,000 / 100,000 | ~12–16 ns |
+| `BM_BTreeRangeQuery` | 1,000 | ~5.3 µs |
+| `BM_BTreeRangeQuery` | 100,000 | ~916 µs |
+| `BM_TransactionSnapshotRead` | 1,000 | ~4.3 µs |
+| `BM_TransactionSnapshotRead` | 10,000 | ~3.4 µs |
+| `BM_TransactionRollback` | 100 | ~533 ms |
+| `BM_TransactionRollback` | 1,000 | ~5.5 s |
 
 Takeaways from this run:
 
-- Inlined CTE index-win stays near point-lookup cost as N grows (~7–8 µs); the non-indexed CTE
-  baseline grows with table size (~85 ms at 100k). `AS MATERIALIZED` pays a large temp-build cost
+- Inlined CTE index-win stays near point-lookup cost as N grows (~6 µs); the non-indexed CTE
+  baseline grows with table size (~38 ms at 100k). `AS MATERIALIZED` pays a large temp-build cost
   each iteration (~10⁴× slower than the index-win inline path here).
-- Indexed filtered `SELECT` stays ~5 µs across 1k–100k rows; non-indexed filtered `SELECT` grows
-  with N (~36 ms at 100k).
+- Indexed filtered `SELECT` stays ~3–4 µs across 1k–100k rows; non-indexed filtered `SELECT` grows
+  with N (~31 ms at 100k).
 - Concurrent point lookups scale sub-linearly in CPU time as worker count rises (1 → 12).
-- Vector row-store appends remain much cheaper than page-store appends; mid-row `get` is ~5× faster
+- Vector row-store appends remain much cheaper than page-store appends; mid-row `get` is ~5–6× faster
   on the vector store (contiguous vs page deserialize/cache).
 - B+ range cost grows with result cardinality (half the table).
 - Snapshot reads stay cheap; SQL `INSERT`+`ROLLBACK` undo is expensive relative to direct table
