@@ -110,9 +110,11 @@ union under independence (\(N \cdot (1 - \prod(1 - 1/D_i))\)) over the indexable
 `Union` when that cost beats a full scan. Non-indexable disjuncts become a residual OR
 evaluated as a complementary scan after the index union (partial OR); `EXPLAIN` reports
 `residual: yes` and a residual-OR note. When no arm is indexable (or the indexable union is not
-cheaper), the planner keeps a full scan. An `OR` nested under `AND` may stay as a residual while
-another conjunct uses an index. `EXPLAIN` surfaces the chosen path (including intersected or
-unioned columns), residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
+cheaper), the planner keeps a full scan. Same-column equality `OR` is rewritten to `IN` (HashIn)
+whether top-level or nested under `AND`. A heterogeneous `OR` nested under `AND` may stay as a
+residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path (including
+intersected or unioned columns), residual status, `est_rows` / `cost`, and rewrite notes such as
+CTE inlining.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe, including
 per-join planning for left-deep multi-join chains. Non-equi and `LEFT` joins fall back to

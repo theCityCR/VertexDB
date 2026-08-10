@@ -3,7 +3,9 @@
 #include "planner_detail.hpp"
 #include "query_planner_access.hpp"
 
+#include <optional>
 #include <utility>
+#include <vector>
 
 namespace VertexDB {
 
@@ -20,12 +22,31 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
         return plan;
     }
 
-    if (tryPlanTopLevelOrUnion(*query.where, stats, indexes, plan)) {
+    // Same-column equality OR → IN (top-level or nested under AND) so HashIn can win.
+    std::optional<Predicate> rewrittenWhere;
+    const Predicate *where = &*query.where;
+    if (auto topLevelIn = tryRewriteSameColumnEqualityOrToIn(*query.where)) {
+        rewrittenWhere = std::move(*topLevelIn);
+        where = &*rewrittenWhere;
+    }
+
+    if (tryPlanTopLevelOrUnion(*where, stats, indexes, plan)) {
         return plan;
     }
 
-    std::vector<const Predicate *> conjuncts;
-    collectAndConjuncts(*query.where, conjuncts);
+    std::vector<const Predicate *> rawConjuncts;
+    collectAndConjuncts(*where, rawConjuncts);
+
+    std::vector<std::optional<Predicate>> conjunctRewrites(rawConjuncts.size());
+    std::vector<const Predicate *> conjuncts(rawConjuncts.size());
+    for (std::size_t i = 0; i < rawConjuncts.size(); ++i) {
+        if (auto rewritten = tryRewriteSameColumnEqualityOrToIn(*rawConjuncts[i])) {
+            conjunctRewrites[i] = std::move(*rewritten);
+            conjuncts[i] = &*conjunctRewrites[i];
+        } else {
+            conjuncts[i] = rawConjuncts[i];
+        }
+    }
 
     const auto choice = chooseBestConjunctPath(conjuncts, stats, indexes, plan.estimates.estimatedCost,
                                                plan.estimates.estimatedRows);

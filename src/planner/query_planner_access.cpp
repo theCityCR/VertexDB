@@ -251,8 +251,15 @@ void finalizeBestAccessPath(const std::vector<const Predicate *> &conjuncts,
         const auto &inList = std::get<InListPred>(chosen);
         plan.path = HashInPlan{inList.column, inList.expression, inList.inValues};
         plan.estimates.estimatedRows = rowsFromCost(choice.bestCost, stats.rowCount());
-        plan.estimates.explanation = "hash index IN lookup on " + inList.column + " (" +
-                                     std::to_string(inList.inValues.size()) + " values)";
+        if (inList.expression) {
+            plan.estimates.explanation =
+                "expression hash index IN lookup on (" +
+                indexExpressionToString(*inList.expression) + ") (" +
+                std::to_string(inList.inValues.size()) + " values)";
+        } else {
+            plan.estimates.explanation = "hash index IN lookup on " + inList.column + " (" +
+                                         std::to_string(inList.inValues.size()) + " values)";
+        }
     } else if (choice.bestPath == AccessPath::PrefixLike) {
         const auto &like = std::get<LikePred>(chosen);
         const auto prefix = likePrefixLiteral(like.pattern).value();

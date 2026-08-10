@@ -111,8 +111,10 @@ cheaper than a single index + residual, the planner chooses a multi-index inters
 filter. Top-level `OR` of equality (or expression-equality) index probes uses a multi-index union of
 sorted `RowId` lists when the indexable subset is cheaper than a full scan; `EXPLAIN` lists the
 unioned columns. Non-indexable disjuncts become a residual OR complementary scan (partial OR,
-`residual: yes`). When no disjunct is indexable, the planner keeps a full scan. An `OR` nested under
-`AND` may remain as a residual while another conjunct uses an index.
+`residual: yes`). When no disjunct is indexable, the planner keeps a full scan. Same-column
+equality `OR` (top-level or nested under `AND`) is rewritten to an `IN` list so `HashIn` can win.
+A heterogeneous `OR` nested under `AND` may remain as a residual while another conjunct uses an
+index.
 
 `WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use
 base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into an ephemeral table

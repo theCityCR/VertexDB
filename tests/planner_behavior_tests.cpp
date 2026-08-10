@@ -158,7 +158,7 @@ TEST(PlannerBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
     EXPECT_EQ(result.rows[0][0], Value{"Bob"});
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesMultiIndexUnion) {
+TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesHashIn) {
     Table table{"Employees", {{"id", ColumnType::Int}}};
     table.insert({Value{1}});
     table.insert({Value{2}});
@@ -170,9 +170,10 @@ TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesMultiIndexUnion) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, orPredicate, {}, {}};
     QueryPlanner planner;
     const auto plan = planner.planSelect(query, table);
-    EXPECT_EQ(plan.accessPath(), AccessPath::Union);
-    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
-    EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIn);
+    ASSERT_EQ(std::get<HashInPlan>(plan.path).indexValues.size(), 2U);
+    EXPECT_EQ(std::get<HashInPlan>(plan.path).indexColumn, "id");
+    EXPECT_NE(plan.estimates.explanation.find("hash index IN lookup on"), std::string::npos);
     EXPECT_FALSE(plan.residual().has_value());
 
     Parser parser;
@@ -181,7 +182,7 @@ TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesMultiIndexUnion) {
     auto explain = executor.execute(
         parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1 OR id = 2;"));
     ASSERT_TRUE(explain.success);
-    EXPECT_NE(explain.rows.front().front().toString().find("multi-index union on"),
+    EXPECT_NE(explain.rows.front().front().toString().find("hash index IN lookup on"),
               std::string::npos);
     EXPECT_NE(explain.rows.front().front().toString().find("residual: no"), std::string::npos);
 }
@@ -813,6 +814,7 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
 
 TEST(PlannerBehaviorTests, TopLevelOrWithNoIndexableDisjunctUsesFullScan) {
     // Documented: when no disjunct is indexable, the planner keeps a full scan.
+    // Same-column equality OR rewrites to IN first; without an index that is still a full scan.
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 10; ++i) {
         table.insert({Value{i}, Value{"n" + std::to_string(i)}});
@@ -826,8 +828,7 @@ TEST(PlannerBehaviorTests, TopLevelOrWithNoIndexableDisjunctUsesFullScan) {
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
     ASSERT_TRUE(plan.residual().has_value());
-    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Or);
-    EXPECT_NE(plan.estimates.explanation.find("full table scan (OR predicate)"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("full table scan"), std::string::npos);
 
     Parser parser;
     auto executor = makeExecutor("or-unindexed-full-scan");
@@ -838,8 +839,9 @@ TEST(PlannerBehaviorTests, TopLevelOrWithNoIndexableDisjunctUsesFullScan) {
     EXPECT_NE(explain.rows.front().front().toString().find("full table scan"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhileConjunctUsesIndex) {
-    // Documented: an OR nested under AND may stay residual while another conjunct uses an index.
+TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
+    // Documented: heterogeneous OR nested under AND stays residual while another conjunct uses
+    // an index. Same-column equality OR is rewritten to IN (see SameColumnNestedOrUnderAnd…).
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"dept", ColumnType::Int}}};
     table.insert({Value{1}, Value{std::string{"Alice"}}, Value{10}});
@@ -865,9 +867,69 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhileConjunctUsesIndex
         "EXPLAIN SELECT name FROM Employees WHERE id = 1 AND (name = \"Alice\" OR salary > "
         "100000.0);"));
     ASSERT_TRUE(explain.success);
-    const auto text = explain.rows.front().front().toString();
-    EXPECT_NE(text.find("hash index equality lookup"), std::string::npos);
-    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+    const auto text_plan = explain.rows.front().front().toString();
+    EXPECT_NE(text_plan.find("hash index equality lookup"), std::string::npos);
+    EXPECT_NE(text_plan.find("residual: yes"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, SameColumnNestedOrUnderAndRewritesToHashIn) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
+    for (int i = 1; i <= 20; ++i) {
+        table.insert({Value{i}, Value{i % 3}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+
+    Predicate nestedOr =
+        makeOr(makeComparison("dept", ComparisonOperator::Equal, Value{0}),
+               makeComparison("dept", ComparisonOperator::Equal, Value{1}));
+    Predicate where =
+        makeAnd(makeComparison("id", ComparisonOperator::Greater, Value{0}), nestedOr);
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIn);
+    EXPECT_EQ(std::get<HashInPlan>(plan.path).indexColumn, "dept");
+    ASSERT_EQ(std::get<HashInPlan>(plan.path).indexValues.size(), 2U);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(std::get<ComparisonPred>(*plan.residual()).column, "id");
+
+    Parser parser;
+    auto executor = makeExecutor("nested-or-hashin");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1 OR id = 2 OR id = 3;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("hash index IN lookup on"),
+              std::string::npos);
+
+    auto rows = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE id = 1 OR id = 3 ORDER BY name ASC;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 2U);
+    EXPECT_EQ(rows.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(rows.rows[1][0], Value{"Cara"});
+}
+
+TEST(PlannerBehaviorTests, SameColumnNestedOrUnderAndWithSelectiveEquality) {
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"name", ColumnType::String}}};
+    for (int i = 1; i <= 100; ++i) {
+        table.insert({Value{i}, Value{i % 2}, Value{"n" + std::to_string(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+
+    Predicate nestedOr =
+        makeOr(makeComparison("dept", ComparisonOperator::Equal, Value{0}),
+               makeComparison("dept", ComparisonOperator::Equal, Value{1}));
+    Predicate where =
+        makeAnd(makeComparison("id", ComparisonOperator::Equal, Value{50}), nestedOr);
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
+    EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::InList);
 }
 
 TEST(PlannerBehaviorTests, RegexPredicateUsesResidualFullScan) {

@@ -138,14 +138,58 @@ bool isIndexableComparison(const Predicate &predicate, const RelationStats &stat
 bool isIndexableInList(const Predicate &predicate, const RelationStats &stats,
                        const IndexCatalogView &indexes, double &cost, std::size_t rowCount) {
     const auto *inList = std::get_if<InListPred>(&predicate);
-    if (inList == nullptr) {
+    if (inList == nullptr || inList->inValues.empty()) {
         return false;
     }
-    if (!indexes.hasIndex(inList->column) || inList->inValues.empty()) {
+    if (inList->expression) {
+        if (!indexes.hasExpressionIndex(*inList->expression)) {
+            return false;
+        }
+        cost = static_cast<double>(inList->inValues.size()) *
+               averageRowsPerKey(rowCount, distinctOrOne(indexes, *inList->expression));
+        return true;
+    }
+    if (!indexes.hasIndex(inList->column)) {
         return false;
     }
     cost = inCost(stats, indexes, inList->column, inList->inValues, rowCount);
     return true;
+}
+
+std::optional<Predicate> tryRewriteSameColumnEqualityOrToIn(const Predicate &predicate) {
+    if (!std::holds_alternative<OrPred>(predicate)) {
+        return std::nullopt;
+    }
+    std::vector<const Predicate *> disjuncts;
+    collectOrDisjuncts(predicate, disjuncts);
+    if (disjuncts.size() < 2) {
+        return std::nullopt;
+    }
+
+    const ComparisonPred *first = nullptr;
+    std::vector<Value> values;
+    values.reserve(disjuncts.size());
+    for (const auto *disjunct : disjuncts) {
+        const auto *comparison = std::get_if<ComparisonPred>(disjunct);
+        if (comparison == nullptr || comparison->rhsColumn ||
+            comparison->op != ComparisonOperator::Equal) {
+            return std::nullopt;
+        }
+        if (first == nullptr) {
+            first = comparison;
+        } else if (comparison->column != first->column ||
+                   comparison->expression != first->expression) {
+            return std::nullopt;
+        }
+        values.push_back(comparison->value);
+    }
+
+    InListPred inList;
+    inList.column = first->column;
+    inList.inValues = std::move(values);
+    inList.expression = first->expression;
+    inList.referencesOuter = first->referencesOuter;
+    return Predicate{std::move(inList)};
 }
 
 bool isEqualityIndexProbe(const Predicate &predicate, const IndexCatalogView &indexes) {

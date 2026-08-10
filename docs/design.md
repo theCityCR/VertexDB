@@ -55,7 +55,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Top-level `OR` of equality (or expression-equality) index probes uses multi-index union when the
   indexable subset is cheaper than a full scan. Non-indexable disjuncts become a residual OR
   complementary scan (partial OR). When no disjunct is indexable, or the indexable union is not
-  cheaper than a scan, the planner keeps a full scan. Nested `OR` under `AND` may remain as a
+  cheaper than a scan, the planner keeps a full scan. Same-column equality `OR` (top-level or under
+  `AND`) is rewritten to `IN` for HashIn. Heterogeneous nested `OR` under `AND` may remain as a
   residual while another conjunct uses an index.
 - Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
   frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
@@ -72,10 +73,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-Transactional `CREATE INDEX` (undo + deferred WAL) and indexed `UPDATE`/`DELETE` are shipped.
-Catalog DDL (`CREATE`/`DROP`/`RENAME` table, `CREATE DATABASE`) and `SAVE`/`LOAD` remain rejected
-inside open transactions. Further recursive/set-op surface remains intentionally limited (see
-[sql.md](sql.md)). `EXPLAIN` for mutations and public `DROP INDEX` SQL are still out of scope.
+Same-column equality `OR`→`IN` (HashIn) under AND/top-level, transactional `CREATE INDEX`, and
+indexed `UPDATE`/`DELETE` are shipped. Catalog DDL and `SAVE`/`LOAD` remain rejected inside open
+transactions. Heterogeneous nested `OR` under `AND`, composite Intersect∪Union, and further
+recursive/set-op surface remain intentionally limited (see [sql.md](sql.md)). `EXPLAIN` for
+mutations and public `DROP INDEX` SQL are still out of scope.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays

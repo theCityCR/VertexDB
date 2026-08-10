@@ -47,6 +47,11 @@ buildOrTree(const std::vector<const Predicate *> &disjuncts);
 [[nodiscard]] bool isEqualityIndexProbe(const Predicate &predicate,
                                         const IndexCatalogView &indexes);
 
+// Rewrite (col=v1 OR col=v2 …) / same expression equalities into InListPred when every
+// disjunct is a constant equality on the same column (and expression, if any).
+[[nodiscard]] std::optional<Predicate>
+tryRewriteSameColumnEqualityOrToIn(const Predicate &predicate);
+
 [[nodiscard]] IndexEqualityProbe makeEqualityProbe(const Predicate &predicate);
 [[nodiscard]] double equalityFanout(const Predicate &predicate, const RelationStats &stats,
                                     const IndexCatalogView &indexes, std::size_t rowCount);
