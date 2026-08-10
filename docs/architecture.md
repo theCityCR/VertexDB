@@ -7,6 +7,7 @@ CLI
  |
  Query Executor
  |   +-- ExecutionContext (DB / planner / session + Select/Subquery peers)
+ |   +-- SelectEngine / SubqueryRuntime / DmlEngine
  |
  +-- Query Planner
  |   +-- Rewriter (CTE inline/materialize, IN subquery prep)
@@ -47,15 +48,17 @@ CLI
   (`equalsIgnoreCase`), LIKE/regex/trigram pattern helpers (`string_pattern`), and binary POD I/O
   (`writePod` / `readPod` for streams and byte spans).
 - `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML,
-  SELECT/WITH, and predicate parsing live in focused translation units behind one `Parser`
-  type). AST statements reference `IndexExpression` from `common/` rather than owning the type.
+  SELECT, WITH/CTE, outer-ref marking, and predicate parsing live in focused translation units
+  behind one `Parser` type). AST statements reference `IndexExpression` from `common/` rather
+  than owning the type.
 
 - `planner`: CTE/derived-table rewrite (inline, `AS MATERIALIZED`, force-materialize for outer
   `JOIN` targets and minimal `WITH RECURSIVE`), correlated/`IN` prep, and cost-based access-path /
   join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
   `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
-  complementary scan), prefix `LIKE` / trigram intersect, and residual filters. `QueryPlanner` is
-  split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`),
+  complementary scan), prefix `LIKE` / trigram intersect, and residual filters.   `QueryPlanner` is
+  split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`
+  orchestration), `query_planner_access.cpp` (OR-union / AND-intersect / best-path finalize),
   `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
@@ -70,9 +73,11 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   `ExecutionContext` holds non-owning refs to the database, planner, and txn session plus peer
   pointers to `SelectEngine` / `SubqueryRuntime` (no `QueryExecutor` friendship).
   `SelectEngine` owns SELECT/join/EXPLAIN execution (`select_engine.cpp` orchestration,
-  `select_engine_scan.cpp`, `select_engine_join.cpp`), `SubqueryRuntime` owns CTE/`IN`/`EXISTS`
-  preparation and evaluation (including joined subqueries and recursive CTE materialization), and
-  `PreparedStatementCatalog` owns parsed prepared ASTs.
+  `select_engine_scan.cpp`, `select_engine_join.cpp`). `DmlEngine` owns INSERT/UPDATE/DELETE with
+  undo and page-image WAL redo. `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
+  evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`, `subquery_runtime_cte.cpp`),
+  including joined subqueries, recursive CTE materialization, and full predicate matching
+  (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
   `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. `predicate_eval`,
   `select_helpers` / `select_scope` / `select_aggregate`, `prepared_bind`, and `sql_literal`

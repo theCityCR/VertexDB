@@ -1,23 +1,19 @@
 #include "VertexDB/execution/subquery_runtime.hpp"
 
 #include "VertexDB/common/string_utils.hpp"
-#include "VertexDB/execution/recursive_cte_limits.hpp"
+#include "VertexDB/execution/predicate_eval.hpp"
 #include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/select_scope.hpp"
 #include "VertexDB/parser/predicate.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
 namespace VertexDB {
-
-RecursiveCteLimits &recursiveCteLimits() noexcept {
-    static RecursiveCteLimits limits;
-    return limits;
-}
 
 SubqueryRuntime::SubqueryRuntime(ExecutionContext &ctx) noexcept : ctx_(ctx) {}
 
@@ -138,232 +134,62 @@ bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
     return !rows.empty();
 }
 
-namespace {
-
-[[nodiscard]] std::string_view unqualifiedName(std::string_view name) {
-    const auto dot = name.rfind('.');
-    if (dot == std::string_view::npos) {
-        return name;
-    }
-    return name.substr(dot + 1);
-}
-
-[[nodiscard]] std::optional<std::string_view> qualifier(std::string_view name) {
-    const auto dot = name.find('.');
-    if (dot == std::string_view::npos) {
-        return std::nullopt;
-    }
-    return name.substr(0, dot);
-}
-
-[[nodiscard]] bool refersToCurrentOuter(std::string_view column, const Table &outerTable,
-                                        std::string_view outerScope) {
-    if (const auto table = qualifier(column)) {
-        return equalsIgnoreCase(*table, outerScope) || equalsIgnoreCase(*table, outerTable.name());
-    }
-    return outerTable.columnIndex(unqualifiedName(column)).has_value();
-}
-
-[[nodiscard]] Value outerColumnValue(std::string_view column, const Row &outerRow,
-                                     const Table &outerTable) {
-    auto index = outerTable.columnIndex(unqualifiedName(column));
-    if (!index) {
-        throw std::runtime_error("unknown outer reference column");
-    }
-    return outerRow[*index];
-}
-
-} // namespace
-
-Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
-                                               const Table &outerTable,
-                                               std::string_view outerScope) const {
+bool SubqueryRuntime::matches(const Row &row, const Table &table, const Predicate &predicate,
+                              std::string_view scopeName) const {
+    const std::string_view scope = scopeName.empty() ? std::string_view{table.name()} : scopeName;
     return std::visit(
-        [&](const auto &node) -> Predicate {
+        [&](const auto &node) -> bool {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, AndPred>) {
-                return makeAnd(bindOuterReferences(*node.left, outerRow, outerTable, outerScope),
-                               bindOuterReferences(*node.right, outerRow, outerTable, outerScope));
+                return matches(row, table, *node.left, scope) &&
+                       matches(row, table, *node.right, scope);
             } else if constexpr (std::is_same_v<T, OrPred>) {
-                return makeOr(bindOuterReferences(*node.left, outerRow, outerTable, outerScope),
-                              bindOuterReferences(*node.right, outerRow, outerTable, outerScope));
-            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
-                InSubqueryPred bound = node;
-                if (bound.subquery) {
-                    auto sub =
-                        bindOuterReferences(*bound.subquery, outerRow, outerTable, outerScope);
-                    bound.referencesOuter = sub.hasOuterRefs;
-                    bound.subquery = std::make_shared<Select>(std::move(sub));
-                } else {
-                    bound.referencesOuter = false;
-                }
-                return bound;
+                return matches(row, table, *node.left, scope) ||
+                       matches(row, table, *node.right, scope);
             } else if constexpr (std::is_same_v<T, ExistsPred>) {
-                ExistsPred bound = node;
-                if (bound.subquery) {
-                    auto sub =
-                        bindOuterReferences(*bound.subquery, outerRow, outerTable, outerScope);
-                    bound.referencesOuter = sub.hasOuterRefs;
-                    bound.subquery = std::make_shared<Select>(std::move(sub));
-                } else {
-                    bound.referencesOuter = false;
+                if (!node.subquery) {
+                    throw std::runtime_error("EXISTS subquery is missing");
                 }
-                return bound;
-            } else if constexpr (std::is_same_v<T, ComparisonPred>) {
-                ComparisonPred bound = node;
-                if (node.rhsColumn && node.referencesOuter &&
-                    refersToCurrentOuter(*node.rhsColumn, outerTable, outerScope)) {
-                    bound.rhsColumn.reset();
-                    bound.value = outerColumnValue(*node.rhsColumn, outerRow, outerTable);
-                    bound.referencesOuter = false;
-                } else if (!node.referencesOuter) {
-                    bound.referencesOuter = false;
+                if (node.referencesOuter || node.subquery->hasOuterRefs) {
+                    const Select bound = bindOuterReferences(*node.subquery, row, table, scope);
+                    return evaluateExists(bound);
                 }
-                // Else: still refers to a mid-level outer; leave for a later bind frame.
-                return bound;
+                return evaluateExists(*node.subquery);
+            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
+                if (!node.subquery) {
+                    throw std::runtime_error("IN subquery is missing");
+                }
+                const Select *subquery = node.subquery.get();
+                std::optional<Select> bound;
+                if (node.referencesOuter || node.subquery->hasOuterRefs) {
+                    bound = bindOuterReferences(*node.subquery, row, table, scope);
+                    subquery = &*bound;
+                }
+                const auto values = evaluateSubqueryValues(*subquery);
+                const auto index = table.columnIndex(node.column);
+                if (!index) {
+                    throw std::runtime_error("unknown predicate column");
+                }
+                return std::find(values.begin(), values.end(), row[*index]) != values.end();
             } else {
-                return node;
+                return evalPredicate(predicate, row, [&](std::string_view column) {
+                    auto index = table.columnIndex(column);
+                    if (index) {
+                        return index;
+                    }
+                    const auto dot = column.find('.');
+                    if (dot != std::string_view::npos) {
+                        const auto qual = column.substr(0, dot);
+                        if (equalsIgnoreCase(qual, table.name()) ||
+                            equalsIgnoreCase(qual, scope)) {
+                            return table.columnIndex(column.substr(dot + 1));
+                        }
+                    }
+                    return std::optional<std::size_t>{};
+                });
             }
         },
         predicate);
-}
-
-Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &outerRow,
-                                            const Table &outerTable,
-                                            std::string_view outerScope) const {
-    Select bound = subquery;
-    bound.hasOuterRefs = false;
-    for (auto &cte : bound.ctes) {
-        if (!cte.body) {
-            continue;
-        }
-        auto body = bindOuterReferences(*cte.body, outerRow, outerTable, outerScope);
-        if (body.hasOuterRefs) {
-            bound.hasOuterRefs = true;
-        }
-        cte.body = std::make_shared<Select>(std::move(body));
-    }
-    if (bound.where) {
-        bound.where = bindOuterReferences(*bound.where, outerRow, outerTable, outerScope);
-        if (predicateReferencesOuter(*bound.where)) {
-            bound.hasOuterRefs = true;
-        }
-    }
-    return bound;
-}
-
-Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &outerRow,
-                                            const Table &outerTable) const {
-    return bindOuterReferences(subquery, outerRow, outerTable, outerTable.name());
-}
-
-Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const Row &outerRow,
-                                               const Table &outerTable) const {
-    return bindOuterReferences(predicate, outerRow, outerTable, outerTable.name());
-}
-
-namespace {
-
-[[nodiscard]] std::shared_ptr<Table> tableFromQueryResult(const std::string &name,
-                                                          QueryResult bodyResult) {
-    if (!bodyResult.success) {
-        throw std::runtime_error(bodyResult.message);
-    }
-    std::vector<Column> schema;
-    schema.reserve(bodyResult.columns.size());
-    for (std::size_t i = 0; i < bodyResult.columns.size(); ++i) {
-        ColumnType type = ColumnType::Int;
-        for (const auto &row : bodyResult.rows) {
-            if (!row[i].isNull()) {
-                type = row[i].type();
-                break;
-            }
-        }
-        // Ephemeral CTE tables expose bare column names so later JOINs/filters can reference
-        // `id` even when the body projected `Nodes.id`.
-        std::string columnName = bodyResult.columns[i];
-        if (const auto dot = columnName.rfind('.'); dot != std::string::npos) {
-            columnName = columnName.substr(dot + 1);
-        }
-        schema.push_back({std::move(columnName), type, true});
-    }
-    if (schema.empty()) {
-        throw std::runtime_error("materialized CTE produced no columns");
-    }
-    auto table = std::make_shared<Table>(name, std::move(schema));
-    for (auto &row : bodyResult.rows) {
-        table->insert(std::move(row));
-    }
-    for (const auto &column : table->schema()) {
-        (void)table->createIndex(std::string{"idx_"} + column.name, column.name);
-    }
-    return table;
-}
-
-} // namespace
-
-std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte) const {
-    if (!cte.body) {
-        throw std::runtime_error("materialized CTE is missing a body");
-    }
-
-    auto evaluateSelectToResult =
-        [&](const Select &body,
-            const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps =
-                {}) -> QueryResult {
-        RewriteResult rewrite;
-        const Select prepared = prepareSelect(body, rewrite);
-        std::unordered_map<std::string, std::shared_ptr<Table>> temps = extraTemps;
-        for (const auto &nested : rewrite.materialize) {
-            temps.emplace(nested.name, materializeCteTable(nested));
-        }
-        if (!prepared.joins.empty()) {
-            return ctx_.select->executeJoinSelect(prepared, temps);
-        }
-        auto source = ctx_.select->requireTable(prepared.table, temps);
-        const auto plan = ctx_.select->planPreparedSelect(prepared, *source, rewrite);
-        std::vector<std::string> sourceColumns;
-        for (const auto &column : source->schema()) {
-            sourceColumns.push_back(column.name);
-        }
-        auto rows = ctx_.select->collectRows(prepared, *source, plan);
-        return ctx_.select->finalizeSelectResult(prepared, std::move(sourceColumns),
-                                                 std::move(rows));
-    };
-
-    if (cte.recursive) {
-        if (!cte.recursiveArm) {
-            throw std::runtime_error("recursive CTE is missing a recursive arm");
-        }
-        auto anchorResult = evaluateSelectToResult(*cte.body);
-        // Copy rows before first tableFromQueryResult moves them out of anchorResult.
-        QueryResult deltaSource = anchorResult;
-        auto result = tableFromQueryResult(cte.name, std::move(anchorResult));
-        auto delta = tableFromQueryResult(cte.name + "#delta", std::move(deltaSource));
-
-        for (std::size_t iter = 0; iter < recursiveCteLimits().maxIterations; ++iter) {
-            if (delta->rowCount() == 0) {
-                break;
-            }
-            std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-            temps.emplace(cte.name, delta);
-            auto stepResult = evaluateSelectToResult(*cte.recursiveArm, temps);
-            if (result->rowCount() + stepResult.rows.size() > recursiveCteLimits().maxRows) {
-                throw std::runtime_error("WITH RECURSIVE exceeded maximum row count");
-            }
-            QueryResult deltaCopy = stepResult;
-            for (const auto &row : stepResult.rows) {
-                result->insert(row);
-            }
-            delta = tableFromQueryResult(cte.name + "#delta", std::move(deltaCopy));
-            if (iter + 1 == recursiveCteLimits().maxIterations && delta->rowCount() > 0) {
-                throw std::runtime_error("WITH RECURSIVE exceeded maximum iteration count");
-            }
-        }
-        return result;
-    }
-
-    return tableFromQueryResult(cte.name, evaluateSelectToResult(*cte.body));
 }
 
 } // namespace VertexDB

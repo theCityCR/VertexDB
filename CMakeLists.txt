@@ -30,6 +30,8 @@ add_library(VertexDB
     src/parser/parser_ddl.cpp
     src/parser/parser_dml.cpp
     src/parser/parser_select.cpp
+    src/parser/parser_with.cpp
+    src/parser/parser_outer_refs.cpp
     src/parser/parser_predicate.cpp
     src/parser/tokenizer.cpp
     src/storage/database.cpp
@@ -49,12 +51,15 @@ add_library(VertexDB
     src/indexing/hash_index.cpp
     src/indexing/index_manager.cpp
     src/execution/query_executor.cpp
+    src/execution/dml_engine.cpp
     src/execution/select_engine.cpp
     src/execution/select_engine_scan.cpp
     src/execution/select_engine_join.cpp
     src/execution/txn_session.cpp
     src/execution/recovery_service.cpp
     src/execution/subquery_runtime.cpp
+    src/execution/subquery_runtime_bind.cpp
+    src/execution/subquery_runtime_cte.cpp
     src/execution/prepared_statement_catalog.cpp
     src/execution/predicate_eval.cpp
     src/execution/sql_literal.cpp
@@ -64,6 +69,7 @@ add_library(VertexDB
     src/execution/prepared_bind.cpp
     src/planner/query_planner.cpp
     src/planner/query_planner_select.cpp
+    src/planner/query_planner_access.cpp
     src/planner/planner_predicate.cpp
     src/planner/query_planner_join.cpp
     src/planner/query_planner_format.cpp

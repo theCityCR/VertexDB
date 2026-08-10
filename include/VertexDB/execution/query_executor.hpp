@@ -1,11 +1,12 @@
 #pragma once
 
 // SQL command façade: dispatch and public API only.
-// SelectEngine, SubqueryRuntime, PreparedStatementCatalog, TxnSession, and
+// SelectEngine, SubqueryRuntime, DmlEngine, PreparedStatementCatalog, TxnSession, and
 // RecoveryService own the execution subsystems composed by this façade.
-// Shared SELECT/subquery services are exposed via ExecutionContext (no friends).
+// Shared SELECT/subquery/DML services are exposed via ExecutionContext (no friends).
 
 #include "VertexDB/concurrency/lock_manager.hpp"
+#include "VertexDB/execution/dml_engine.hpp"
 #include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/prepared_statement_catalog.hpp"
 #include "VertexDB/execution/query_result.hpp"
@@ -17,14 +18,12 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
 #include "VertexDB/planner/query_planner.hpp"
-#include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/database.hpp"
 
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 
 namespace VertexDB {
 
@@ -57,20 +56,8 @@ class QueryExecutor {
     [[nodiscard]] QueryResult executePrepare(const PrepareStatement &command);
     [[nodiscard]] QueryResult executePrepared(const ExecutePrepared &command);
 
-    [[nodiscard]] bool matches(const Row &row, const Table &table,
-                               const Predicate &predicate) const;
-    [[nodiscard]] std::shared_ptr<Table>
-    requireTable(std::string_view tableName,
-                 const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
-    [[nodiscard]] ReadSnapshot readSnapshot() const;
-    [[nodiscard]] TransactionId writeTransactionId();
-    [[nodiscard]] bool transactionActive() const noexcept;
-    [[nodiscard]] QueryResult rejectIfTransactionActive(std::string_view action) const;
     void appendWal(WalOperation operation, std::string payload);
-    void appendPageImageRedo(Table &table, std::string tableName);
-    void flushPendingWal();
-    void clearPendingWal() noexcept;
 
     std::shared_ptr<Database> database_;
     StorageManager storageManager_;
@@ -81,6 +68,7 @@ class QueryExecutor {
     ExecutionContext ctx_;
     SelectEngine selectEngine_;
     SubqueryRuntime subqueryRuntime_;
+    DmlEngine dmlEngine_;
     PreparedStatementCatalog prepared_;
     LockManager lockManager_;
 };

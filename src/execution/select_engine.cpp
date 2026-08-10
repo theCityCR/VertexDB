@@ -1,14 +1,12 @@
 #include "VertexDB/execution/select_engine.hpp"
 
 #include "VertexDB/common/string_utils.hpp"
-#include "VertexDB/execution/predicate_eval.hpp"
 #include "VertexDB/execution/select_aggregate.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/subquery_runtime.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 
-#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -149,61 +147,7 @@ QueryResult SelectEngine::finalizeSelectResult(const Select &command,
 
 bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &predicate,
                            std::string_view scopeName) const {
-    const std::string_view scope = scopeName.empty() ? std::string_view{table.name()} : scopeName;
-    return std::visit(
-        [&](const auto &node) -> bool {
-            using T = std::decay_t<decltype(node)>;
-            if constexpr (std::is_same_v<T, AndPred>) {
-                return matches(row, table, *node.left, scope) &&
-                       matches(row, table, *node.right, scope);
-            } else if constexpr (std::is_same_v<T, OrPred>) {
-                return matches(row, table, *node.left, scope) ||
-                       matches(row, table, *node.right, scope);
-            } else if constexpr (std::is_same_v<T, ExistsPred>) {
-                if (!node.subquery) {
-                    throw std::runtime_error("EXISTS subquery is missing");
-                }
-                if (node.referencesOuter || node.subquery->hasOuterRefs) {
-                    const Select bound =
-                        ctx_.subquery->bindOuterReferences(*node.subquery, row, table, scope);
-                    return ctx_.subquery->evaluateExists(bound);
-                }
-                return ctx_.subquery->evaluateExists(*node.subquery);
-            } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
-                if (!node.subquery) {
-                    throw std::runtime_error("IN subquery is missing");
-                }
-                const Select *subquery = node.subquery.get();
-                std::optional<Select> bound;
-                if (node.referencesOuter || node.subquery->hasOuterRefs) {
-                    bound = ctx_.subquery->bindOuterReferences(*node.subquery, row, table, scope);
-                    subquery = &*bound;
-                }
-                const auto values = ctx_.subquery->evaluateSubqueryValues(*subquery);
-                const auto index = table.columnIndex(node.column);
-                if (!index) {
-                    throw std::runtime_error("unknown predicate column");
-                }
-                return std::find(values.begin(), values.end(), row[*index]) != values.end();
-            } else {
-                return evalPredicate(predicate, row, [&](std::string_view column) {
-                    auto index = table.columnIndex(column);
-                    if (index) {
-                        return index;
-                    }
-                    const auto dot = column.find('.');
-                    if (dot != std::string_view::npos) {
-                        const auto qual = column.substr(0, dot);
-                        if (equalsIgnoreCase(qual, table.name()) ||
-                            equalsIgnoreCase(qual, scope)) {
-                            return table.columnIndex(column.substr(dot + 1));
-                        }
-                    }
-                    return std::optional<std::size_t>{};
-                });
-            }
-        },
-        predicate);
+    return ctx_.subquery->matches(row, table, predicate, scopeName);
 }
 
 QueryPlan SelectEngine::planPreparedSelect(const Select &command, const Table &table,

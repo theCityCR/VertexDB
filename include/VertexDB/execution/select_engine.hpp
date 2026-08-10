@@ -3,6 +3,8 @@
 // SELECT / join / EXPLAIN execution owned by SelectEngine.
 // Implementation: select_engine.cpp (+ select_engine_scan.cpp, select_engine_join.cpp).
 // QueryExecutor remains the public façade; shared services live in ExecutionContext.
+// Predicate matching (including correlated IN/EXISTS) is owned by SubqueryRuntime;
+// SelectEngine::matches forwards to keep scan/join call sites stable.
 
 #include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/query_result.hpp"
