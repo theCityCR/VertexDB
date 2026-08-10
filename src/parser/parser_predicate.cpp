@@ -212,10 +212,6 @@ Select Parser::parseSubquerySelect(bool /*allowOuterRefs*/) {
         subquery = parseSelectAfterSelectKeyword();
     }
     currentFromTable_ = savedFrom;
-    if (!subquery.joins.empty()) {
-        outerTableStack_.pop_back();
-        throw std::runtime_error("JOIN inside subquery is not supported");
-    }
     const bool nestedUnderCorrelated = outerTableStack_.size() > 1;
     markOuterRefs(subquery, selectScopeName(subquery), nestedUnderCorrelated);
     outerTableStack_.pop_back();

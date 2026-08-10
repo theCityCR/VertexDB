@@ -135,7 +135,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 
 ### Limitations (honest)
 
-- Outer `JOIN` against a CTE/derived alias, `JOIN` inside `IN`/`EXISTS`, `WITH RECURSIVE`, and
+- Outer `JOIN` against a CTE/derived alias, `WITH RECURSIVE`, and
   correlation deeper than four outer frames are unsupported; `WITH` nesting depth up to 3 is
   supported. CTE/derived bodies may include left-deep `INNER`/`LEFT` join chains.
 - Cost-based access paths using live row counts, index distinct keys, and optional `ANALYZE`

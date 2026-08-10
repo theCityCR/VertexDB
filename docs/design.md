@@ -53,8 +53,7 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   cheaper than a scan, the planner keeps a full scan. Nested `OR` under `AND` may remain as a
   residual while another conjunct uses an index.
 - Nested SQL is limited: `WITH` nesting deeper than depth 3, correlation deeper than four outer
-  frames, outer `JOIN` against a CTE/derived alias, `JOIN` inside `IN`/`EXISTS` subqueries, and
-  `WITH RECURSIVE` are unsupported. Supported nested forms include `WITH` nesting depth up to 3,
+  frames, outer `JOIN` against a CTE/derived alias, and `WITH RECURSIVE` are unsupported. `JOIN` inside `IN`/`EXISTS` is supported. Supported nested forms include `WITH` nesting depth up to 3,
   `WITH` / derived tables inside `IN`/`EXISTS`, `FROM` / `JOIN` table aliases (`AS` optional) for
   qualification and correlation scopes, correlated `IN`/`EXISTS` through up to four outer frames,
   and expression indexes (`column`, `-column`, `column+/-literal`, `trigram(column)`). CTE/derived
@@ -66,8 +65,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-Optional educational follow-ups still intentionally out of scope: `WITH RECURSIVE`, `JOIN`
-inside `IN`/`EXISTS` subqueries, and outer `JOIN` against a CTE/derived alias.
+Optional educational follow-ups still intentionally out of scope: `WITH RECURSIVE`, and outer
+`JOIN` against a CTE/derived alias.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays

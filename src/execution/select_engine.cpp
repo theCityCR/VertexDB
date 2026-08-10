@@ -43,7 +43,7 @@ QueryResult SelectEngine::execute(const Select &command) {
         temps.emplace(name, owner_.subqueryRuntime_.materializeCteTable(name, body));
     }
     if (!prepared.joins.empty()) {
-        return executeJoinSelect(prepared);
+        return executeJoinSelect(prepared, temps);
     }
 
     auto table = requireTable(prepared.table, temps);
@@ -302,13 +302,14 @@ QueryResult SelectEngine::finalizeSelectResult(const Select &command,
     return projectWithLimit(std::move(rows), projection, std::move(projectedColumns), command.limit);
 }
 
-void SelectEngine::collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
-                                   std::vector<Row> &joinedRows) const {
+void SelectEngine::collectJoinRows(
+    const Select &command, std::vector<std::string> &joinedColumns, std::vector<Row> &joinedRows,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
     if (command.joins.empty()) {
         throw std::runtime_error("collectJoinRows requires at least one join");
     }
 
-    auto leftTable = requireTable(command.table);
+    auto leftTable = requireTable(command.table, temps);
     joinedColumns.clear();
     for (const auto &column : leftTable->schema()) {
         joinedColumns.push_back(command.table + "." + column.name);
@@ -317,7 +318,7 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
 
     for (std::size_t joinIndex = 0; joinIndex < command.joins.size(); ++joinIndex) {
         const auto &join = command.joins[joinIndex];
-        auto rightTable = requireTable(join.table);
+        auto rightTable = requireTable(join.table, temps);
 
         JoinPlan joinPlan;
         if (joinIndex == 0) {
@@ -476,10 +477,12 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
     }
 }
 
-QueryResult SelectEngine::executeJoinSelect(const Select &command) {
+QueryResult SelectEngine::executeJoinSelect(
+    const Select &command,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) {
     std::vector<std::string> joinedColumns;
     std::vector<Row> joinedRows;
-    collectJoinRows(command, joinedColumns, joinedRows);
+    collectJoinRows(command, joinedColumns, joinedRows, temps);
     return finalizeSelectResult(command, std::move(joinedColumns), std::move(joinedRows));
 }
 

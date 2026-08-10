@@ -896,17 +896,60 @@ TEST(NestedSqlTests, MultiCteInliningAndUnusedCteNote) {
     EXPECT_NE(unusedRewrite.notes.front().find("FROM references a base table"), std::string::npos);
 }
 
-TEST(NestedSqlTests, NestedWithAndJoinInSubqueryDocumentedRefusals) {
+TEST(NestedSqlTests, JoinInsideInSubqueryFiltersByJoinedKeys) {
     Parser parser;
-    // JOIN inside IN/EXISTS remains unsupported.
-    EXPECT_THROW((void)parser.parse(
-                     "SELECT name FROM Employees WHERE id IN (SELECT Employees.id FROM Employees "
-                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
-                 std::runtime_error);
-    EXPECT_THROW((void)parser.parse(
-                     "SELECT name FROM Employees WHERE EXISTS (SELECT Employees.id FROM Employees "
-                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
-                 std::runtime_error);
+    auto executor = makeExecutor("join-inside-in");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                          "(2, \"Bob\", 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "SELECT Employees.id FROM Employees JOIN Departments "
+        "ON Employees.dept_id = Departments.id) ORDER BY name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, JoinInsideExistsCorrelatesToOuterRow) {
+    Parser parser;
+    auto executor = makeExecutor("join-inside-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Assignments (emp_id INT, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\"), "
+                                          "(2, \"Bob\");"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Assignments VALUES (1, 10), (2, 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT e.name FROM Employees AS e WHERE EXISTS ("
+        "SELECT Assignments.emp_id FROM Assignments JOIN Departments "
+        "ON Assignments.dept_id = Departments.id WHERE Assignments.emp_id = e.id) "
+        "ORDER BY e.name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
 TEST(NestedSqlTests, WithInsideInSubqueryInlinesAndFilters) {

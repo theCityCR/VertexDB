@@ -7,6 +7,7 @@
 #include "VertexDB/parser/predicate.hpp"
 
 #include <memory>
+#include <unordered_map>
 #include <stdexcept>
 #include <utility>
 
@@ -52,19 +53,42 @@ Predicate SubqueryRuntime::materializePredicate(const Predicate &predicate) cons
 std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquery) const {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(subquery, rewrite);
-    if (!prepared.joins.empty()) {
-        throw std::runtime_error("JOIN inside IN subquery is not supported");
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+    for (const auto &[name, body] : rewrite.materialize) {
+        temps.emplace(name, materializeCteTable(name, body));
     }
-    auto table = owner_.selectEngine_.requireTable(prepared.table);
-    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
-    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
 
     if (prepared.columns.size() != 1 || isStarProjection(prepared.columns) ||
         prepared.columns.front().kind != SelectExpr::Kind::Column) {
         throw std::runtime_error("IN subquery must project exactly one column");
     }
+
+    if (!prepared.joins.empty()) {
+        auto result = owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        if (!result.success) {
+            throw std::runtime_error(result.message);
+        }
+        if (result.columns.size() != 1) {
+            throw std::runtime_error("IN subquery must project exactly one column");
+        }
+        std::vector<Value> values;
+        values.reserve(result.rows.size());
+        for (const auto &row : result.rows) {
+            values.push_back(row[0]);
+            if (prepared.limit && values.size() >= *prepared.limit) {
+                break;
+            }
+        }
+        return values;
+    }
+
+    auto table = owner_.selectEngine_.requireTable(prepared.table, temps);
+    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
+    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
+
     const auto columnIndex = table->columnIndex(prepared.columns.front().column);
     if (!columnIndex) {
+        // Joined/qualified names are unusual on single-table paths; try result-style resolve.
         throw std::runtime_error("unknown IN subquery projection column");
     }
 
@@ -90,11 +114,19 @@ std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquer
 bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
     RewriteResult rewrite;
     Select prepared = prepareSelect(subquery, rewrite);
-    if (!prepared.joins.empty()) {
-        throw std::runtime_error("JOIN inside EXISTS subquery is not supported");
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+    for (const auto &[name, body] : rewrite.materialize) {
+        temps.emplace(name, materializeCteTable(name, body));
     }
     prepared.limit = 1;
-    auto table = owner_.selectEngine_.requireTable(prepared.table);
+    if (!prepared.joins.empty()) {
+        auto result = owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        if (!result.success) {
+            throw std::runtime_error(result.message);
+        }
+        return !result.rows.empty();
+    }
+    auto table = owner_.selectEngine_.requireTable(prepared.table, temps);
     const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
     auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
     return !rows.empty();
@@ -230,7 +262,11 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const std::string &n
     const Select prepared = prepareSelect(body, rewrite);
     QueryResult bodyResult;
     if (!prepared.joins.empty()) {
-        bodyResult = owner_.selectEngine_.executeJoinSelect(prepared);
+        std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+        for (const auto &[tempName, tempBody] : rewrite.materialize) {
+            temps.emplace(tempName, materializeCteTable(tempName, tempBody));
+        }
+        bodyResult = owner_.selectEngine_.executeJoinSelect(prepared, temps);
     } else {
         auto source = owner_.selectEngine_.requireTable(prepared.table);
         const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *source, rewrite);
