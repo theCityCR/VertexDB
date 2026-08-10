@@ -159,6 +159,68 @@ TEST(AggregatePreparedTests, PreparedStatementStoresTypedAstWithoutReparse) {
     EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
 }
 
+TEST(AggregatePreparedTests, ExecuteDoesNotMutateStoredPreparedAst) {
+    // Desired: EXECUTE binds a clone; catalog still holds ? parameter slots afterward.
+    auto executor = makeExecutor("prepared-immutable");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\"), (2, \"Bob\");"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "PREPARE by_id AS \"SELECT name FROM Employees WHERE id = ?;\";"))
+                    .success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("EXECUTE by_id VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("EXECUTE by_id VALUES (2);")).success);
+
+    const auto ast = executor.preparedAst("by_id");
+    ASSERT_TRUE(ast.has_value());
+    ASSERT_TRUE(std::holds_alternative<Select>(*ast));
+    const auto &select = std::get<Select>(*ast);
+    ASSERT_TRUE(select.where.has_value());
+    const auto &comparison = std::get<ComparisonPred>(*select.where);
+    EXPECT_TRUE(comparison.value.isParameter()) << comparison.value.toString();
+    EXPECT_EQ(comparison.value.parameterIndex(), 0U);
+
+    auto again = executor.execute(parser.parse("EXECUTE by_id VALUES (1);"));
+    ASSERT_TRUE(again.success);
+    ASSERT_EQ(again.rows.size(), 1U);
+    EXPECT_EQ(again.rows[0][0], Value{std::string{"Alice"}});
+}
+
+TEST(AggregatePreparedTests, GroupByNullKeyFormsSingleGroup) {
+    // Intentional VertexDB semantics: NULL group keys hash together (Value equality).
+    auto executor = makeExecutor("groupby-null");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT NULL, salary DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, 10, 100.0), (2, NULL, 50.0), "
+                        "(3, NULL, 25.0), (4, 10, 20.0);"))
+                    .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT dept, COUNT(*), SUM(salary) FROM Employees GROUP BY dept ORDER BY dept;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 2U);
+    // NULL sorts before INT under VertexDB Value ordering (monostate index).
+    EXPECT_TRUE(result.rows[0][0].isNull());
+    EXPECT_EQ(result.rows[0][1], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(result.rows[0][2], Value{75.0});
+    EXPECT_EQ(result.rows[1][0], Value{static_cast<std::int64_t>(10)});
+    EXPECT_EQ(result.rows[1][1], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(result.rows[1][2], Value{120.0});
+}
+
 TEST(AggregatePreparedTests, AnalyzeBuildsEquiHeightHistogramsWithDistinctCounts) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
     for (int i = 1; i <= 64; ++i) {

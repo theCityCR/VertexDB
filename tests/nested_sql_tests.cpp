@@ -377,6 +377,47 @@ TEST(NestedSqlTests, CorrelatedExistsAndInMatchOuterRow) {
     EXPECT_EQ(inResult.rows[0][0], Value{"Alice"});
 }
 
+TEST(NestedSqlTests, CorrelatedInExistsWithNullOuterKey) {
+    // Intentional: bound NULL outer keys compare equal to NULL via Value== (unlike SQL UNKNOWN).
+    Parser parser;
+    auto executor = makeExecutor("corr-null-outer");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT NULL, name STRING);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT NULL, amount DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\"), (NULL, \"NullEmp\"), "
+                        "(2, \"Bob\");"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Bonuses VALUES (1, 5000.0), (NULL, 100.0);"))
+                    .success);
+
+    auto existsResult = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "  SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(existsResult.success) << existsResult.message;
+    ASSERT_EQ(existsResult.rows.size(), 2U);
+    EXPECT_EQ(existsResult.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(existsResult.rows[1][0], Value{"NullEmp"});
+
+    auto inResult = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "  SELECT emp_id FROM Bonuses WHERE emp_id = id"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(inResult.success) << inResult.message;
+    ASSERT_EQ(inResult.rows.size(), 2U);
+    EXPECT_EQ(inResult.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(inResult.rows[1][0], Value{"NullEmp"});
+}
+
 TEST(NestedSqlTests, TwoLevelCorrelatedExistsBindsOutermost) {
     Parser parser;
     auto executor = makeExecutor("two-level-exists");

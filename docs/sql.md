@@ -209,9 +209,10 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 - `INT`: stored as signed 64-bit integer.
 - `DOUBLE`: stored as C++ `double`.
 - `STRING`: stored as `std::string`.
-- `NULL`: allowed only for columns declared nullable with `NULL`. Equality comparisons and equi-join
-  keys treat `NULL = NULL` as true (VertexDB `Value` equality), unlike SQL's UNKNOWN. `LIKE` and
-  `~` on a NULL column value do not match.
+- `NULL`: allowed only for columns declared nullable with `NULL`. Equality comparisons, equi-join
+  keys, correlated `IN`/`EXISTS` outer binds, and `GROUP BY` keys treat `NULL = NULL` as true
+  (VertexDB `Value` equality), unlike SQL's UNKNOWN. `LIKE` and `~` on a NULL column value do not
+  match.
 
 Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`column` (message prefix
 `line L, column C: …`). The CLI prints `error: ` plus that message.

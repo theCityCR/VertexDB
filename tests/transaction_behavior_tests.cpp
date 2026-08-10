@@ -125,6 +125,58 @@ TEST(TransactionBehaviorTests, SchemaChangesRejectedWhileTransactionActive) {
     EXPECT_TRUE(after.success);
 }
 
+TEST(TransactionBehaviorTests, AllSchemaAndPersistenceOpsRejectedWhileTransactionActive) {
+    // Documented: CREATE DATABASE/TABLE/INDEX, DROP/RENAME TABLE, SAVE/LOAD rejected in a txn.
+    Parser parser;
+    auto executor = makeExecutor("txn-ddl-all");
+    seedEmployees(executor, parser, true, false);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+
+    const char *forbidden[] = {
+        "CREATE DATABASE other;",
+        "CREATE TABLE Other (id INT);",
+        "DROP TABLE Employees;",
+        "RENAME TABLE Employees TO Staff;",
+        "CREATE INDEX idx_name ON Employees(name);",
+        "SAVE DATABASE;",
+        "LOAD DATABASE company;",
+    };
+    for (const char *sql : forbidden) {
+        auto result = executor.execute(parser.parse(sql));
+        EXPECT_FALSE(result.success) << sql << " -> " << result.message;
+        EXPECT_NE(result.message.find("not allowed while a transaction is active"),
+                  std::string::npos)
+            << sql << " -> " << result.message;
+    }
+
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    EXPECT_TRUE(executor.execute(parser.parse("LIST TABLES;")).success);
+}
+
+TEST(TransactionBehaviorTests, BeginCommitRollbackRejectInvalidTxnState) {
+    Parser parser;
+    auto executor = makeExecutor("txn-state");
+    seedEmployees(executor, parser, true, false);
+
+    auto commitNone = executor.execute(parser.parse("COMMIT;"));
+    EXPECT_FALSE(commitNone.success);
+    EXPECT_NE(commitNone.message.find("no active transaction"), std::string::npos);
+
+    auto rollbackNone = executor.execute(parser.parse("ROLLBACK;"));
+    EXPECT_FALSE(rollbackNone.success);
+    EXPECT_NE(rollbackNone.message.find("no active transaction"), std::string::npos);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    auto nestedBegin = executor.execute(parser.parse("BEGIN;"));
+    EXPECT_FALSE(nestedBegin.success);
+    EXPECT_NE(nestedBegin.message.find("transaction already active"), std::string::npos);
+
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    EXPECT_FALSE(executor.execute(parser.parse("COMMIT;")).success);
+}
+
 TEST(TransactionBehaviorTests, TxnSessionOwnsSnapshotUndoAndDeferredWalState) {
     TxnSession session;
 
