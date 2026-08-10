@@ -374,6 +374,29 @@ TEST(PlannerBehaviorTests, StatsDrivenJoinKeepsHashWhenNeitherSideIndexed) {
     EXPECT_NE(plan.explanation.find("hash join"), std::string::npos);
 }
 
+TEST(PlannerBehaviorTests, OuterAndCrossJoinsPreferNestedLoop) {
+    Table left{"Employees", {{"id", ColumnType::Int}, {"dept_id", ColumnType::Int}}};
+    Table right{"Departments", {{"id", ColumnType::Int}, {"dept", ColumnType::String}}};
+    left.insert({Value{1}, Value{10}});
+    right.insert({Value{10}, Value{"Eng"}});
+    right.createIndex("idx_id", "id");
+
+    JoinClause rightJoin{"Departments", "dept_id", "id", std::nullopt, JoinKind::RightOuter};
+    auto rightPlan = QueryPlanner{}.planJoin(left, right, rightJoin);
+    EXPECT_EQ(rightPlan.algorithm, JoinAlgorithm::NestedLoopIndexProbe);
+    EXPECT_NE(rightPlan.explanation.find("right outer"), std::string::npos);
+
+    JoinClause fullJoin{"Departments", "dept_id", "id", std::nullopt, JoinKind::FullOuter};
+    auto fullPlan = QueryPlanner{}.planJoin(left, right, fullJoin);
+    EXPECT_EQ(fullPlan.algorithm, JoinAlgorithm::NestedLoopIndexProbe);
+    EXPECT_NE(fullPlan.explanation.find("full outer"), std::string::npos);
+
+    JoinClause crossJoin{"Departments", "", "", std::nullopt, JoinKind::Cross};
+    auto crossPlan = QueryPlanner{}.planJoin(left, right, crossJoin);
+    EXPECT_EQ(crossPlan.algorithm, JoinAlgorithm::NestedLoopIndexProbe);
+    EXPECT_NE(crossPlan.explanation.find("cross"), std::string::npos);
+}
+
 TEST(PlannerBehaviorTests, MultiIndexIntersectChosenWhenCheaperThanSingleIndexResidual) {
     Parser parser;
     auto executor = makeExecutor("multi-index-intersect");

@@ -132,7 +132,7 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
-   chains with `INNER`/`LEFT` and non-equi `ON`, `WITH` materialize modes and nesting depth up to 3,
+   chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes and nesting depth up to 3,
    `IN`/`EXISTS`, `LIKE`/`~`, expression indexes including trigram, and `EXPLAIN`). Prepared
    statements store that AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including nested
@@ -140,6 +140,6 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
    `IN` subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer
    binding frames (including `FROM` / `JOIN` table aliases).
 5. `QueryPlanner` chooses an access path (column or expression index, prefix `LIKE`, trigram
-   intersect, residual filters) and per-join algorithms for left-deep `INNER`/`LEFT` chains;
+   intersect, residual filters) and per-join algorithms for left-deep join chains;
    `SelectEngine` runs filters/joins, then optional hash aggregation, then `ORDER BY`/`LIMIT`.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.

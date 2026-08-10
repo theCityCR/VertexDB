@@ -131,15 +131,16 @@ the access path or each join algorithm in a left-deep chain, CTE inlining/materi
 residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
 present.
 
-`JOIN` / `INNER JOIN` and `LEFT [OUTER] JOIN` support left-deep chains
-(`t0 [AS a] JOIN t1 [AS b] ON … JOIN t2 ON …`) with `ON col op col` where `op` is `=`, `<`, or `>`.
-Equi-joins may use hash join or nested-loop index probe; non-equi and `LEFT` joins use nested-loop
-compare (no hash join). `RIGHT` / `FULL` / `CROSS` joins are rejected. Joined result columns are
-qualified with physical table names (`LeftTable.column` / `RightTable.column`); `FROM`/`JOIN`
-aliases in `SELECT`/`WHERE`/`ON` rewrite to those qualifiers. Projection, `WHERE`, `ORDER BY`, and
-`LIMIT` can reference qualified columns (alias or table); unqualified references are allowed when
-the column name is not ambiguous. After the first join, the left side is an intermediate row set so
-only hash join or right-side index probe apply for remaining equi-joins.
+`JOIN` / `INNER JOIN`, `LEFT` / `RIGHT` / `FULL [OUTER] JOIN`, and `CROSS JOIN` support left-deep
+chains (`t0 [AS a] JOIN t1 [AS b] ON … JOIN t2 ON …`). Non-`CROSS` joins use `ON col op col` where
+`op` is `=`, `<`, or `>`; `CROSS JOIN` has no `ON`. Equi-joins may use hash join or nested-loop
+index probe; non-equi and outer joins (`LEFT` / `RIGHT` / `FULL`) use nested-loop compare (no hash
+join), with null-padding on unmatched preserved sides. Joined result columns are qualified with
+physical table names (`LeftTable.column` / `RightTable.column`); `FROM`/`JOIN` aliases in
+`SELECT`/`WHERE`/`ON` rewrite to those qualifiers. Projection, `WHERE`, `ORDER BY`, and `LIMIT` can
+reference qualified columns (alias or table); unqualified references are allowed when the column
+name is not ambiguous. After the first join, the left side is an intermediate row set so only hash
+join or right-side index probe apply for remaining inner equi-joins.
 
 Aggregates `COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, and `MAX` run as a hash aggregate after
 filter/join. `GROUP BY` is required for non-aggregated selected columns; `ORDER BY`/`LIMIT` apply to
@@ -192,7 +193,6 @@ Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`colum
 
 Intentional out-of-scope items (not near-term polish):
 
-- `RIGHT` / `FULL` / `CROSS` joins
 - `WITH RECURSIVE`
 - `JOIN` inside `IN` / `EXISTS` subqueries
 - Outer `JOIN` against a CTE / derived-table alias

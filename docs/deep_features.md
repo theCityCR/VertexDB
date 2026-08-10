@@ -44,13 +44,13 @@ stored AST for tests and introspection.
 
 ## Joins
 
-Joins support left-deep `INNER JOIN` / `JOIN` and `LEFT [OUTER] JOIN` chains with projected or
-`SELECT *` output, qualified output column names, joined `WHERE`, `ORDER BY`, and `LIMIT`.
-`ON col op col` accepts `=`, `<`, or `>`. Equi-joins may use hash join (build the right side) or
-nested-loop index probe when a join key is indexed and cheaper; non-equi and `LEFT` joins use
-nested-loop compare. After the first join, the left side is an intermediate row set, so only hash
-join or right-side index probe apply for remaining equi-joins. `RIGHT` / `FULL` / `CROSS` are
-rejected. `EXPLAIN` reports each join algorithm and cost.
+Joins support left-deep `INNER` / `LEFT` / `RIGHT` / `FULL [OUTER] JOIN` and `CROSS JOIN` chains
+with projected or `SELECT *` output, qualified output column names, joined `WHERE`, `ORDER BY`, and
+`LIMIT`. Non-`CROSS` joins use `ON col op col` (`=`, `<`, or `>`). Equi-joins may use hash join
+(build the right side) or nested-loop index probe when a join key is indexed and cheaper; non-equi
+and outer joins use nested-loop compare with null-padding on unmatched preserved sides. After the
+first join, the left side is an intermediate row set, so only hash join or right-side index probe
+apply for remaining inner equi-joins. `EXPLAIN` reports each join algorithm and cost.
 
 ## Aggregates
 

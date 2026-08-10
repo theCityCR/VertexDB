@@ -573,6 +573,76 @@ TEST(ExecutionTests, LeftOuterAndNonEquiJoins) {
     std::filesystem::remove_all(root);
 }
 
+TEST(ExecutionTests, RightFullAndCrossJoins) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_outer_join_test_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                      "(2, \"Bob\", 99);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\"), "
+                                          "(20, \"Sales\");"))
+                    .success);
+
+    auto right = executor.execute(parser.parse(
+        "SELECT Employees.name, Departments.dept FROM Employees RIGHT JOIN Departments "
+        "ON Employees.dept_id = Departments.id ORDER BY Departments.dept;"));
+    ASSERT_TRUE(right.success) << right.message;
+    ASSERT_EQ(right.rows.size(), 2U);
+    EXPECT_EQ(right.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(right.rows[0][1], Value{"Eng"});
+    EXPECT_TRUE(right.rows[1][0].isNull());
+    EXPECT_EQ(right.rows[1][1], Value{"Sales"});
+
+    auto full = executor.execute(parser.parse(
+        "SELECT Employees.name, Departments.dept FROM Employees FULL JOIN Departments "
+        "ON Employees.dept_id = Departments.id;"));
+    ASSERT_TRUE(full.success) << full.message;
+    ASSERT_EQ(full.rows.size(), 3U);
+    bool sawAlice = false;
+    bool sawBob = false;
+    bool sawSales = false;
+    for (const auto &row : full.rows) {
+        if (row[0] == Value{"Alice"} && row[1] == Value{"Eng"}) {
+            sawAlice = true;
+        }
+        if (row[0] == Value{"Bob"} && row[1].isNull()) {
+            sawBob = true;
+        }
+        if (row[0].isNull() && row[1] == Value{"Sales"}) {
+            sawSales = true;
+        }
+    }
+    EXPECT_TRUE(sawAlice);
+    EXPECT_TRUE(sawBob);
+    EXPECT_TRUE(sawSales);
+
+    auto cross = executor.execute(parser.parse(
+        "SELECT Employees.name, Departments.dept FROM Employees CROSS JOIN Departments;"));
+    ASSERT_TRUE(cross.success) << cross.message;
+    ASSERT_EQ(cross.rows.size(), 4U);
+    int saw = 0;
+    for (const auto &row : cross.rows) {
+        if ((row[0] == Value{"Alice"} || row[0] == Value{"Bob"}) &&
+            (row[1] == Value{"Eng"} || row[1] == Value{"Sales"})) {
+            ++saw;
+        }
+    }
+    EXPECT_EQ(saw, 4);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(ExecutionTests, LikePrefixAndTrigramSubstring) {
     const auto root = std::filesystem::temp_directory_path() /
                       ("VertexDB_like_test_" +

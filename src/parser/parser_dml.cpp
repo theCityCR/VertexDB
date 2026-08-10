@@ -135,11 +135,19 @@ Select Parser::parseSelectAfterSelectKeyword() {
             (void)match(TokenType::Identifier, "OUTER");
             expect(TokenType::Identifier, "JOIN");
             joinKind = JoinKind::LeftOuter;
+        } else if (match(TokenType::Identifier, "RIGHT")) {
+            (void)match(TokenType::Identifier, "OUTER");
+            expect(TokenType::Identifier, "JOIN");
+            joinKind = JoinKind::RightOuter;
+        } else if (match(TokenType::Identifier, "FULL")) {
+            (void)match(TokenType::Identifier, "OUTER");
+            expect(TokenType::Identifier, "JOIN");
+            joinKind = JoinKind::FullOuter;
+        } else if (match(TokenType::Identifier, "CROSS")) {
+            expect(TokenType::Identifier, "JOIN");
+            joinKind = JoinKind::Cross;
         } else if (match(TokenType::Identifier, "INNER")) {
             expect(TokenType::Identifier, "JOIN");
-        } else if (match(TokenType::Identifier, "RIGHT") || match(TokenType::Identifier, "FULL") ||
-                   match(TokenType::Identifier, "CROSS")) {
-            throw std::runtime_error("only INNER and LEFT [OUTER] JOIN are supported");
         } else {
             expect(TokenType::Identifier, "JOIN");
         }
@@ -153,6 +161,11 @@ Select Parser::parseSelectAfterSelectKeyword() {
         if (peek().type == TokenType::Identifier &&
             !parser_detail::isSelectClauseKeyword(peek().lexeme)) {
             joinedAlias = advance().lexeme;
+        }
+        if (joinKind == JoinKind::Cross) {
+            joins.push_back(JoinClause{joinedTable.lexeme, {}, {}, std::move(joinedAlias),
+                                       joinKind, ComparisonOperator::Equal});
+            continue;
         }
         expect(TokenType::Identifier, "ON");
         const auto leftColumn = advance();

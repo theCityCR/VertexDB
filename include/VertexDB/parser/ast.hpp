@@ -64,6 +64,9 @@ struct OrderBy {
 enum class JoinKind : std::uint8_t {
     Inner,
     LeftOuter,
+    RightOuter,
+    FullOuter,
+    Cross,
 };
 
 struct JoinClause {

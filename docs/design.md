@@ -13,15 +13,15 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
   recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
-  predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT [OUTER]`
-  joins with `ON col op col` (`=`, `<`, `>`) and optional join-table aliases, aggregates/`GROUP BY`,
+  predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` `[OUTER]` and `CROSS`
+  joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
   `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3), derived tables,
   `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` inside them and
   correlation through four outer frames), expression indexes (including `trigram(column)`),
   `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
   `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
-  delete, table management, multi-join chains (`INNER`/`LEFT`, equi and non-equi), CTE/derived-table
+  delete, table management, multi-join chains (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), CTE/derived-table
   inlining or materialization, correlated `IN`/`EXISTS` with alias scopes, expression-index
   maintenance (including trigram), prepared AST binding, save/load, recovery, and transactional
   read routing
@@ -38,7 +38,7 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   page-image WAL flush on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
-  selection (`INNER`/`LEFT`, equi and non-equi), expression-index matching, and `EXPLAIN`
+  selection (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), expression-index matching, and `EXPLAIN`
 - Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks with
   a CI CTE cost-shape gate, CI
 
@@ -60,15 +60,14 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   and expression indexes (`column`, `-column`, `column+/-literal`, `trigram(column)`). CTE/derived
   bodies may include `INNER` / `LEFT` joins. Parser/tokenizer failures report `line`/`column`
   source positions via `ParseError`.
-- Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT [OUTER]` chains with
-  `ON col op col` for `=`, `<`, or `>` (`RIGHT` / `FULL` / `CROSS` unsupported). General DDL beyond
+- Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL`
+  `[OUTER]` and `CROSS` chains (`ON col op col` for non-`CROSS`). General DDL beyond
   the current table/index commands is still out of scope.
 
 ## Next Steps
 
-Optional educational follow-ups still intentionally out of scope: `RIGHT` / `FULL` / `CROSS`
-joins, `WITH RECURSIVE`, `JOIN` inside `IN`/`EXISTS` subqueries, and outer `JOIN` against a
-CTE/derived alias.
+Optional educational follow-ups still intentionally out of scope: `WITH RECURSIVE`, `JOIN`
+inside `IN`/`EXISTS` subqueries, and outer `JOIN` against a CTE/derived alias.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays
