@@ -161,6 +161,19 @@ bool IndexManager::registerIndex(std::string name, std::size_t columnIndex,
     return true;
 }
 
+bool IndexManager::dropIndex(std::string_view name) {
+    const std::string key{name};
+    if (!indexColumns_.contains(key) && !indexes_.contains(key) &&
+        !orderedIndexes_.contains(key) && !indexExpressions_.contains(key)) {
+        return false;
+    }
+    indexColumns_.erase(key);
+    indexExpressions_.erase(key);
+    indexes_.erase(key);
+    orderedIndexes_.erase(key);
+    return true;
+}
+
 Value IndexManager::indexKeyForRow(const std::string &indexName, const Row &row,
                                    std::span<const Column> schema) const {
     if (auto it = indexExpressions_.find(indexName); it != indexExpressions_.end()) {

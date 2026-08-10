@@ -107,26 +107,9 @@ TEST(TransactionBehaviorTests, RollbackReversesMixedDmlAndIndexedLookups) {
     EXPECT_EQ(bob.rows.front().front(), Value{std::string{"Bob"}});
 }
 
-TEST(TransactionBehaviorTests, SchemaChangesRejectedWhileTransactionActive) {
-    Parser parser;
-    auto executor = makeExecutor("undo-ddl");
-    seedEmployees(executor, parser, true, false);
-
-    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
-    auto create = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
-    EXPECT_FALSE(create.success);
-    EXPECT_NE(create.message.find("not allowed while a transaction is active"), std::string::npos);
-
-    auto index = executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);"));
-    EXPECT_FALSE(index.success);
-
-    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
-    auto after = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
-    EXPECT_TRUE(after.success);
-}
-
-TEST(TransactionBehaviorTests, AllSchemaAndPersistenceOpsRejectedWhileTransactionActive) {
-    // Documented: CREATE DATABASE/TABLE/INDEX, DROP/RENAME TABLE, SAVE/LOAD rejected in a txn.
+TEST(TransactionBehaviorTests, CatalogAndPersistenceOpsRejectedWhileTransactionActive) {
+    // Documented: CREATE DATABASE/TABLE, DROP/RENAME TABLE, SAVE/LOAD rejected in a txn.
+    // CREATE INDEX is allowed (see CreateIndexAllowedWhileTransactionActive).
     Parser parser;
     auto executor = makeExecutor("txn-ddl-all");
     seedEmployees(executor, parser, true, false);
@@ -139,7 +122,6 @@ TEST(TransactionBehaviorTests, AllSchemaAndPersistenceOpsRejectedWhileTransactio
         "CREATE TABLE Other (id INT);",
         "DROP TABLE Employees;",
         "RENAME TABLE Employees TO Staff;",
-        "CREATE INDEX idx_name ON Employees(name);",
         "SAVE DATABASE;",
         "LOAD DATABASE company;",
     };
@@ -153,6 +135,114 @@ TEST(TransactionBehaviorTests, AllSchemaAndPersistenceOpsRejectedWhileTransactio
 
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
     EXPECT_TRUE(executor.execute(parser.parse("LIST TABLES;")).success);
+}
+
+TEST(TransactionBehaviorTests, SchemaChangesRejectedWhileTransactionActive) {
+    Parser parser;
+    auto executor = makeExecutor("undo-ddl");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    auto create = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
+    EXPECT_FALSE(create.success);
+    EXPECT_NE(create.message.find("not allowed while a transaction is active"), std::string::npos);
+
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    auto after = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
+    EXPECT_TRUE(after.success);
+}
+
+TEST(TransactionBehaviorTests, CreateIndexAllowedWhileTransactionActive) {
+    Parser parser;
+    auto executor = makeExecutor("txn-create-index");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT id FROM Employees WHERE name = \"Alice\";"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    EXPECT_NE(explain.rows.front().front().toString().find("hash index"), std::string::npos);
+    ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+
+    auto after =
+        executor.execute(parser.parse("EXPLAIN SELECT id FROM Employees WHERE name = \"Alice\";"));
+    ASSERT_TRUE(after.success);
+    EXPECT_NE(after.rows.front().front().toString().find("hash index"), std::string::npos);
+}
+
+TEST(TransactionBehaviorTests, CreateIndexRollbackRemovesIndex) {
+    Parser parser;
+    auto executor = makeExecutor("txn-create-index-rb");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT id FROM Employees WHERE name = \"Alice\";"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    EXPECT_NE(explain.rows.front().front().toString().find("full table scan"), std::string::npos);
+}
+
+TEST(TransactionBehaviorTests, CreateIndexWithInsertRollbackRestoresBoth) {
+    Parser parser;
+    auto executor = makeExecutor("txn-index-insert-rb");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (99, \"Zed\", 1.0);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto zed = executor.execute(parser.parse("SELECT id FROM Employees WHERE id = 99;"));
+    ASSERT_TRUE(zed.success);
+    EXPECT_TRUE(zed.rows.empty());
+
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("full table scan"), std::string::npos);
+}
+
+TEST(TransactionBehaviorTests, CreateIndexCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-create-index";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                        .success);
+
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto explain =
+        recovered.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    EXPECT_NE(explain.rows.front().front().toString().find("hash index"), std::string::npos);
+    std::filesystem::remove_all(root);
 }
 
 TEST(TransactionBehaviorTests, BeginCommitRollbackRejectInvalidTxnState) {

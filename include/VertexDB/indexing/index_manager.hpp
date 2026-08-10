@@ -56,6 +56,8 @@ class IndexManager {
     bool registerIndex(std::string name, std::size_t columnIndex,
                        std::optional<IndexExpression> expression, bool rebuild,
                        const RowStore &rowStore, std::span<const Column> schema);
+    // Remove a named index (metadata + hash/ordered stores). Used for txn undo of CREATE INDEX.
+    bool dropIndex(std::string_view name);
     void addRowToIndexes(RowId rowId, const RowStore &rowStore,
                          std::span<const Column> schema);
     void rebuildIndexes(const RowStore &rowStore, std::span<const Column> schema);

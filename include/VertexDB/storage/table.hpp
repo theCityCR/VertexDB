@@ -107,6 +107,8 @@ class Table : public RelationStats, public IndexCatalogView {
     // Register index metadata without rebuilding (snapshot v4 restore path).
     bool createIndexWithoutRebuild(std::string name, std::string column);
     bool createIndexWithoutRebuild(std::string name, IndexExpression expression);
+    // Drop a named index (txn undo of CREATE INDEX; not a public SQL DROP INDEX yet).
+    bool dropIndex(std::string_view name);
     // Observability for tests: ordered index node layout for a named index.
     [[nodiscard]] std::optional<std::vector<BTreeNode>>
     orderedIndexNodesSnapshot(std::string_view indexName) const;

@@ -204,7 +204,9 @@ transaction ids, append compensating undo records, and buffer page-image redo re
 flushes deferred redo as one atomic WAL batch then marks the transaction committed and discards the
 undo log; `ROLLBACK` applies the undo log LIFO on the same database instance and drops deferred WAL.
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
-`CREATE INDEX`, `SAVE DATABASE`, and `LOAD DATABASE` are rejected.
+`SAVE DATABASE`, and `LOAD DATABASE` are rejected. `CREATE INDEX` is allowed: it pushes a
+`CreateIndex` undo record and defers the logical WAL payload until `COMMIT` (dropped on
+`ROLLBACK`, which drops the in-memory index).
 
 ## Types
 

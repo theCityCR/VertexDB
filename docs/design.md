@@ -47,7 +47,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Known Limitations
 
-- Schema changes, index creation, and save/load are rejected inside an open transaction.
+- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`) and save/load are
+  rejected inside an open transaction. `CREATE INDEX` is transactional (undo + deferred logical
+  WAL); there is no public `DROP INDEX` SQL yet (internal drop supports undo).
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
   `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
 - Top-level `OR` of equality (or expression-equality) index probes uses multi-index union when the
@@ -70,9 +72,10 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-Indexed `UPDATE`/`DELETE` (reuse of SELECT access paths via `collectVisibleEntries`) is shipped.
-Further recursive/set-op surface remains intentionally limited (see [sql.md](sql.md)).
-`EXPLAIN` for mutations is still out of scope.
+Transactional `CREATE INDEX` (undo + deferred WAL) and indexed `UPDATE`/`DELETE` are shipped.
+Catalog DDL (`CREATE`/`DROP`/`RENAME` table, `CREATE DATABASE`) and `SAVE`/`LOAD` remain rejected
+inside open transactions. Further recursive/set-op surface remains intentionally limited (see
+[sql.md](sql.md)). `EXPLAIN` for mutations and public `DROP INDEX` SQL are still out of scope.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays

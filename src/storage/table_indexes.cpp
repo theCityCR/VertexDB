@@ -108,6 +108,11 @@ bool Table::createIndexWithoutRebuild(std::string name, IndexExpression expressi
     return registerIndex(std::move(name), *indexColumn, std::move(expression), false);
 }
 
+bool Table::dropIndex(std::string_view name) {
+    std::unique_lock lock{mutex_};
+    return indexManager_.dropIndex(name);
+}
+
 void Table::addRowToIndexes(RowId rowId) {
     indexManager_.addRowToIndexes(rowId, *rowStore_, schema_);
 }

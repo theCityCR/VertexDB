@@ -171,6 +171,20 @@ TEST(StorageTests, TableIndexesTrackStableRowIdsAfterMiddleDelete) {
     EXPECT_EQ(table.indexedLookup("id", Value{4}).value_or(std::vector<RowId>{}), std::vector<RowId>{reused});
 }
 
+TEST(StorageTests, DropIndexRemovesLookupAndMetadata) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    table.insert({Value{1}, Value{std::string{"Alice"}}});
+    ASSERT_TRUE(table.hasIndex("id"));
+    ASSERT_FALSE(table.indexedLookup("id", Value{1}).value_or(std::vector<RowId>{}).empty());
+
+    ASSERT_TRUE(table.dropIndex("idx_id"));
+    EXPECT_FALSE(table.hasIndex("id"));
+    EXPECT_TRUE(table.listIndexes().empty());
+    EXPECT_FALSE(table.indexedLookup("id", Value{1}).has_value());
+    EXPECT_FALSE(table.dropIndex("idx_id"));
+}
+
 TEST(StorageTests, SaveLoadPreservesSparseIndexesAndFreeListReuse) {
     const auto root =
         std::filesystem::temp_directory_path() /

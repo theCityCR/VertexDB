@@ -98,7 +98,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 217 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 222 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
@@ -118,7 +118,8 @@ Or feed an example script:
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
   durable prefix
-- Schema changes, `CREATE INDEX`, and `SAVE`/`LOAD` are rejected while a transaction is active
+- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`) and `SAVE`/`LOAD` are
+  rejected while a transaction is active; `CREATE INDEX` is allowed with undo + deferred WAL
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
@@ -141,8 +142,9 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 `WITH` nesting depth up to 3 and correlation through four outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
-positions, CI CTE cost-shape gating, indexed `UPDATE`/`DELETE` access paths, and a dated absolute-time
-benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+positions, CI CTE cost-shape gating, indexed `UPDATE`/`DELETE` access paths, transactional
+`CREATE INDEX`, and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the CI
+`benchmark report` artifact).
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).

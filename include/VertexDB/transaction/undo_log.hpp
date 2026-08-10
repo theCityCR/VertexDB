@@ -17,6 +17,7 @@ enum class UndoKind : std::uint8_t {
     Insert,
     Update,
     Delete,
+    CreateIndex,
 };
 
 struct UndoRecord {
@@ -24,6 +25,8 @@ struct UndoRecord {
     UndoKind kind{UndoKind::Insert};
     RowId rowId{};
     std::optional<Row> beforeImage;
+    // Populated for UndoKind::CreateIndex; empty for DML undo.
+    std::string indexName;
 };
 
 class UndoLog {

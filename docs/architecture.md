@@ -125,9 +125,10 @@ page-image redo.
 and `rowsById(..., ReadSnapshot, TransactionManager)`. `TxnSession` stamps DML with SQL transaction
 ids, captures a commit-seq snapshot at `BEGIN`, and supplies all SELECT visibility state for
 commit-aware MVCC (including dirty-read prevention for concurrent autocommit readers).
-`BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML records compensating
-actions, `RecoveryService` applies them LIFO on `ROLLBACK` to the same `Database` instance, and
-`COMMIT` discards the log after `RecoveryService` flushes deferred WAL.
+`BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML and transactional
+`CREATE INDEX` record compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to
+the same `Database` instance, and `COMMIT` discards the log after `RecoveryService` flushes
+deferred WAL (logical `CreateIndex` SQL plus collapsed page-image redo).
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
 pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered before rows so
@@ -137,8 +138,10 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
   logical DML remain replayable. Trailing torn WAL records are skipped.
-- Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log DML rollback;
-  DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped on `ROLLBACK`.
+- Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
+  DML and transactional `CREATE INDEX`; DML WAL records are deferred until `COMMIT` (one atomic
+  batch) and dropped on `ROLLBACK`. Catalog DDL and `SAVE`/`LOAD` remain rejected in open
+  transactions.
 
 ## Current Data Flow
 

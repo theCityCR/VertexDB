@@ -179,15 +179,18 @@ QueryResult QueryExecutor::executeListTables() {
 }
 
 QueryResult QueryExecutor::executeCreateIndex(const CreateIndex &command) {
-    if (const auto rejected = session_.rejectIfTransactionActive("CREATE INDEX");
-        !rejected.success) {
-        return rejected;
-    }
     auto table = selectEngine_.requireTable(command.table);
     const bool created =
         command.expression ? table->createIndex(command.name, *command.expression)
                            : table->createIndex(command.name, command.column);
     if (created) {
+        if (session_.transactionActive()) {
+            UndoRecord undo;
+            undo.tableName = command.table;
+            undo.kind = UndoKind::CreateIndex;
+            undo.indexName = command.name;
+            session_.pushUndo(std::move(undo));
+        }
         appendWal(WalOperation::CreateIndex, createIndexSql(command));
     }
     return messageResult(created,
