@@ -119,17 +119,19 @@ per-join planning for left-deep multi-join chains. Non-equi and `LEFT` joins fal
 nested-loop compare.
 
 A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) and derived tables
-(`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`. 
-`AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Uncorrelated
-`IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`) materialize into value
-lists when uncorrelated; correlated `IN`/`EXISTS` bind outer scopes per row for up to four FROM
-frames, including `FROM` / `JOIN` table aliases. Nested `WITH` up to depth 3 reuses the same
-inliner.
+(`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`.
+`AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Outer `JOIN` against a
+CTE/derived alias also force-materializes so body filters stay scoped inside the temp.
+Uncorrelated `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`, and
+optionally containing joins) materialize into value lists when uncorrelated; correlated
+`IN`/`EXISTS` bind outer scopes per row for up to four FROM frames, including `FROM` / `JOIN`
+table aliases. Nested `WITH` up to depth 3 reuses the same inliner. Minimal `WITH RECURSIVE`
+(`UNION ALL`, delta binding, iteration/row caps) always force-materializes.
 Expression indexes match `(expr) =/>/< const` predicates; `trigram(column)` indexes serve substring
-`LIKE '%lit%'`. Regex `~` remains a residual full scan. Minimal `WITH RECURSIVE` (`UNION ALL`, delta binding, iteration/row caps) force-materializes.
-CTE/derived bodies may carry `INNER`/`LEFT`
-joins (including multi-join chains) through inlining. Aggregates/`GROUP BY` are planned as a
-post-join hash aggregate (`EXPLAIN` reports `aggregation`).
+`LIKE '%lit%'`. Regex `~` remains a residual full scan. CTE/derived bodies may carry left-deep
+`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins (including multi-join chains) through inlining or
+materialization. Aggregates/`GROUP BY` are planned as a post-join hash aggregate (`EXPLAIN`
+reports `aggregation`).
 
 ### CTE index demo
 

@@ -49,12 +49,13 @@ CLI
   predicate parsing live in focused translation units behind one `Parser` type). AST statements
   reference `IndexExpression` from `common/` rather than owning the type.
 
-- `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
-  cost-based access-path / join selection through the `RelationStats` and `IndexCatalogView`
-  interfaces, including optional `ANALYZE` histograms, multi-index AND intersect / OR union
-  (including partial OR with residual complementary scan), prefix `LIKE` / trigram intersect, and
-  residual filters. `QueryPlanner` is split across `query_planner.cpp` (SELECT paths),
-  `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
+- `planner`: CTE/derived-table rewrite (inline, `AS MATERIALIZED`, force-materialize for outer
+  `JOIN` targets and minimal `WITH RECURSIVE`), correlated/`IN` prep, and cost-based access-path /
+  join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
+  `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
+  complementary scan), prefix `LIKE` / trigram intersect, and residual filters. `QueryPlanner` is
+  split across `query_planner.cpp` (SELECT paths), `planner_predicate.cpp`, `query_planner_join.cpp`,
+  and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
 existence, `LIKE`, or regex node owns only the fields valid for that shape. Physical access paths
@@ -66,7 +67,8 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   `PageRowStore` are separate TUs sharing sparse-layout validation.
 - `execution`: `QueryExecutor` is a stable façade that composes focused execution types.
   `SelectEngine` owns SELECT/join/EXPLAIN execution, `SubqueryRuntime` owns CTE/`IN`/`EXISTS`
-  preparation and evaluation, and `PreparedStatementCatalog` owns parsed prepared ASTs.
+  preparation and evaluation (including joined subqueries and recursive CTE materialization), and
+  `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
   `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. `predicate_eval`,
   `select_helpers` / `select_scope` / `select_aggregate`, `prepared_bind`, and `sql_literal`
@@ -136,10 +138,12 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
    `IN`/`EXISTS`, `LIKE`/`~`, expression indexes including trigram, and `EXPLAIN`). Prepared
    statements store that AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including nested
-   `WITH` up to depth 3 and `WITH` inside `IN`/`EXISTS`); the executor materializes uncorrelated
-   `IN` subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer
-   binding frames (including `FROM` / `JOIN` table aliases).
+   `WITH` up to depth 3, `WITH`/`JOIN` inside `IN`/`EXISTS`, outer `JOIN` against CTE/derived
+   aliases, and minimal `WITH RECURSIVE`); the executor materializes uncorrelated `IN` subqueries
+   and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding frames
+   (including `FROM` / `JOIN` table aliases), routing joined subqueries through `executeJoinSelect`.
 5. `QueryPlanner` chooses an access path (column or expression index, prefix `LIKE`, trigram
-   intersect, residual filters) and per-join algorithms for left-deep join chains;
-   `SelectEngine` runs filters/joins, then optional hash aggregation, then `ORDER BY`/`LIMIT`.
+   intersect, residual filters) and per-join algorithms for left-deep `INNER`/`LEFT`/`RIGHT`/
+   `FULL`/`CROSS` chains; `SelectEngine` runs filters/joins, then optional hash aggregation, then
+   `ORDER BY`/`LIMIT`.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.

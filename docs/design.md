@@ -17,15 +17,16 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
   `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3, minimal
   `WITH RECURSIVE` with `UNION ALL`), derived tables,
-  `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` inside them and
-  correlation through four outer frames), expression indexes (including `trigram(column)`),
+  `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` / `JOIN` inside them and
+  correlation through four outer frames), outer `JOIN` against CTE/derived aliases (force
+  materialize), expression indexes (including `trigram(column)`),
   `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
   `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete, table management, multi-join chains (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), CTE/derived-table
-  inlining or materialization, correlated `IN`/`EXISTS` with alias scopes, expression-index
-  maintenance (including trigram), prepared AST binding, save/load, recovery, and transactional
-  read routing
+  inlining or materialization (including recursive delta iteration), correlated `IN`/`EXISTS` with
+  alias scopes (including joined subqueries), expression-index maintenance (including trigram),
+  prepared AST binding, save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup (column and expression keys), hash index `IN` multi-lookup, ordered prefix
   `LIKE`, and hash trigram indexes for substring `LIKE`
@@ -53,14 +54,15 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   complementary scan (partial OR). When no disjunct is indexable, or the indexable union is not
   cheaper than a scan, the planner keeps a full scan. Nested `OR` under `AND` may remain as a
   residual while another conjunct uses an index.
-- Nested SQL is limited: `WITH` nesting deeper than depth 3, correlation deeper than four outer
-  frames. Outer `JOIN` against a CTE/derived alias force-materializes the CTE. `WITH RECURSIVE`
-  (`UNION ALL`, delta self-ref, iteration/row safety caps) is supported. `JOIN` inside `IN`/`EXISTS` is supported. Supported nested forms include `WITH` nesting depth up to 3,
-  `WITH` / derived tables inside `IN`/`EXISTS`, `FROM` / `JOIN` table aliases (`AS` optional) for
-  qualification and correlation scopes, correlated `IN`/`EXISTS` through up to four outer frames,
-  and expression indexes (`column`, `-column`, `column+/-literal`, `trigram(column)`). CTE/derived
-  bodies may include `INNER` / `LEFT` joins. Parser/tokenizer failures report `line`/`column`
-  source positions via `ParseError`.
+- Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
+  frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
+  derived tables and `JOIN` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias (force
+  materialize), minimal `WITH RECURSIVE` (`UNION ALL`, delta self-ref, 1000-iteration /
+  100000-row caps), `FROM` / `JOIN` table aliases (`AS` optional) for qualification and
+  correlation scopes, and expression indexes (`column`, `-column`, `column+/-literal`,
+  `trigram(column)`). CTE/derived bodies may include left-deep `INNER` / `LEFT` / `RIGHT` /
+  `FULL` / `CROSS` joins. Parser/tokenizer failures report `line`/`column` source positions via
+  `ParseError`.
 - Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL`
   `[OUTER]` and `CROSS` chains (`ON col op col` for non-`CROSS`). General DDL beyond
   the current table/index commands is still out of scope.
