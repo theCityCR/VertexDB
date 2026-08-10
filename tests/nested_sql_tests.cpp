@@ -745,19 +745,56 @@ TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
     // Derived tables require an alias.
     EXPECT_THROW((void)parser.parse("SELECT id FROM (SELECT id FROM Employees);"),
                  std::runtime_error);
+}
 
-    // Outer JOIN against a CTE/derived alias is rejected (body WHERE would mis-scope on the join).
+TEST(NestedSqlTests, OuterJoinAgainstCteAndDerivedAlias) {
+    Parser parser;
+    auto executor = makeExecutor("outer-join-cte");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                          "(2, \"Bob\", 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
     auto cteJoin = parser.parse(
-        "WITH high AS (SELECT id, name FROM Employees WHERE id = 1) "
-        "SELECT * FROM high JOIN Departments ON id = id;");
+        "WITH high AS (SELECT id, name, dept_id FROM Employees WHERE id = 1) "
+        "SELECT high.name, Departments.dept FROM high JOIN Departments "
+        "ON high.dept_id = Departments.id;");
     ASSERT_TRUE(std::holds_alternative<Select>(cteJoin));
-    EXPECT_THROW((void)rewriteSelect(std::get<Select>(cteJoin)), std::runtime_error);
+    const auto cteRewrite = rewriteSelect(std::get<Select>(cteJoin));
+    ASSERT_FALSE(cteRewrite.materialize.empty());
+    EXPECT_NE(cteRewrite.notes.front().find("join target"), std::string::npos);
 
-    auto derivedJoin = parser.parse(
-        "SELECT * FROM (SELECT id, name FROM Employees WHERE id = 1) AS high "
-        "JOIN Departments ON id = id;");
-    ASSERT_TRUE(std::holds_alternative<Select>(derivedJoin));
-    EXPECT_THROW((void)rewriteSelect(std::get<Select>(derivedJoin)), std::runtime_error);
+    auto cteResult = executor.execute(cteJoin);
+    ASSERT_TRUE(cteResult.success) << cteResult.message;
+    ASSERT_EQ(cteResult.rows.size(), 1U);
+    EXPECT_EQ(cteResult.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(cteResult.rows[0][1], Value{"Eng"});
+
+    auto derivedResult = executor.execute(parser.parse(
+        "SELECT high.name, Departments.dept FROM "
+        "(SELECT id, name, dept_id FROM Employees WHERE id = 1) AS high "
+        "JOIN Departments ON high.dept_id = Departments.id;"));
+    ASSERT_TRUE(derivedResult.success) << derivedResult.message;
+    ASSERT_EQ(derivedResult.rows.size(), 1U);
+    EXPECT_EQ(derivedResult.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(derivedResult.rows[0][1], Value{"Eng"});
+
+    auto rightCte = executor.execute(parser.parse(
+        "WITH depts AS (SELECT id, dept FROM Departments) "
+        "SELECT Employees.name, depts.dept FROM Employees RIGHT JOIN depts "
+        "ON Employees.dept_id = depts.id ORDER BY depts.dept;"));
+    ASSERT_TRUE(rightCte.success) << rightCte.message;
+    ASSERT_EQ(rightCte.rows.size(), 1U);
+    EXPECT_EQ(rightCte.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(rightCte.rows[0][1], Value{"Eng"});
 }
 
 TEST(NestedSqlTests, MaterializedCteFencesBaseTableIndex) {

@@ -123,7 +123,7 @@ Or feed an example script:
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
 - Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3, correlation deeper than
-  four outer frames, outer `JOIN` against a CTE/derived alias, or `WITH RECURSIVE`. `JOIN` inside `IN`/`EXISTS` is
+  four outer frames, or `WITH RECURSIVE`. Outer `JOIN` against a CTE/derived alias force-materializes the CTE. `JOIN` inside `IN`/`EXISTS` is
   supported. Expression indexes cover column / unary minus / `+/-` literal /
   `trigram(column)` (substring `LIKE`); prefix `LIKE` uses ordered indexes; regex `~` is residual
   full-scan. `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are

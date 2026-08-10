@@ -111,7 +111,7 @@ correlation scope (aliases rewrite to physical table qualifiers on join results)
 derived-table bodies may include `INNER` / `LEFT` joins (including left-deep multi-join chains).
 `WITH` nesting depth up to 3 is supported (nested `WITH` up to three levels inside a CTE body).
 `WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. `WITH RECURSIVE`
-and outer `JOIN` against a CTE/derived alias remain unsupported.
+remain unsupported. Outer `JOIN` against a CTE/derived alias force-materializes the CTE.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where
@@ -194,4 +194,3 @@ Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`colum
 Intentional out-of-scope items (not near-term polish):
 
 - `WITH RECURSIVE`
-- Outer `JOIN` against a CTE / derived-table alias

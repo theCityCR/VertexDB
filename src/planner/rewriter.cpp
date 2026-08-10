@@ -4,6 +4,7 @@
 
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace VertexDB {
 namespace {
@@ -33,6 +34,37 @@ Select stripCtes(Select query) {
     return nullptr;
 }
 
+[[nodiscard]] bool referencesCteInFromOrJoin(const Select &query, const CteEntry &cte) {
+    if (equalsIgnoreCase(cte.name, query.table)) {
+        return true;
+    }
+    for (const auto &join : query.joins) {
+        if (equalsIgnoreCase(cte.name, join.table)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void appendRewrite(RewriteResult &result, RewriteResult &&part) {
+    for (auto &note : part.notes) {
+        result.notes.push_back(std::move(note));
+    }
+    for (auto &item : part.materialize) {
+        result.materialize.push_back(std::move(item));
+    }
+}
+
+[[nodiscard]] Select rewriteBody(const Select &body, RewriteResult &result) {
+    Select bodySelect = body;
+    if (!bodySelect.ctes.empty()) {
+        auto bodyRewrite = rewriteSelect(bodySelect);
+        bodySelect = std::move(bodyRewrite.query);
+        appendRewrite(result, std::move(bodyRewrite));
+    }
+    return bodySelect;
+}
+
 } // namespace
 
 RewriteResult rewriteSelect(const Select &query) {
@@ -44,6 +76,27 @@ RewriteResult rewriteSelect(const Select &query) {
         return result;
     }
 
+    std::vector<const CteEntry *> joinTargets;
+    for (const auto &cte : query.ctes) {
+        if (referencesCteInFromOrJoin(query, cte)) {
+            joinTargets.push_back(&cte);
+        }
+    }
+
+    // Outer JOIN against a CTE/derived alias: force materialize so body WHERE stays inside the
+    // temp and is not AND-merged onto the joined outer result.
+    if (!query.joins.empty() && !joinTargets.empty()) {
+        Select remaining = query;
+        remaining.ctes.clear();
+        for (const auto *cte : joinTargets) {
+            Select bodySelect = rewriteBody(*cte->body, result);
+            result.notes.push_back("materialized CTE " + cte->name + " (join target)");
+            result.materialize.emplace_back(cte->name, std::move(bodySelect));
+        }
+        result.query = stripCtes(std::move(remaining));
+        return result;
+    }
+
     const CteEntry *matched = findCte(query, query.table);
     if (matched == nullptr) {
         // FROM is a base table; CTEs unused in FROM (may still appear only as documentation).
@@ -52,24 +105,8 @@ RewriteResult rewriteSelect(const Select &query) {
         return result;
     }
 
-    if (!query.joins.empty()) {
-        // Body WHERE is AND-merged onto the joined result; that would mis-scope filters and can
-        // make columns ambiguous. Require JOIN to live inside the CTE/derived body instead.
-        throw std::runtime_error("JOIN with CTE is not supported in this version");
-    }
-
     // Fully rewrite the CTE/derived body first (nested derived tables become synthetic CTEs).
-    Select bodySelect = *matched->body;
-    if (!bodySelect.ctes.empty()) {
-        auto bodyRewrite = rewriteSelect(bodySelect);
-        for (auto &note : bodyRewrite.notes) {
-            result.notes.push_back(std::move(note));
-        }
-        for (auto &item : bodyRewrite.materialize) {
-            result.materialize.push_back(std::move(item));
-        }
-        bodySelect = std::move(bodyRewrite.query);
-    }
+    Select bodySelect = rewriteBody(*matched->body, result);
 
     if (matched->materializeMode == MaterializeMode::Materialized) {
         result.notes.push_back("materialized CTE " + matched->name);
@@ -83,13 +120,8 @@ RewriteResult rewriteSelect(const Select &query) {
         result.materialize.emplace_back(matched->name, std::move(bodySelect));
         if (!remaining.ctes.empty()) {
             auto recursive = rewriteSelect(remaining);
-            for (auto &note : recursive.notes) {
-                result.notes.push_back(std::move(note));
-            }
-            for (auto &item : recursive.materialize) {
-                result.materialize.push_back(std::move(item));
-            }
             result.query = std::move(recursive.query);
+            appendRewrite(result, std::move(recursive));
             return result;
         }
         result.query = stripCtes(std::move(remaining));
@@ -129,13 +161,8 @@ RewriteResult rewriteSelect(const Select &query) {
             }
         }
         auto recursive = rewriteSelect(nested);
-        for (auto &note : recursive.notes) {
-            result.notes.push_back(std::move(note));
-        }
-        for (auto &item : recursive.materialize) {
-            result.materialize.push_back(std::move(item));
-        }
         result.query = std::move(recursive.query);
+        appendRewrite(result, std::move(recursive));
         return result;
     }
 
