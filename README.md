@@ -98,7 +98,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 224 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 231 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
@@ -143,8 +143,8 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
 positions, CI CTE cost-shape gating, indexed `UPDATE`/`DELETE` access paths, transactional
-`CREATE INDEX`, same-column equality `OR`→`IN` rewrite, and a dated absolute-time benchmark summary
-(last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+`CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists, and a dated absolute-time
+benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).

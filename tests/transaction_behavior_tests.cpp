@@ -77,6 +77,29 @@ TEST(TransactionBehaviorTests, RollbackKeepsSameDatabaseInstance) {
     EXPECT_TRUE(result.rows.empty());
 }
 
+TEST(TransactionBehaviorTests, UpdateThenDeleteDoesNotResurrectPriorVersion) {
+    // Regression: UPDATE must close the prior MVCC version so a later DELETE cannot expose it.
+    Parser parser;
+    auto executor = makeExecutor("update-then-delete");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET name = \"Alicia\" WHERE id = 1;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE id = 1;")).success);
+
+    auto gone = executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(gone.success);
+    EXPECT_TRUE(gone.rows.empty());
+
+    auto remaining =
+        executor.execute(parser.parse("SELECT id, name FROM Employees ORDER BY id ASC;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 2U);
+    EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
+}
+
 TEST(TransactionBehaviorTests, RollbackReversesMixedDmlAndIndexedLookups) {
     Parser parser;
     auto executor = makeExecutor("undo-mixed");

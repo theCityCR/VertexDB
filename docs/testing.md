@@ -11,13 +11,13 @@ VertexDB uses three levels of automated testing:
 | File | Concern |
 | --- | --- |
 | `test_support.hpp` / `test_support.cpp` | Shared `makeTempExecutor` / `makeTempRoot` / `seedEmployees` |
-| `parser_tests.cpp` | Tokenization, AST grammar (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, `LIKE`/`~`, nested `WITH` depth), `ParseError` source positions, CROSS-with-ON / bushy-join refusals |
+| `parser_tests.cpp` | Tokenization, AST grammar (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, `LIKE`/`~`, literal `IN` lists vs `IN` subquery, nested `WITH` depth), `ParseError` source positions, CROSS-with-ON / bushy-join refusals |
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
 | `index_tests.cpp` | Hash / B+ tree unit behavior, expression/`trigram` index metadata |
 | `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/`RIGHT`/`FULL`/`CROSS`/non-equi joins, `LIKE`/trigram/NULL edges, concurrency |
 | `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH`/`JOIN` in `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE` (incl. iteration/row caps and documented refusals), correlation (≤4 frames, NULL outer keys), documented grammar refusals |
-| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan / non-prefix LIKE), same-column OR→IN rewrite, residuals, stats/cost, multi-index intersect/union, outer/`CROSS` join plans, `EXPLAIN`, indexed UPDATE/DELETE `WHERE` |
-| `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility, deferred WAL, transactional `CREATE INDEX`, still-forbidden catalog DDL/persistence |
+| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan / non-prefix LIKE), same-column OR→IN rewrite (incl. expression), residuals, stats/cost, multi-index intersect/union, outer/`CROSS` join plans, `EXPLAIN`, indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
+| `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), deferred WAL, transactional `CREATE INDEX`, still-forbidden catalog DDL/persistence |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY` (incl. NULL group keys), prepared statements (AST immutability), `ANALYZE` |
 | `deep_feature_tests.cpp` | Cross-cutting deep-feature coverage (incl. legacy `.tcrdb` v1–v3 load) |
@@ -30,7 +30,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 224 discovered GoogleTest cases across the files above.
+The current suite contains 231 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

@@ -16,6 +16,7 @@ INSERT INTO People VALUES (1, "Al"), (2, NULL);
 SELECT * FROM Employees;
 SELECT name FROM Employees WHERE salary > 100000.0 LIMIT 10;
 SELECT name FROM Employees WHERE salary > 100000.0 OR name = "Alice";
+SELECT name FROM Employees WHERE id IN (1, 3);
 SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY salary DESC LIMIT 10;
 SELECT * FROM Employees JOIN Departments ON dept_id = id LIMIT 10;
 SELECT Employees.name, Departments.dept
@@ -120,7 +121,8 @@ index.
 base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into an ephemeral table
 (with hash indexes on projected columns), and the outer query plans against that temp — `EXPLAIN`
 notes `materialized CTE <name>`. Derived tables `FROM (SELECT …) [AS] alias` normalize to the same
-inline path. `WHERE col IN (SELECT …)` materializes uncorrelated subqueries (which themselves may
+inline path. `WHERE col IN (v1, v2, …)` builds an `InListPred` (HashIn when indexed).
+`WHERE col IN (SELECT …)` materializes uncorrelated subqueries (which themselves may
 use indexes) and probes the outer column via hash index `IN` lookup when indexed. Correlated
 `IN` / `EXISTS` with outer refs (`table.column`, `alias.column`, or unambiguous unqualified names)
 bind outer values per candidate row for up to four outer FROM frames. Deeper correlation is

@@ -73,10 +73,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-Same-column equality `OR`→`IN` (HashIn) under AND/top-level, transactional `CREATE INDEX`, and
-indexed `UPDATE`/`DELETE` are shipped. Catalog DDL and `SAVE`/`LOAD` remain rejected inside open
-transactions. Heterogeneous nested `OR` under `AND`, composite Intersect∪Union, and further
-recursive/set-op surface remain intentionally limited (see [sql.md](sql.md)). `EXPLAIN` for
+Quality polish shipped literal `IN (v1, v2, …)` parsing, indexed `UPDATE`/`DELETE` edge-path tests,
+expression same-column `OR`→`IN`, and an MVCC fix so `UPDATE` closes the prior version (UPDATE then
+`DELETE` no longer resurrects the pre-update image). Catalog DDL and `SAVE`/`LOAD` remain rejected
+inside open transactions. Heterogeneous nested `OR` under `AND`, composite Intersect∪Union, and
+further recursive/set-op surface remain intentionally limited (see [sql.md](sql.md)). `EXPLAIN` for
 mutations and public `DROP INDEX` SQL are still out of scope.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10

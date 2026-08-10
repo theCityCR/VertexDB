@@ -128,18 +128,32 @@ Predicate Parser::parseComparisonPredicate() {
     }
     if (match(TokenType::Identifier, "IN")) {
         expect(TokenType::LeftParen);
-        auto subquery = std::make_shared<Select>(parseSubquerySelect(true));
-        if (subquery->columns.size() != 1 || isStarProjection(subquery->columns) ||
-            subquery->columns.front().kind != SelectExpr::Kind::Column) {
-            throw std::runtime_error("IN subquery must project exactly one column");
+        if (peek().type == TokenType::Identifier &&
+            (equalsIgnoreCase(peek().lexeme, "SELECT") ||
+             equalsIgnoreCase(peek().lexeme, "WITH"))) {
+            auto subquery = std::make_shared<Select>(parseSubquerySelect(true));
+            if (subquery->columns.size() != 1 || isStarProjection(subquery->columns) ||
+                subquery->columns.front().kind != SelectExpr::Kind::Column) {
+                throw std::runtime_error("IN subquery must project exactly one column");
+            }
+            expect(TokenType::RightParen);
+            Predicate predicate = makeInSubquery(column.lexeme, std::move(subquery));
+            auto &inSubquery = std::get<InSubqueryPred>(predicate);
+            if (inSubquery.subquery && inSubquery.subquery->hasOuterRefs) {
+                inSubquery.referencesOuter = true;
+            }
+            return predicate;
         }
+
+        std::vector<Value> values;
+        do {
+            values.push_back(parseValue());
+        } while (match(TokenType::Comma));
         expect(TokenType::RightParen);
-        Predicate predicate = makeInSubquery(column.lexeme, std::move(subquery));
-        auto &inSubquery = std::get<InSubqueryPred>(predicate);
-        if (inSubquery.subquery && inSubquery.subquery->hasOuterRefs) {
-            inSubquery.referencesOuter = true;
+        if (values.empty()) {
+            throw std::runtime_error("IN list must contain at least one value");
         }
-        return predicate;
+        return makeInList(column.lexeme, std::move(values));
     }
     if (match(TokenType::Identifier, "LIKE")) {
         const auto pattern = parseValue();

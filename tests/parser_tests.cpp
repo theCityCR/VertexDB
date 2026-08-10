@@ -36,6 +36,26 @@ TEST(ParserTests, ParsesSelectWithPredicateAndLimit) {
     EXPECT_EQ(*command.limit, 5U);
 }
 
+TEST(ParserTests, ParsesInListAndKeepsInSubquery) {
+    Parser parser;
+    auto listQuery = parser.parse("SELECT name FROM Employees WHERE id IN (1, 3, 5);");
+    ASSERT_TRUE(std::holds_alternative<Select>(listQuery));
+    const auto &listSelect = std::get<Select>(listQuery);
+    ASSERT_TRUE(listSelect.where.has_value());
+    ASSERT_EQ(predicateKind(*listSelect.where), PredicateKind::InList);
+    const auto &inList = std::get<InListPred>(*listSelect.where);
+    EXPECT_EQ(inList.column, "id");
+    ASSERT_EQ(inList.inValues.size(), 3U);
+    EXPECT_EQ(inList.inValues[0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(inList.inValues[2], Value{static_cast<std::int64_t>(5)});
+
+    auto subQuery =
+        parser.parse("SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees);");
+    ASSERT_TRUE(std::holds_alternative<Select>(subQuery));
+    ASSERT_TRUE(std::get<Select>(subQuery).where.has_value());
+    EXPECT_EQ(predicateKind(*std::get<Select>(subQuery).where), PredicateKind::InSubquery);
+}
+
 TEST(ParserTests, ParsesMultiRowInsertNullableColumnsAndCompoundPredicates) {
     Parser parser;
 

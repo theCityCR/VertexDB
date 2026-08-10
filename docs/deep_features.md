@@ -62,13 +62,15 @@ group output. `EXPLAIN` adds an `aggregation` marker.
 
 The MVCC layer introduces SQL transaction identifiers, commit sequences, row-version chains, and
 commit-aware snapshot reads. DML stamps `createdBy`/`deletedBy` with the active SQL transaction id
-(or an immediately committed autocommit id). `BEGIN` captures a `ReadSnapshot` (`self` +
-`maxCommitSeq`); SELECTs always evaluate visibility through that snapshot so readers see only
-committed creators/deleters at or before the watermark, plus their own uncommitted writes. User-facing
-rollback still applies a per-transaction undo log against the live database without cloning it.
-Logical DML WAL records are replaced by page-image redo: buffered while a transaction is active,
-flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`. Legacy physical row-image redo remains
-replayable.
+(or an immediately committed autocommit id). An `UPDATE` closes the prior live version (`deletedBy`)
+before appending the new image so a later `DELETE` cannot resurrect the pre-update row. `BEGIN`
+captures a `ReadSnapshot` (`self` + `maxCommitSeq`); SELECTs always evaluate visibility through that
+snapshot so readers see only committed creators/deleters at or before the watermark, plus their own
+uncommitted writes. User-facing rollback still applies a per-transaction undo log against the live
+database without cloning it (undo of `UPDATE` pops the latest version and clears `deletedBy` on the
+revealed prior image). Logical DML WAL records are replaced by page-image redo: buffered while a
+transaction is active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`. Legacy physical
+row-image redo remains replayable.
 
 ## Buffer Pool
 

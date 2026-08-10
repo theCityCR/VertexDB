@@ -369,6 +369,152 @@ TEST(PlannerBehaviorTests, UpdateWithoutWhereStillMutatesAllVisibleRows) {
     }
 }
 
+TEST(PlannerBehaviorTests, UpdateAndDeleteUseHashInForInListPredicate) {
+    Parser parser;
+    auto executor = makeExecutor("dml-hashin");
+    seedEmployees(executor, parser, true, false);
+
+    Select scan{"Employees", {}, {SelectExpr::makeStar()},
+                makeInList("id", {Value{1}, Value{3}}),
+                {},
+                {}};
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+    table.insert({Value{1}, Value{"Alice"}, Value{120000.0}});
+    table.insert({Value{2}, Value{"Bob"}, Value{90000.0}});
+    table.insert({Value{3}, Value{"Cara"}, Value{110000.0}});
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    EXPECT_EQ(QueryPlanner{}.planSelect(scan, table).accessPath(), AccessPath::HashIn);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET name = \"Hit\" WHERE id IN (1, 3);"))
+                    .success);
+    auto names =
+        executor.execute(parser.parse("SELECT name FROM Employees ORDER BY id ASC;"));
+    ASSERT_TRUE(names.success);
+    ASSERT_EQ(names.rows.size(), 3U);
+    EXPECT_EQ(names.rows[0][0], Value{"Hit"});
+    EXPECT_EQ(names.rows[1][0], Value{"Bob"});
+    EXPECT_EQ(names.rows[2][0], Value{"Hit"});
+
+    auto deleted = executor.execute(parser.parse("DELETE FROM Employees WHERE id IN (1, 3);"));
+    ASSERT_TRUE(deleted.success) << deleted.message;
+    EXPECT_EQ(deleted.message, "deleted 2 row(s)") << deleted.message;
+    auto remaining =
+        executor.execute(parser.parse("SELECT id, name FROM Employees ORDER BY id ASC;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 1U) << remaining.message;
+    if (!remaining.rows.empty()) {
+        EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(2)});
+        EXPECT_EQ(remaining.rows[0][1], Value{"Bob"});
+    }
+}
+
+TEST(PlannerBehaviorTests, DeleteUsesPrefixLikeWhenNameIndexed) {
+    Parser parser;
+    auto executor = makeExecutor("dml-prefix-like");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+
+    Select scan{"Employees", {}, {SelectExpr::makeStar()}, makeLike("name", "A%"), {}, {}};
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+    table.insert({Value{1}, Value{"Alice"}, Value{120000.0}});
+    table.insert({Value{2}, Value{"Bob"}, Value{90000.0}});
+    table.insert({Value{3}, Value{"Cara"}, Value{110000.0}});
+    ASSERT_TRUE(table.createIndex("idx_name", "name"));
+    EXPECT_EQ(QueryPlanner{}.planSelect(scan, table).accessPath(), AccessPath::PrefixLike);
+
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Employees WHERE name LIKE \"A%\";")).success);
+    auto remaining =
+        executor.execute(parser.parse("SELECT name FROM Employees ORDER BY name ASC;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 2U);
+    EXPECT_EQ(remaining.rows[0][0], Value{"Bob"});
+    EXPECT_EQ(remaining.rows[1][0], Value{"Cara"});
+}
+
+TEST(PlannerBehaviorTests, UpdateIndexedColumnViaIndexProbeCollectsTargetsFirst) {
+    // Collect-then-mutate: changing the indexed probe column must not skip/double-hit rows.
+    Parser parser;
+    auto executor = makeExecutor("dml-collect-first");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("UPDATE Employees SET id = 99 WHERE id = 1;")).success);
+    auto rows =
+        executor.execute(parser.parse("SELECT id, name FROM Employees ORDER BY name ASC;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 3U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(99)});
+    EXPECT_EQ(rows.rows[0][1], Value{"Alice"});
+    EXPECT_EQ(rows.rows[1][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(rows.rows[2][0], Value{static_cast<std::int64_t>(3)});
+}
+
+TEST(PlannerBehaviorTests, UpdateUsesMultiIndexIntersectPath) {
+    Parser parser;
+    auto executor = makeExecutor("dml-intersect");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    for (int i = 1; i <= 100; ++i) {
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Employees VALUES (" +
+                                              std::to_string(i) + ", " + std::to_string(i % 2) +
+                                              ", " + std::to_string(i % 2) + ", \"n" +
+                                              std::to_string(i) + "\");"))
+                        .success);
+    }
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE dept = 1 AND city = 1;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("multi-index intersect on"),
+              std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET name = \"hit\" WHERE dept = 1 AND city = 1;"))
+                    .success);
+    auto hits =
+        executor.execute(parser.parse("SELECT id FROM Employees WHERE name = \"hit\";"));
+    ASSERT_TRUE(hits.success);
+    EXPECT_EQ(hits.rows.size(), 50U);
+
+    auto missed =
+        executor.execute(parser.parse("SELECT name FROM Employees WHERE dept = 0 LIMIT 1;"));
+    ASSERT_TRUE(missed.success);
+    ASSERT_EQ(missed.rows.size(), 1U);
+    EXPECT_NE(missed.rows[0][0], Value{"hit"});
+}
+
+TEST(PlannerBehaviorTests, ExpressionSameColumnOrRewritesToHashIn) {
+    Table table{"Employees", {{"id", ColumnType::Int}, {"salary", ColumnType::Double}}};
+    for (int i = 1; i <= 10; ++i) {
+        table.insert({Value{i}, Value{100000.0 + i}});
+    }
+    IndexExpression negSalary;
+    negSalary.kind = IndexExpression::Kind::Negate;
+    negSalary.column = "salary";
+    ASSERT_TRUE(table.createIndex("idx_neg_salary", negSalary));
+
+    Predicate where =
+        makeOr(makeExpressionComparison(negSalary, ComparisonOperator::Equal, Value{-100001.0}),
+               makeExpressionComparison(negSalary, ComparisonOperator::Equal, Value{-100002.0}));
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashIn);
+    ASSERT_TRUE(std::get<HashInPlan>(plan.path).indexExpression.has_value());
+    EXPECT_EQ(*std::get<HashInPlan>(plan.path).indexExpression, negSalary);
+    ASSERT_EQ(std::get<HashInPlan>(plan.path).indexValues.size(), 2U);
+    EXPECT_FALSE(plan.residual().has_value());
+}
+
 TEST(PlannerBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality) {
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"salary", ColumnType::Double}}};

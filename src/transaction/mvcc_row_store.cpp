@@ -3,7 +3,12 @@
 namespace VertexDB {
 
 void MVCCRowStore::write(RowId rowId, Row row, TransactionId transactionId) {
-    versions_[rowId].push_back({transactionId, std::nullopt, std::move(row)});
+    auto &chain = versions_[rowId];
+    // Close the prior live version so UPDATE then DELETE cannot resurrect the pre-update image.
+    if (!chain.empty() && !chain.back().deletedBy) {
+        chain.back().deletedBy = transactionId;
+    }
+    chain.push_back({transactionId, std::nullopt, std::move(row)});
 }
 
 void MVCCRowStore::erase(RowId rowId, TransactionId transactionId) {
@@ -24,7 +29,10 @@ bool MVCCRowStore::popLatestVersion(RowId rowId) {
     it->second.pop_back();
     if (it->second.empty()) {
         versions_.erase(it);
+        return true;
     }
+    // Undoing an UPDATE must revive the prior version that write() had closed.
+    it->second.back().deletedBy.reset();
     return true;
 }
 
