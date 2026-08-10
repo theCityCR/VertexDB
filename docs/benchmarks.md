@@ -175,9 +175,11 @@ Takeaways from this run:
 
 ## Remaining Follow-ups
 
-- Refresh this illustrative absolute-time table from a new `benchmark-report-json` artifact (or a
-  quiet local `scripts/run-benchmarks.sh`) after planner or storage changes. The shape gate already
-  runs on every push/PR.
+The absolute-time summary above is current as of the 2026-08-10 GHA report artifact. Re-run the
+`benchmark report` job (or a quiet local `scripts/run-benchmarks.sh`) and paste a new
+`--markdown-table` only after planner or storage changes that stale those numbers. The CTE shape
+gate already runs on every push/PR.
+
 - Optional: Debug vs Release and sanitizer comparison tables.
 - Optional: include executor `Update`/`Delete` once those paths are cheap enough for short
   `--benchmark_min_time` report runs.

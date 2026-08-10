@@ -58,14 +58,16 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-1. Optional: refresh the illustrative absolute-time table in [benchmarks.md](benchmarks.md) after
-   planner or storage changes. Prefer the CI `benchmark report` artifact (`workflow_dispatch`, or a
-   push whose commit message contains `[benchmark-report]`) plus
-   `python3 scripts/check_benchmark_shape.py --markdown-table …` so a busy local machine is not
-   required. CTE **cost shape** (indexed stays flat, scan grows, materialize ≫ inline) is already
-   gated on every push/PR via `scripts/run-benchmarks.sh --check-shape`.
-2. Optional nested-SQL polish still in educational scope: join-table aliases, clearer diagnostics
+1. Optional nested-SQL polish still in educational scope: join-table aliases, clearer diagnostics
    with source positions, or correlation deeper than two frames.
+
+The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
+from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays
+flat, scan grows, materialize ≫ inline) is gated on every push/PR via
+`scripts/run-benchmarks.sh --check-shape`. Re-refresh the absolute-time summary only after planner
+or storage changes that make those numbers stale — prefer `workflow_dispatch` or a commit message
+containing `[benchmark-report]`, then
+`python3 scripts/check_benchmark_shape.py --markdown-table …`.
 
 CTE inlining so outer predicates hit base-table indexes is packaged as a demo wedge: see
 [cte_index_wedge.md](cte_index_wedge.md) and [cte_materialize_comparison.md](cte_materialize_comparison.md).

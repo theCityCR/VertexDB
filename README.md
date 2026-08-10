@@ -132,7 +132,8 @@ Or feed an example script:
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
-one-level nested `WITH` and two-level correlation, and documented benchmarks.
+one-level nested `WITH` and two-level correlation, CI CTE cost-shape gating, and a dated absolute-time
+benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).
