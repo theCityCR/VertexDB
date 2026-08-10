@@ -1,5 +1,7 @@
 #pragma once
 
+// Executor-level reader/writer lock. Implementation: src/concurrency/lock_manager.cpp.
+
 #include <mutex>
 #include <shared_mutex>
 

@@ -15,9 +15,9 @@ CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence /
 | --- | --- |
 | `include/VertexDB/<module>/` | Public headers (mirrors `src/`) |
 | `src/common/` | Values, `IndexExpression`, string/binary helpers |
-| `src/parser/` | Tokenizer + AST; one `Parser`, DDL/DML/predicate TUs |
-| `src/planner/` | Rewriter + costed access paths / joins |
-| `src/execution/` | `QueryExecutor` façade; `SelectEngine`, subquery, txn, recovery |
+| `src/parser/` | Tokenizer + AST; one `Parser`, DDL/DML/SELECT/predicate TUs |
+| `src/planner/` | Rewriter + costed access paths / joins (`query_planner_select.cpp` owns `planSelect`) |
+| `src/execution/` | `QueryExecutor` façade; `ExecutionContext`; `SelectEngine` (+ scan/join TUs), subquery, txn, recovery |
 | `src/storage/` | `Database` / `Table` / `RowStore` / buffer pool / stats |
 | `src/indexing/` | `IndexManager`, hash and B+ tree |
 | `src/persistence/` | `.tcrdb` codecs, WAL, redo |
@@ -27,6 +27,9 @@ CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence /
 
 **File name = owner type** when a type is split across TUs (e.g. `select_engine.cpp`
 implements `SelectEngine`; `btree_index_mutate.cpp` is still `BTreeIndex`).
+
+`SelectEngine` and `SubqueryRuntime` share an `ExecutionContext` (database, planner,
+session, peer pointers). They do **not** friend `QueryExecutor`.
 
 ## Where to put new code
 

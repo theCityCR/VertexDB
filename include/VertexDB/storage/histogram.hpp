@@ -1,5 +1,8 @@
 #pragma once
 
+// Equi-height column histograms for ANALYZE / planner selectivity.
+// Implementation: src/storage/histogram.cpp.
+
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/value.hpp"
 

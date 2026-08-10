@@ -6,6 +6,7 @@ CLI
  SQL Parser
  |
  Query Executor
+ |   +-- ExecutionContext (DB / planner / session + Select/Subquery peers)
  |
  +-- Query Planner
  |   +-- Rewriter (CTE inline/materialize, IN subquery prep)
@@ -45,17 +46,17 @@ CLI
 - `common`: shared value types, column metadata, `IndexExpression` shapes/helpers, string helpers
   (`equalsIgnoreCase`), LIKE/regex/trigram pattern helpers (`string_pattern`), and binary POD I/O
   (`writePod` / `readPod` for streams and byte spans).
-- `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
-  predicate parsing live in focused translation units behind one `Parser` type). AST statements
-  reference `IndexExpression` from `common/` rather than owning the type.
+- `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML,
+  SELECT/WITH, and predicate parsing live in focused translation units behind one `Parser`
+  type). AST statements reference `IndexExpression` from `common/` rather than owning the type.
 
 - `planner`: CTE/derived-table rewrite (inline, `AS MATERIALIZED`, force-materialize for outer
   `JOIN` targets and minimal `WITH RECURSIVE`), correlated/`IN` prep, and cost-based access-path /
   join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
   `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
   complementary scan), prefix `LIKE` / trigram intersect, and residual filters. `QueryPlanner` is
-  split across `query_planner.cpp` (SELECT paths), `planner_predicate.cpp`, `query_planner_join.cpp`,
-  and `query_planner_format.cpp`.
+  split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`),
+  `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
 existence, `LIKE`, or regex node owns only the fields valid for that shape. Physical access paths
@@ -66,7 +67,10 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
   `PageRowStore` are separate TUs sharing sparse-layout validation.
 - `execution`: `QueryExecutor` is a stable façade that composes focused execution types.
-  `SelectEngine` owns SELECT/join/EXPLAIN execution, `SubqueryRuntime` owns CTE/`IN`/`EXISTS`
+  `ExecutionContext` holds non-owning refs to the database, planner, and txn session plus peer
+  pointers to `SelectEngine` / `SubqueryRuntime` (no `QueryExecutor` friendship).
+  `SelectEngine` owns SELECT/join/EXPLAIN execution (`select_engine.cpp` orchestration,
+  `select_engine_scan.cpp`, `select_engine_join.cpp`), `SubqueryRuntime` owns CTE/`IN`/`EXISTS`
   preparation and evaluation (including joined subqueries and recursive CTE materialization), and
   `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while

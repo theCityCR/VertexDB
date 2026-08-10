@@ -1,5 +1,7 @@
 #pragma once
 
+// Row = vector of Value; RowId is the stable heap identity.
+
 #include "VertexDB/common/value.hpp"
 
 #include <vector>

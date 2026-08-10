@@ -1,5 +1,8 @@
 #pragma once
 
+// Equality hash index (column or expression keys, including trigram).
+// Implementation: src/indexing/hash_index.cpp; owned via IndexManager.
+
 #include "VertexDB/storage/row.hpp"
 
 #include <unordered_map>

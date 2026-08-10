@@ -1,5 +1,7 @@
 #pragma once
 
+// SELECT / DML result rows plus status message.
+
 #include "VertexDB/storage/row.hpp"
 
 #include <string>

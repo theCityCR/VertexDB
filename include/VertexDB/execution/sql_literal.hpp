@@ -1,5 +1,8 @@
 #pragma once
 
+// Format Value / Row for SQL literals and CLI display.
+// Implementation: src/execution/sql_literal.cpp.
+
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/row.hpp"

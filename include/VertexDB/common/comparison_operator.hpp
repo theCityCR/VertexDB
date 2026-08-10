@@ -1,5 +1,7 @@
 #pragma once
 
+// Comparison operators shared by predicates, joins, and ordered indexes.
+
 #include <cstdint>
 
 namespace VertexDB {

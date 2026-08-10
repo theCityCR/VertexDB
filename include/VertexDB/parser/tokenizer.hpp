@@ -1,5 +1,7 @@
 #pragma once
 
+// SQL tokenizer. Implementation: src/parser/tokenizer.cpp.
+
 #include "VertexDB/parser/token.hpp"
 
 #include <string_view>

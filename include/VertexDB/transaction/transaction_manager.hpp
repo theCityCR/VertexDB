@@ -1,5 +1,7 @@
 #pragma once
 
+// Commit sequence and snapshot visibility. Implementation: src/transaction/transaction_manager.cpp.
+
 #include <cstdint>
 #include <optional>
 #include <unordered_map>

@@ -1,5 +1,7 @@
 #pragma once
 
+// Lexer token kinds and Token values.
+
 #include <cstdint>
 #include <string>
 

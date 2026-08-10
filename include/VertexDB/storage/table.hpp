@@ -29,9 +29,13 @@ class Table : public RelationStats, public IndexCatalogView {
   public:
     Table(std::string name, std::vector<Column> schema);
 
+    // --- Identity / schema ---
     [[nodiscard]] const std::string &name() const noexcept;
     [[nodiscard]] std::span<const Column> schema() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
+    void validateRow(const Row &row) const;
+
+    // --- MVCC / visibility reads ---
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
     [[nodiscard]] std::vector<Row> rowsSnapshot(const ReadSnapshot &snapshot,
                                                 const TransactionManager &transactions) const;
@@ -45,6 +49,30 @@ class Table : public RelationStats, public IndexCatalogView {
                                             const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t rowCount() const override;
     [[nodiscard]] std::size_t capacity() const;
+    [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
+    [[nodiscard]] std::size_t versionCount(RowId rowId) const;
+
+    // --- DML ---
+    RowId insert(Row row, TransactionId writerId = kSystemTransactionId);
+    bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId);
+    bool update(RowId rowId, std::size_t columnIndex, Value value,
+                TransactionId writerId = kSystemTransactionId);
+
+    // --- Undo / recovery helpers ---
+    // Undo helpers: reverse INSERT/UPDATE/DELETE without leaving abort residue in MVCC.
+    bool eraseDiscardingVersion(RowId rowId);
+    bool replaceRow(RowId rowId, Row row);
+    bool revive(RowId rowId, Row row);
+    // Apply a physical redo after-image or erase during WAL recovery.
+    bool applyPhysicalUpsert(RowId rowId, Row row);
+    bool applyPhysicalErase(RowId rowId);
+    // Apply page-image redo (heap pages + index pages) during WAL recovery.
+    void applyPageImageRedo(bool hasHeapMeta, std::size_t capacity, std::vector<RowId> freeList,
+                            std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages,
+                            std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes,
+                            std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes);
+
+    // --- Indexes / ANALYZE / planner views ---
     // On-demand stats for cost-based planning (row count + per-index distinct keys).
     [[nodiscard]] std::optional<std::size_t>
     indexDistinctCount(std::string_view column) const override;
@@ -71,34 +99,16 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const override;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
     [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;
-    [[nodiscard]] std::size_t versionCount(RowId rowId) const;
-    void validateRow(const Row &row) const;
-    // Observability for tests: ordered index node layout for a named index.
-    [[nodiscard]] std::optional<std::vector<BTreeNode>>
-    orderedIndexNodesSnapshot(std::string_view indexName) const;
-
-    RowId insert(Row row, TransactionId writerId = kSystemTransactionId);
-    bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId);
-    bool update(RowId rowId, std::size_t columnIndex, Value value,
-                TransactionId writerId = kSystemTransactionId);
-    // Undo helpers: reverse INSERT/UPDATE/DELETE without leaving abort residue in MVCC.
-    bool eraseDiscardingVersion(RowId rowId);
-    bool replaceRow(RowId rowId, Row row);
-    bool revive(RowId rowId, Row row);
-    // Apply a physical redo after-image or erase during WAL recovery.
-    bool applyPhysicalUpsert(RowId rowId, Row row);
-    bool applyPhysicalErase(RowId rowId);
-    // Apply page-image redo (heap pages + index pages) during WAL recovery.
-    void applyPageImageRedo(bool hasHeapMeta, std::size_t capacity, std::vector<RowId> freeList,
-                            std::vector<std::pair<PageId, std::vector<std::byte>>> heapPages,
-                            std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes,
-                            std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes);
-    [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     bool createIndex(std::string name, std::string column);
     bool createIndex(std::string name, IndexExpression expression);
     // Register index metadata without rebuilding (snapshot v4 restore path).
     bool createIndexWithoutRebuild(std::string name, std::string column);
     bool createIndexWithoutRebuild(std::string name, IndexExpression expression);
+    // Observability for tests: ordered index node layout for a named index.
+    [[nodiscard]] std::optional<std::vector<BTreeNode>>
+    orderedIndexNodesSnapshot(std::string_view indexName) const;
+
+    // --- Snapshot / page-image I/O ---
     void replaceRows(std::vector<Row> rows);
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries);

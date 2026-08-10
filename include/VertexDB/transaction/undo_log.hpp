@@ -1,5 +1,8 @@
 #pragma once
 
+// Per-transaction compensating actions for ROLLBACK.
+// Implementation: src/transaction/undo_log.cpp.
+
 #include "VertexDB/storage/row.hpp"
 
 #include <cstddef>

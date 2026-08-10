@@ -1,5 +1,7 @@
 #pragma once
 
+// Case-insensitive string compare helpers (header-only).
+
 #include <cctype>
 #include <string_view>
 

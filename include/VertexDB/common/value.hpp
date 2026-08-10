@@ -1,5 +1,8 @@
 #pragma once
 
+// Typed SQL values (INT / STRING / DOUBLE / NULL / parameter slots).
+// Implementation: src/common/value.cpp.
+
 #include <cstdint>
 #include <optional>
 #include <ostream>

@@ -1,5 +1,7 @@
 #pragma once
 
+// LIKE / regex / trigram pattern helpers. Implementation: src/common/string_pattern.cpp.
+
 #include "VertexDB/common/value.hpp"
 
 #include <optional>

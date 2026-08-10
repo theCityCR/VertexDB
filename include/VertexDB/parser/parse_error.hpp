@@ -1,5 +1,7 @@
 #pragma once
 
+// Parser diagnostics with source line/column.
+
 #include <cstddef>
 #include <stdexcept>
 #include <string>

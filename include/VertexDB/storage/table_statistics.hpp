@@ -1,5 +1,7 @@
 #pragma once
 
+// Per-table distinct counts and histograms. Implementation: src/storage/table_statistics.cpp.
+
 #include "VertexDB/storage/histogram.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/row_store.hpp"

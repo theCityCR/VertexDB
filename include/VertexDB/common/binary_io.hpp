@@ -1,5 +1,7 @@
 #pragma once
 
+// POD read/write helpers for streams and byte spans (header-only).
+
 #include <cstddef>
 #include <cstring>
 #include <istream>

@@ -1,5 +1,8 @@
 #pragma once
 
+// Legacy physical row-image WAL redo codec.
+// Implementation: src/persistence/physical_redo.cpp.
+
 #include "VertexDB/storage/row.hpp"
 
 #include <cstdint>

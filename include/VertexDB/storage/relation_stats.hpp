@@ -1,5 +1,7 @@
 #pragma once
 
+// Planner-facing read-only stats and index catalog interfaces (implemented by Table).
+
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/storage/histogram.hpp"
 
