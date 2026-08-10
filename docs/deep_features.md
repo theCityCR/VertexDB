@@ -72,6 +72,16 @@ revealed prior image). Logical DML WAL records are replaced by page-image redo: 
 transaction is active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`. Legacy physical
 row-image redo remains replayable.
 
+| Anomaly | Under SI here |
+| --- | --- |
+| Dirty read | Prevented |
+| Non-repeatable read | Prevented (`maxCommitSeq` watermark) |
+| Mid-txn phantom (held snapshot) | Prevented |
+| Write skew | Allowed (classic SI; no SSI) |
+
+Executor writers are exclusive (`LockManager`); multi-txn interleaving tests share
+`Table` + `TransactionManager`. Full wedge: [si_anomaly_wedge.md](si_anomaly_wedge.md).
+
 ## Buffer Pool
 
 The buffer pool is an LRU cache of serialized page payloads, sized by page count (not fixed byte

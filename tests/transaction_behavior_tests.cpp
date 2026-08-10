@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "VertexDB/concurrency/lock_manager.hpp"
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/execution/txn_session.hpp"
@@ -13,19 +14,24 @@
 #include "VertexDB/storage/database.hpp"
 #include "VertexDB/storage/row_store.hpp"
 #include "VertexDB/storage/table.hpp"
+#include "VertexDB/transaction/transaction_manager.hpp"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace VertexDB {
@@ -459,6 +465,156 @@ TEST(TransactionBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
     EXPECT_EQ(result.rows[0][1], Value{"Alice"});
     EXPECT_EQ(result.rows[0][2], Value{150000.0});
     std::filesystem::remove_all(root);
+}
+
+// --- SI anomaly wedge -------------------------------------------------------
+// Multi-txn interleaving uses shared Table + TransactionManager (one QueryExecutor
+// cannot hold two open SQL transactions). Executor honesty tests cover the RW gate.
+
+TEST(TransactionBehaviorTests, DirtyReadOfUncommittedUpdateIsPrevented) {
+    // Desired: uncommitted UPDATE is invisible to another snapshot (no dirty read).
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    const auto aliceId =
+        table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                     transactions.beginCommitted());
+
+    const auto reader = transactions.begin();
+    const auto snap = transactions.currentSnapshot(reader.id);
+    auto before = table.rowsSnapshot(snap, transactions);
+    ASSERT_EQ(before.size(), 1U);
+    EXPECT_EQ(before.front()[2], Value{120000.0});
+
+    const auto writer = transactions.begin();
+    ASSERT_TRUE(table.update(aliceId, 2, Value{999999.0}, writer.id));
+
+    auto dirty = table.rowsSnapshot(snap, transactions);
+    ASSERT_EQ(dirty.size(), 1U);
+    EXPECT_EQ(dirty.front()[2], Value{120000.0});
+
+    transactions.commit(writer.id);
+    auto afterCommit = table.rowsSnapshot(transactions.currentSnapshot(), transactions);
+    ASSERT_EQ(afterCommit.size(), 1U);
+    EXPECT_EQ(afterCommit.front()[2], Value{999999.0});
+}
+
+TEST(TransactionBehaviorTests, SnapshotIsolationHidesCommittedInsertMatchingPredicate) {
+    // Desired SI contract for a held snapshot: a row inserted+committed after BEGIN that
+    // matches a predicate never appears in repeated reads of that snapshot (no mid-txn
+    // phantom). SI does not abort the inserter (no SSI / predicate locks) — see write skew.
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted());
+
+    const auto reader = transactions.begin();
+    const auto snap = transactions.currentSnapshot(reader.id);
+    auto countHighSalary = [&](const ReadSnapshot &s) {
+        std::size_t n = 0;
+        for (const auto &row : table.rowsSnapshot(s, transactions)) {
+            if (std::get<double>(row[2].data()) > 100000.0) {
+                ++n;
+            }
+        }
+        return n;
+    };
+    EXPECT_EQ(countHighSalary(snap), 1U);
+
+    const auto concurrent = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Bob"}, Value{110000.0}},
+                 concurrent.id);
+    transactions.commit(concurrent.id);
+
+    EXPECT_EQ(countHighSalary(snap), 1U) << "held snapshot must not see the committed insert";
+    EXPECT_EQ(countHighSalary(transactions.currentSnapshot()), 2U)
+        << "a fresh snapshot may see the new row";
+}
+
+TEST(TransactionBehaviorTests, SnapshotIsolationAllowsWriteSkew) {
+    // Documented SI limitation (not a bug): two txns each observe "at least one on-call"
+    // then flip different rows off; both commit and the invariant is broken. SSI would abort.
+    TransactionManager transactions;
+    Table table{"Doctors", {{"id", ColumnType::Int}, {"on_call", ColumnType::Int}}};
+
+    const auto docA =
+        table.insert({Value{static_cast<std::int64_t>(1)}, Value{static_cast<std::int64_t>(1)}},
+                     transactions.beginCommitted());
+    const auto docB =
+        table.insert({Value{static_cast<std::int64_t>(2)}, Value{static_cast<std::int64_t>(1)}},
+                     transactions.beginCommitted());
+
+    auto countOnCall = [&](const ReadSnapshot &s) {
+        std::size_t n = 0;
+        for (const auto &row : table.rowsSnapshot(s, transactions)) {
+            if (std::get<std::int64_t>(row[1].data()) == 1) {
+                ++n;
+            }
+        }
+        return n;
+    };
+
+    const auto t1 = transactions.begin();
+    const auto snap1 = transactions.currentSnapshot(t1.id);
+    const auto t2 = transactions.begin();
+    const auto snap2 = transactions.currentSnapshot(t2.id);
+    ASSERT_EQ(countOnCall(snap1), 2U);
+    ASSERT_EQ(countOnCall(snap2), 2U);
+
+    ASSERT_TRUE(table.update(docA, 1, Value{static_cast<std::int64_t>(0)}, t1.id));
+    ASSERT_TRUE(table.update(docB, 1, Value{static_cast<std::int64_t>(0)}, t2.id));
+    transactions.commit(t1.id);
+    transactions.commit(t2.id);
+
+    EXPECT_EQ(countOnCall(transactions.currentSnapshot()), 0U)
+        << "SI allows write skew; both commits succeed with zero on-call";
+}
+
+TEST(TransactionBehaviorTests, ExecutorAllowsConcurrentReadersAndWriterExcludesReaders) {
+    // Honest sync model: shared SELECTs may overlap; a writer excludes readers on one executor.
+    Parser parser;
+    auto executor = makeExecutor("executor-rw-gate");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");"))
+                    .success);
+
+    // Parse once — Parser is not safe to share across threads.
+    const auto selectQuery = parser.parse("SELECT name FROM Employees WHERE id = 1;");
+
+    std::atomic<int> readersDone{0};
+    std::atomic<bool> sawFailure{false};
+
+    auto readerFn = [&] {
+        auto result = executor.execute(selectQuery);
+        if (!result.success || result.rows.size() != 1U) {
+            sawFailure.store(true);
+        }
+        readersDone.fetch_add(1);
+    };
+
+    std::thread r1{readerFn};
+    std::thread r2{readerFn};
+    r1.join();
+    r2.join();
+    EXPECT_EQ(readersDone.load(), 2);
+    EXPECT_FALSE(sawFailure.load());
+
+    // LockManager-level: held read blocks write (executor uses the same pattern).
+    LockManager locks;
+    auto readLock = locks.acquireRead();
+    auto writer = std::async(std::launch::async, [&locks] {
+        const auto writeLock = locks.acquireWrite();
+        return true;
+    });
+    EXPECT_EQ(writer.wait_for(std::chrono::milliseconds{25}), std::future_status::timeout);
+    readLock.unlock();
+    EXPECT_EQ(writer.wait_for(std::chrono::seconds{1}), std::future_status::ready);
+    EXPECT_TRUE(writer.get());
 }
 
 } // namespace VertexDB

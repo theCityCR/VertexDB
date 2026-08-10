@@ -100,6 +100,8 @@ Demo wedges:
 - Multi-index AND intersect vs single-index residual:
   [multi_index_intersect_wedge.md](multi_index_intersect_wedge.md),
   [bitmap_and_comparison.md](bitmap_and_comparison.md)
+- Snapshot isolation anomalies (prevented vs allowed) and executor RW honesty:
+  [si_anomaly_wedge.md](si_anomaly_wedge.md)
 
 ## Definition of Done
 

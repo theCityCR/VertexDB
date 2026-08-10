@@ -1,0 +1,14 @@
+CREATE DATABASE si_demo;
+CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
+INSERT INTO Employees VALUES (1, "Alice", 120000.0), (2, "Bob", 90000.0);
+BEGIN;
+UPDATE Employees SET salary = 999999.0 WHERE id = 1;
+SELECT name, salary FROM Employees WHERE id = 1;
+COMMIT;
+SELECT name, salary FROM Employees WHERE id = 1;
+BEGIN;
+INSERT INTO Employees VALUES (3, "Cara", 110000.0);
+SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY name;
+COMMIT;
+SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY name;
+EXIT;

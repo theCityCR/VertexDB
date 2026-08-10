@@ -99,7 +99,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 237 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 241 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
@@ -149,9 +149,10 @@ transactional `CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal 
 absolute-time benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
-[materialize vs inline comparison](docs/cte_materialize_comparison.md), and
+[materialize vs inline comparison](docs/cte_materialize_comparison.md),
 [multi-index intersect wedge](docs/multi_index_intersect_wedge.md) /
-[BitmapAnd parity comparison](docs/bitmap_and_comparison.md).
+[BitmapAnd parity comparison](docs/bitmap_and_comparison.md), and
+[SI anomaly concurrency wedge](docs/si_anomaly_wedge.md).
 
 ## Documentation
 
@@ -165,6 +166,7 @@ Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 - [CTE materialize vs inline comparison](docs/cte_materialize_comparison.md)
 - [Multi-index intersect wedge plan](docs/multi_index_intersect_wedge.md)
 - [BitmapAnd parity comparison](docs/bitmap_and_comparison.md)
+- [SI anomaly concurrency wedge](docs/si_anomaly_wedge.md)
 
 ## License
 

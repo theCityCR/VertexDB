@@ -222,6 +222,10 @@ uncommitted or post-`BEGIN` commits stay invisible; mutating `INSERT`/`UPDATE`/`
 transaction ids, append compensating undo records, and buffer page-image redo records; `COMMIT`
 flushes deferred redo as one atomic WAL batch then marks the transaction committed and discards the
 undo log; `ROLLBACK` applies the undo log LIFO on the same database instance and drops deferred WAL.
+Snapshot isolation **prevents** dirty reads, non-repeatable reads, and mid-txn phantoms under a held
+snapshot; classic SI **allows** write skew (no SSI / predicate locks). One executor holds at most
+one open transaction; writers are serialized by the executor `LockManager`. See
+[si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
 `SAVE DATABASE`, and `LOAD DATABASE` are rejected. `CREATE INDEX` is allowed: it pushes a
 `CreateIndex` undo record and defers the logical WAL payload until `COMMIT` (dropped on
