@@ -308,8 +308,10 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
         const auto &join = command.joins[joinIndex];
         auto rightTable = requireTable(join.table);
         const auto leftJoinColumn = resolveResultColumn(joinedColumns, join.leftColumn);
+        const std::optional<std::string_view> rightAlias =
+            join.tableAlias ? std::optional<std::string_view>{*join.tableAlias} : std::nullopt;
         const auto rightJoinColumn =
-            resolveTableColumn(*rightTable, join.table, join.rightColumn);
+            resolveTableColumn(*rightTable, join.table, join.rightColumn, rightAlias);
         if (!leftJoinColumn || !rightJoinColumn) {
             throw std::runtime_error("unknown join column");
         }

@@ -1,10 +1,11 @@
 #include "VertexDB/parser/parser.hpp"
 
 #include "VertexDB/common/string_utils.hpp"
+#include "VertexDB/parser/parse_error.hpp"
 #include "VertexDB/parser/tokenizer.hpp"
 #include "parse_utils.hpp"
 
-#include <stdexcept>
+#include <string>
 
 namespace VertexDB {
 Query Parser::parse(std::string_view sql) {
@@ -31,7 +32,7 @@ Query Parser::parse(std::span<const Token> tokens) {
         if (match(TokenType::Identifier, "INDEX")) {
             return finish(parseCreateIndex());
         }
-        throw std::runtime_error("expected DATABASE, TABLE, or INDEX after CREATE");
+        error("expected DATABASE, TABLE, or INDEX after CREATE");
     }
     if (match(TokenType::Identifier, "DROP")) {
         return finish(parseDropTable());
@@ -94,12 +95,12 @@ Query Parser::parse(std::span<const Token> tokens) {
         return finish(Exit{});
     }
 
-    throw std::runtime_error("unsupported SQL command");
+    error("unsupported SQL command");
 }
 
 const Token &Parser::peek() const {
     if (current_ >= tokens_.size()) {
-        throw std::runtime_error("parser read past end of token stream");
+        throw ParseError("parser read past end of token stream", 1, 1, 0);
     }
     return tokens_[current_];
 }
@@ -126,15 +127,23 @@ bool Parser::match(TokenType type, std::string_view lexeme) {
 
 void Parser::expect(TokenType type, std::string_view lexeme) {
     if (!match(type, lexeme)) {
-        throw std::runtime_error("unexpected token");
+        if (lexeme.empty()) {
+            error("unexpected token");
+        }
+        error("expected '" + std::string{lexeme} + "'");
     }
 }
 
 void Parser::expectStatementEnd() {
     (void)match(TokenType::Semicolon);
     if (peek().type != TokenType::End) {
-        throw std::runtime_error("unexpected trailing token");
+        error("unexpected trailing token");
     }
+}
+
+[[noreturn]] void Parser::error(std::string_view message) const {
+    const Token &token = peek();
+    throw ParseError(message, token.line, token.column, token.offset);
 }
 
 } // namespace VertexDB

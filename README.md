@@ -96,7 +96,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 176 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 179 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
@@ -121,9 +121,10 @@ Or feed an example script:
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
 - Nested SQL is intentionally limited: nested `WITH` deeper than one level, correlation deeper than
-  two outer frames, outer `JOIN` against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS`
+  four outer frames, outer `JOIN` against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS`
   subqueries; expression indexes cover column / unary minus / `+/-` literal only (no regex/substring
-  indexes). `FROM` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are supported.
+  indexes). `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
+  supported. Parser failures report `line`/`column` via `ParseError`.
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep equi-join chains only (no outer/cross joins)
 
@@ -132,8 +133,9 @@ Or feed an example script:
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
-one-level nested `WITH` and two-level correlation, CI CTE cost-shape gating, and a dated absolute-time
-benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+one-level nested `WITH` and correlation through four outer frames, join-table aliases, parse
+diagnostics with source positions, CI CTE cost-shape gating, and a dated absolute-time benchmark
+summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).

@@ -135,8 +135,8 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
    statements store that AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including one
    nested `WITH` and `WITH` inside `IN`/`EXISTS`); the executor materializes uncorrelated `IN`
-   subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to two outer binding
-   frames (including `FROM` table aliases).
+   subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding
+   frames (including `FROM` / `JOIN` table aliases).
 5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and per-join
    algorithms for left-deep equi-join chains; `SelectEngine` runs filters/joins, then optional hash
    aggregation, then `ORDER BY`/`LIMIT`.

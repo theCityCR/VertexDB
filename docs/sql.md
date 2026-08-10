@@ -91,12 +91,13 @@ notes `materialized CTE <name>`. Derived tables `FROM (SELECT …) [AS] alias` n
 inline path. `WHERE col IN (SELECT …)` materializes uncorrelated subqueries (which themselves may
 use indexes) and probes the outer column via hash index `IN` lookup when indexed. Correlated
 `IN` / `EXISTS` with outer refs (`table.column`, `alias.column`, or unambiguous unqualified names)
-bind outer values per candidate row for up to two outer FROM frames (main query plus one mid-level
-subquery). Deeper correlation is rejected. `FROM` base tables accept an optional `[AS] alias` used
-as the correlation scope. CTE and derived-table bodies may include equi-joins (including left-deep
-multi-join chains). One level of nested `WITH` inside a CTE body is supported, and `WITH` / derived
-tables are allowed inside `IN`/`EXISTS` subqueries (still no `JOIN` inside those subqueries). Deeper
-`WITH` nesting and outer `JOIN` against a CTE/derived alias remain unsupported.
+bind outer values per candidate row for up to four outer FROM frames. Deeper correlation is
+rejected. `FROM` / `JOIN` tables accept an optional `[AS] alias` used as the qualification and
+correlation scope (aliases rewrite to physical table qualifiers on join results). CTE and
+derived-table bodies may include equi-joins (including left-deep multi-join chains). One level of
+nested `WITH` inside a CTE body is supported, and `WITH` / derived tables are allowed inside
+`IN`/`EXISTS` subqueries (still no `JOIN` inside those subqueries). Deeper `WITH` nesting and outer
+`JOIN` against a CTE/derived alias remain unsupported.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds the same structures on an evaluated expression key, where
@@ -115,12 +116,13 @@ the access path or each join algorithm in a left-deep chain, CTE inlining/materi
 residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
 present.
 
-`JOIN` supports left-deep equi-join chains (`t0 JOIN t1 ON … JOIN t2 ON …`). Joined result columns
-are qualified as `LeftTable.column` and `RightTable.column`. Projection, `WHERE`, `ORDER BY`, and
-`LIMIT` can reference qualified columns; unqualified references are allowed when the column name is
-not ambiguous. The planner chooses between an in-memory hash join and a nested-loop index probe per
-join when a join key is indexed and cheaper; after the first join, the left side is an intermediate
-row set so only hash join or right-side index probe apply.
+`JOIN` supports left-deep equi-join chains (`t0 [AS a] JOIN t1 [AS b] ON … JOIN t2 ON …`). Joined
+result columns are qualified with physical table names (`LeftTable.column` / `RightTable.column`);
+`FROM`/`JOIN` aliases in `SELECT`/`WHERE`/`ON` rewrite to those qualifiers. Projection, `WHERE`,
+`ORDER BY`, and `LIMIT` can reference qualified columns (alias or table); unqualified references are
+allowed when the column name is not ambiguous. The planner chooses between an in-memory hash join
+and a nested-loop index probe per join when a join key is indexed and cheaper; after the first join,
+the left side is an intermediate row set so only hash join or right-side index probe apply.
 
 Aggregates `COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, and `MAX` run as a hash aggregate after
 filter/join. `GROUP BY` is required for non-aggregated selected columns; `ORDER BY`/`LIMIT` apply to
@@ -166,9 +168,11 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 - `STRING`: stored as `std::string`.
 - `NULL`: allowed only for columns declared nullable with `NULL`.
 
+Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`column` (message prefix
+`line L, column C: …`). The CLI prints `error: ` plus that message.
+
 ## Near-Term Grammar Work
 
-- Better diagnostics with source positions.
 - Specialized indexes for substring/regex predicates.
-- Correlation deeper than two outer frames; join-table aliases.
 - Outer / non-equi joins.
+- Nested `WITH` deeper than one level.

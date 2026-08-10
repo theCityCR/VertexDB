@@ -118,8 +118,9 @@ A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) an
 (`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`. 
 `AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Uncorrelated
 `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`) materialize into value
-lists when uncorrelated; correlated `IN`/`EXISTS` bind outer scopes per row for up to two FROM
-frames, including `FROM` table aliases. One nested `WITH` inside a CTE body reuses the same inliner.
+lists when uncorrelated; correlated `IN`/`EXISTS` bind outer scopes per row for up to four FROM
+frames, including `FROM` / `JOIN` table aliases. One nested `WITH` inside a CTE body reuses the same
+inliner.
 Expression indexes match `(expr) =/>/< const` predicates. CTE/derived bodies may carry equi-joins
 (including multi-join chains) through inlining. Aggregates/`GROUP BY` are planned as a post-join
 hash aggregate (`EXPLAIN` reports `aggregation`).

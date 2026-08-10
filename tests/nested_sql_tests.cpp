@@ -462,18 +462,93 @@ TEST(NestedSqlTests, TwoLevelCorrelatedInBindsOutermost) {
     EXPECT_EQ(filtered.rows[0][0], Value{"Alice"});
 }
 
-TEST(NestedSqlTests, ThreeLevelCorrelationIsRejected) {
+TEST(NestedSqlTests, ThreeLevelCorrelationBindsOutermost) {
+    Parser parser;
+    auto executor = makeExecutor("three-level-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Bonuses VALUES (1, 500.0), (1, 1500.0), "
+                                          "(2, 100.0);"))
+                    .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "    SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "      SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id AND amount > 1000.0"
+        "    )"
+        "  )"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, FiveLevelCorrelationIsRejected) {
     Parser parser;
     EXPECT_THROW(
         (void)parser.parse(
             "SELECT name FROM Employees WHERE EXISTS ("
             "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
             "    SELECT emp_id FROM Bonuses WHERE EXISTS ("
-            "      SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+            "      SELECT emp_id FROM Bonuses WHERE EXISTS ("
+            "        SELECT emp_id FROM Bonuses WHERE EXISTS ("
+            "          SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+            "        )"
+            "      )"
             "    )"
             "  )"
             ");"),
         std::runtime_error);
+}
+
+TEST(NestedSqlTests, JoinTableAliasesQualifySelectAndOn) {
+    Parser parser;
+    auto executor = makeExecutor("join-table-aliases");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, dept_id INT, salary DOUBLE);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 10, 120000.0), "
+                        "(2, \"Bob\", 20, 80000.0);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Departments VALUES (10, \"Eng\"), (20, \"Sales\");"))
+                    .success);
+
+    auto parsed = parser.parse(
+        "SELECT e.name, d.dept FROM Employees AS e JOIN Departments AS d "
+        "ON e.dept_id = d.id WHERE e.salary > 100000.0;");
+    ASSERT_TRUE(std::holds_alternative<Select>(parsed));
+    const auto &select = std::get<Select>(parsed);
+    ASSERT_TRUE(select.tableAlias.has_value());
+    EXPECT_EQ(*select.tableAlias, "e");
+    ASSERT_EQ(select.joins.size(), 1U);
+    ASSERT_TRUE(select.joins[0].tableAlias.has_value());
+    EXPECT_EQ(*select.joins[0].tableAlias, "d");
+
+    auto result = executor.execute(parsed);
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][1], Value{"Eng"});
 }
 
 TEST(NestedSqlTests, ExpressionIndexEqualityAndRangeExplain) {

@@ -65,7 +65,16 @@ struct JoinClause {
     std::string table;
     std::string leftColumn;
     std::string rightColumn;
+    // Optional JOIN alias (`JOIN Departments AS d`); qualifiers use this scope name.
+    std::optional<std::string> tableAlias;
 };
+
+[[nodiscard]] inline std::string_view joinScopeName(const JoinClause &join) noexcept {
+    if (join.tableAlias) {
+        return *join.tableAlias;
+    }
+    return join.table;
+}
 
 enum class AggregateOp : std::uint8_t {
     CountStar,
