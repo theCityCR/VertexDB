@@ -8,6 +8,7 @@
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
