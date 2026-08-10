@@ -29,6 +29,11 @@ JOIN Departments ON Employees.dept_id = Departments.id
 JOIN Offices ON Departments.office_id = Offices.id;
 SELECT e.name, d.dept FROM Employees e
 LEFT OUTER JOIN Departments d ON e.dept_id > d.id;
+SELECT e.name, d.dept FROM Employees e
+RIGHT JOIN Departments d ON e.dept_id = d.id;
+SELECT e.name, d.dept FROM Employees e
+FULL OUTER JOIN Departments d ON e.dept_id = d.id;
+SELECT e.name, d.dept FROM Employees e CROSS JOIN Departments d;
 SELECT name FROM Employees WHERE name LIKE "Al%";
 SELECT name FROM Employees WHERE note LIKE "%hello%";
 SELECT name FROM Employees WHERE name ~ "^A.*";
@@ -47,11 +52,22 @@ SELECT name FROM high WHERE id = 1;
 SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > 100000.0);
 SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id);
 SELECT name FROM Employees WHERE id IN (SELECT emp_id FROM Bonuses WHERE emp_id = id);
+SELECT name FROM Employees WHERE id IN (
+  SELECT Employees.id FROM Employees JOIN Departments ON Employees.dept_id = Departments.id);
 SELECT name FROM (
   SELECT id, name, salary FROM Employees WHERE salary > 100000.0
 ) AS high WHERE id = 1;
+WITH high AS (SELECT id, name, dept_id FROM Employees WHERE id = 1)
+SELECT high.name, Departments.dept FROM high JOIN Departments ON high.dept_id = Departments.id;
 WITH joined AS (SELECT * FROM Employees JOIN Departments ON dept_id = id)
 SELECT Employees.name, Departments.dept FROM joined;
+WITH RECURSIVE tree AS (
+  SELECT id, parent_id, name FROM Nodes WHERE id = 1
+  UNION ALL
+  SELECT Nodes.id, Nodes.parent_id, Nodes.name FROM Nodes JOIN tree
+  ON Nodes.parent_id = tree.id
+)
+SELECT name FROM tree;
 EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
@@ -108,10 +124,10 @@ use indexes) and probes the outer column via hash index `IN` lookup when indexed
 bind outer values per candidate row for up to four outer FROM frames. Deeper correlation is
 rejected. `FROM` / `JOIN` tables accept an optional `[AS] alias` used as the qualification and
 correlation scope (aliases rewrite to physical table qualifiers on join results). CTE and
-derived-table bodies may include `INNER` / `LEFT` joins (including left-deep multi-join chains).
+derived-table bodies may include left-deep joins (`INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS`).
 `WITH` nesting depth up to 3 is supported (nested `WITH` up to three levels inside a CTE body).
 `WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. Outer `JOIN`
-against a CTE/derived alias force-materializes the CTE.
+against a CTE/derived alias force-materializes the CTE (body filters stay inside the temp).
 
 `WITH RECURSIVE name AS ( anchor UNION ALL recursive_arm )` materializes a working table by
 evaluating the anchor, then repeatedly evaluating the recursive arm with the CTE name bound to the
@@ -198,8 +214,11 @@ Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`colum
 
 ## Remaining Grammar Gaps
 
-Intentional out-of-scope items for recursive CTEs (documented v1 limits, not near-term polish):
+Intentional v1 limits (documented, not near-term polish):
 
 - `UNION` (deduplicating) inside recursive CTEs; only `UNION ALL` is supported
 - Multiple recursive CTEs in one `WITH`, mutual recursion, or self-ref to the full accumulator
 - General set operations outside recursive CTE bodies
+- Derived-table syntax in the JOIN position (`JOIN (SELECT …) AS alias`); use a CTE name or put
+  the join inside the CTE/derived body instead
+- Joins beyond left-deep chains with `ON col op col` (or no `ON` for `CROSS`)
