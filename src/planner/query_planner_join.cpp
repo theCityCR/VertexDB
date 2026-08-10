@@ -13,11 +13,28 @@ namespace VertexDB {
 namespace {
 
 [[nodiscard]] bool isEquiJoin(const JoinClause &join) {
-    return join.op == ComparisonOperator::Equal;
+    return join.kind != JoinKind::Cross && join.op == ComparisonOperator::Equal;
+}
+
+[[nodiscard]] bool forcesNestedLoop(JoinKind kind) {
+    return kind == JoinKind::LeftOuter || kind == JoinKind::RightOuter ||
+           kind == JoinKind::FullOuter || kind == JoinKind::Cross;
 }
 
 [[nodiscard]] std::string_view joinKindLabel(JoinKind kind) {
-    return kind == JoinKind::LeftOuter ? "left outer" : "inner";
+    switch (kind) {
+    case JoinKind::LeftOuter:
+        return "left outer";
+    case JoinKind::RightOuter:
+        return "right outer";
+    case JoinKind::FullOuter:
+        return "full outer";
+    case JoinKind::Cross:
+        return "cross";
+    case JoinKind::Inner:
+        return "inner";
+    }
+    return "inner";
 }
 
 } // namespace
@@ -32,13 +49,24 @@ JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
     plan.estimatedRows = std::max(leftRows, rightRows);
     plan.outerIsLeft = true;
 
-    // Non-equi and LEFT OUTER cannot use hash join; fall back to nested-loop compare.
-    if (!isEquiJoin(join) || join.kind == JoinKind::LeftOuter) {
+    if (join.kind == JoinKind::Cross) {
+        plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
+        plan.estimatedCost = static_cast<double>(std::max<std::size_t>(leftRows, 1) *
+                                                 std::max<std::size_t>(rightRows, 1));
+        plan.probeTable.clear();
+        plan.probeColumn.clear();
+        plan.explanation = "cross nested loop join";
+        return plan;
+    }
+
+    // Non-equi and outer joins cannot use hash join; fall back to nested-loop compare.
+    if (!isEquiJoin(join) || forcesNestedLoop(join.kind)) {
         plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
         plan.estimatedCost =
             static_cast<double>(std::max<std::size_t>(leftRows, 1) *
                                 std::max<std::size_t>(rightRows, 1));
-        if (isEquiJoin(join) && right.hasIndex(join.rightColumn)) {
+        if (isEquiJoin(join) && join.kind != JoinKind::RightOuter &&
+            right.hasIndex(join.rightColumn)) {
             const double fanout =
                 averageRowsPerKey(rightRows, distinctOrOne(right, right, join.rightColumn));
             plan.estimatedCost =
@@ -48,6 +76,19 @@ JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
             plan.explanation = std::string{joinKindLabel(join.kind)} +
                                " nested loop join (index probe on " + right.name() + "." +
                                join.rightColumn + ")";
+        } else if (isEquiJoin(join) && join.kind == JoinKind::RightOuter &&
+                   left.hasIndex(join.leftColumn)) {
+            // Preserve the right side: probe left indexes while scanning right.
+            const double fanout =
+                averageRowsPerKey(leftRows, distinctOrOne(left, left, join.leftColumn));
+            plan.estimatedCost =
+                static_cast<double>(std::max<std::size_t>(rightRows, 1)) * fanout;
+            plan.outerIsLeft = false;
+            plan.probeTable = left.name();
+            plan.probeColumn = join.leftColumn;
+            plan.explanation = std::string{joinKindLabel(join.kind)} +
+                               " nested loop join (index probe on " + left.name() + "." +
+                               join.leftColumn + ")";
         } else {
             plan.probeTable.clear();
             plan.probeColumn.clear();
@@ -103,12 +144,23 @@ JoinPlan QueryPlanner::planJoinAgainstRows(std::size_t leftRows, const Table &ri
     plan.estimatedRows = std::max(leftRows, rightRows);
     plan.outerIsLeft = true;
 
-    if (!isEquiJoin(join) || join.kind == JoinKind::LeftOuter) {
+    if (join.kind == JoinKind::Cross) {
+        plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
+        plan.estimatedCost = static_cast<double>(std::max<std::size_t>(leftRows, 1) *
+                                                 std::max<std::size_t>(rightRows, 1));
+        plan.explanation = "cross nested loop join";
+        return plan;
+    }
+
+    if (!isEquiJoin(join) || forcesNestedLoop(join.kind)) {
         plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
         plan.estimatedCost =
             static_cast<double>(std::max<std::size_t>(leftRows, 1) *
                                 std::max<std::size_t>(rightRows, 1));
-        if (isEquiJoin(join) && right.hasIndex(join.rightColumn)) {
+        // Intermediate left rows have no indexes; RIGHT/FULL scan both sides. LEFT/equi may
+        // still probe a right-side index.
+        if (isEquiJoin(join) && join.kind != JoinKind::RightOuter &&
+            right.hasIndex(join.rightColumn)) {
             const double fanout =
                 averageRowsPerKey(rightRows, distinctOrOne(right, right, join.rightColumn));
             plan.estimatedCost =

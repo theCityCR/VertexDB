@@ -45,12 +45,15 @@ class SelectEngine {
                                std::vector<std::string> &projectedColumns) const;
     [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
                                                const QueryPlan &plan) const;
-    [[nodiscard]] QueryResult executeJoinSelect(const Select &command);
+    [[nodiscard]] QueryResult executeJoinSelect(
+        const Select &command,
+        const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {});
     [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
                                                    std::vector<std::string> sourceColumns,
                                                    std::vector<Row> rows) const;
-    void collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
-                         std::vector<Row> &joinedRows) const;
+    void collectJoinRows(
+        const Select &command, std::vector<std::string> &joinedColumns, std::vector<Row> &joinedRows,
+        const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
     [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
                                                const RewriteResult &rewrite) const;
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;

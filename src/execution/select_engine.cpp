@@ -39,11 +39,11 @@ QueryResult SelectEngine::execute(const Select &command) {
     RewriteResult rewrite;
     const Select prepared = owner_.subqueryRuntime_.prepareSelect(command, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-    for (const auto &[name, body] : rewrite.materialize) {
-        temps.emplace(name, owner_.subqueryRuntime_.materializeCteTable(name, body));
+    for (const auto &cte : rewrite.materialize) {
+        temps.emplace(cte.name, owner_.subqueryRuntime_.materializeCteTable(cte));
     }
     if (!prepared.joins.empty()) {
-        return executeJoinSelect(prepared);
+        return executeJoinSelect(prepared, temps);
     }
 
     auto table = requireTable(prepared.table, temps);
@@ -61,8 +61,8 @@ QueryResult SelectEngine::explain(const ExplainQuery &command) {
     RewriteResult rewrite;
     const Select prepared = owner_.subqueryRuntime_.prepareSelect(command.query, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-    for (const auto &[name, body] : rewrite.materialize) {
-        temps.emplace(name, owner_.subqueryRuntime_.materializeCteTable(name, body));
+    for (const auto &cte : rewrite.materialize) {
+        temps.emplace(cte.name, owner_.subqueryRuntime_.materializeCteTable(cte));
     }
 
     QueryResult result;
@@ -302,13 +302,14 @@ QueryResult SelectEngine::finalizeSelectResult(const Select &command,
     return projectWithLimit(std::move(rows), projection, std::move(projectedColumns), command.limit);
 }
 
-void SelectEngine::collectJoinRows(const Select &command, std::vector<std::string> &joinedColumns,
-                                   std::vector<Row> &joinedRows) const {
+void SelectEngine::collectJoinRows(
+    const Select &command, std::vector<std::string> &joinedColumns, std::vector<Row> &joinedRows,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
     if (command.joins.empty()) {
         throw std::runtime_error("collectJoinRows requires at least one join");
     }
 
-    auto leftTable = requireTable(command.table);
+    auto leftTable = requireTable(command.table, temps);
     joinedColumns.clear();
     for (const auto &column : leftTable->schema()) {
         joinedColumns.push_back(command.table + "." + column.name);
@@ -317,15 +318,7 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
 
     for (std::size_t joinIndex = 0; joinIndex < command.joins.size(); ++joinIndex) {
         const auto &join = command.joins[joinIndex];
-        auto rightTable = requireTable(join.table);
-        const auto leftJoinColumn = resolveResultColumn(joinedColumns, join.leftColumn);
-        const std::optional<std::string_view> rightAlias =
-            join.tableAlias ? std::optional<std::string_view>{*join.tableAlias} : std::nullopt;
-        const auto rightJoinColumn =
-            resolveTableColumn(*rightTable, join.table, join.rightColumn, rightAlias);
-        if (!leftJoinColumn || !rightJoinColumn) {
-            throw std::runtime_error("unknown join column");
-        }
+        auto rightTable = requireTable(join.table, temps);
 
         JoinPlan joinPlan;
         if (joinIndex == 0) {
@@ -352,74 +345,115 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
             joined.resize(leftRow.size() + rightTable->schema().size(), Value{});
             nextRows.push_back(std::move(joined));
         };
+        auto appendRightOnly = [&](const Row &rightRow) {
+            Row joined(joinedColumns.size(), Value{});
+            joined.insert(joined.end(), rightRow.begin(), rightRow.end());
+            nextRows.push_back(std::move(joined));
+        };
 
         auto unqualified = [](const std::string &name) {
             const auto dot = name.rfind('.');
             return dot == std::string::npos ? name : name.substr(dot + 1);
         };
 
-        const bool leftOuter = join.kind == JoinKind::LeftOuter;
-        const bool equi = join.op == ComparisonOperator::Equal;
+        const bool padLeft = join.kind == JoinKind::LeftOuter || join.kind == JoinKind::FullOuter;
+        const bool padRight = join.kind == JoinKind::RightOuter || join.kind == JoinKind::FullOuter;
 
-        if (equi && joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe &&
-            joinPlan.outerIsLeft && !joinPlan.probeColumn.empty()) {
-            const auto probeColumn = unqualified(join.rightColumn);
-            for (const auto &leftRow : joinedRows) {
-                bool matched = false;
-                if (auto rowIds =
-                        rightTable->indexedLookup(probeColumn, leftRow[*leftJoinColumn])) {
-                    for (const auto &rightRow : rowsByIdForRead(*rightTable, *rowIds)) {
-                        appendJoined(leftRow, rightRow);
-                        matched = true;
-                    }
-                }
-                if (leftOuter && !matched) {
-                    appendLeftOnly(leftRow);
-                }
-            }
-        } else if (equi && joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe &&
-                   !joinPlan.outerIsLeft && joinIndex == 0 && !leftOuter) {
-            const auto outerRows = rowsSnapshotForRead(*rightTable);
-            const auto probeColumn = unqualified(join.leftColumn);
-            for (const auto &rightRow : outerRows) {
-                if (auto rowIds = leftTable->indexedLookup(probeColumn, rightRow[*rightJoinColumn])) {
-                    for (const auto &leftRow : rowsByIdForRead(*leftTable, *rowIds)) {
-                        appendJoined(leftRow, rightRow);
-                    }
-                }
-            }
-        } else if (equi && joinPlan.algorithm == JoinAlgorithm::HashJoin) {
+        if (join.kind == JoinKind::Cross) {
             const auto rightRows = rowsSnapshotForRead(*rightTable);
-            std::map<Value, std::vector<Row>> rightRowsByKey;
-            for (const auto &row : rightRows) {
-                rightRowsByKey[row[*rightJoinColumn]].push_back(row);
-            }
             for (const auto &leftRow : joinedRows) {
-                auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
-                if (matchingRightRows == rightRowsByKey.end()) {
-                    if (leftOuter) {
-                        appendLeftOnly(leftRow);
-                    }
-                    continue;
-                }
-                for (const auto &rightRow : matchingRightRows->second) {
+                for (const auto &rightRow : rightRows) {
                     appendJoined(leftRow, rightRow);
                 }
             }
         } else {
-            // Non-equi (or left-outer without usable probe): nested-loop compare.
-            const auto rightRows = rowsSnapshotForRead(*rightTable);
-            for (const auto &leftRow : joinedRows) {
-                bool matched = false;
-                for (const auto &rightRow : rightRows) {
-                    if (compareValues(leftRow[*leftJoinColumn], join.op,
-                                      rightRow[*rightJoinColumn])) {
-                        appendJoined(leftRow, rightRow);
-                        matched = true;
+            const auto leftJoinColumn = resolveResultColumn(joinedColumns, join.leftColumn);
+            const std::optional<std::string_view> rightAlias =
+                join.tableAlias ? std::optional<std::string_view>{*join.tableAlias} : std::nullopt;
+            const auto rightJoinColumn =
+                resolveTableColumn(*rightTable, join.table, join.rightColumn, rightAlias);
+            if (!leftJoinColumn || !rightJoinColumn) {
+                throw std::runtime_error("unknown join column");
+            }
+
+            const bool equi = join.op == ComparisonOperator::Equal;
+
+            if (equi && joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe &&
+                joinPlan.outerIsLeft && !joinPlan.probeColumn.empty() && !padRight) {
+                const auto probeColumn = unqualified(join.rightColumn);
+                for (const auto &leftRow : joinedRows) {
+                    bool matched = false;
+                    if (auto rowIds =
+                            rightTable->indexedLookup(probeColumn, leftRow[*leftJoinColumn])) {
+                        for (const auto &rightRow : rowsByIdForRead(*rightTable, *rowIds)) {
+                            appendJoined(leftRow, rightRow);
+                            matched = true;
+                        }
+                    }
+                    if (padLeft && !matched) {
+                        appendLeftOnly(leftRow);
                     }
                 }
-                if (leftOuter && !matched) {
-                    appendLeftOnly(leftRow);
+            } else if (equi && joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe &&
+                       !joinPlan.outerIsLeft && joinIndex == 0 && !padLeft) {
+                // RIGHT (or INNER with right-as-outer): scan right, probe left indexes.
+                const auto outerRows = rowsSnapshotForRead(*rightTable);
+                const auto probeColumn = unqualified(join.leftColumn);
+                for (const auto &rightRow : outerRows) {
+                    bool matched = false;
+                    if (auto rowIds =
+                            leftTable->indexedLookup(probeColumn, rightRow[*rightJoinColumn])) {
+                        for (const auto &leftRow : rowsByIdForRead(*leftTable, *rowIds)) {
+                            appendJoined(leftRow, rightRow);
+                            matched = true;
+                        }
+                    }
+                    if (padRight && !matched) {
+                        appendRightOnly(rightRow);
+                    }
+                }
+            } else if (equi && joinPlan.algorithm == JoinAlgorithm::HashJoin && !padRight) {
+                const auto rightRows = rowsSnapshotForRead(*rightTable);
+                std::map<Value, std::vector<Row>> rightRowsByKey;
+                for (const auto &row : rightRows) {
+                    rightRowsByKey[row[*rightJoinColumn]].push_back(row);
+                }
+                for (const auto &leftRow : joinedRows) {
+                    auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
+                    if (matchingRightRows == rightRowsByKey.end()) {
+                        if (padLeft) {
+                            appendLeftOnly(leftRow);
+                        }
+                        continue;
+                    }
+                    for (const auto &rightRow : matchingRightRows->second) {
+                        appendJoined(leftRow, rightRow);
+                    }
+                }
+            } else {
+                // Nested-loop compare with optional unmatched padding on either side.
+                const auto rightRows = rowsSnapshotForRead(*rightTable);
+                std::vector<char> rightMatched(rightRows.size(), 0);
+                for (const auto &leftRow : joinedRows) {
+                    bool matched = false;
+                    for (std::size_t ri = 0; ri < rightRows.size(); ++ri) {
+                        if (compareValues(leftRow[*leftJoinColumn], join.op,
+                                          rightRows[ri][*rightJoinColumn])) {
+                            appendJoined(leftRow, rightRows[ri]);
+                            matched = true;
+                            rightMatched[ri] = 1;
+                        }
+                    }
+                    if (padLeft && !matched) {
+                        appendLeftOnly(leftRow);
+                    }
+                }
+                if (padRight) {
+                    for (std::size_t ri = 0; ri < rightRows.size(); ++ri) {
+                        if (!rightMatched[ri]) {
+                            appendRightOnly(rightRows[ri]);
+                        }
+                    }
                 }
             }
         }
@@ -443,10 +477,12 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
     }
 }
 
-QueryResult SelectEngine::executeJoinSelect(const Select &command) {
+QueryResult SelectEngine::executeJoinSelect(
+    const Select &command,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) {
     std::vector<std::string> joinedColumns;
     std::vector<Row> joinedRows;
-    collectJoinRows(command, joinedColumns, joinedRows);
+    collectJoinRows(command, joinedColumns, joinedRows, temps);
     return finalizeSelectResult(command, std::move(joinedColumns), std::move(joinedRows));
 }
 

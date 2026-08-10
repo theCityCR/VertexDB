@@ -739,25 +739,134 @@ TEST(NestedSqlTests, NestedWithDeeperThanMaxIsRejected) {
                  std::runtime_error);
 }
 
+TEST(NestedSqlTests, WithRecursiveWalksHierarchy) {
+    Parser parser;
+    auto executor = makeExecutor("with-recursive");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Nodes (id INT, parent_id INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Nodes VALUES (1, 0, \"root\"), (2, 1, \"child\"), "
+                        "(3, 2, \"leaf\"), (4, 1, \"other\");"))
+                    .success);
+
+    auto parsed = parser.parse(
+        "WITH RECURSIVE tree AS ("
+        "SELECT id, parent_id, name FROM Nodes WHERE id = 1 "
+        "UNION ALL "
+        "SELECT Nodes.id, Nodes.parent_id, Nodes.name FROM Nodes JOIN tree "
+        "ON Nodes.parent_id = tree.id"
+        ") SELECT name FROM tree ORDER BY id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(parsed));
+    const auto &select = std::get<Select>(parsed);
+    ASSERT_EQ(select.ctes.size(), 1U);
+    EXPECT_TRUE(select.ctes[0].recursive);
+    ASSERT_TRUE(select.ctes[0].recursiveArm);
+
+    auto result = executor.execute(parsed);
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 4U);
+    // ORDER BY id on recursive result — ids 1,2,3,4 in walk order may vary; check membership.
+    bool sawRoot = false;
+    bool sawChild = false;
+    bool sawLeaf = false;
+    bool sawOther = false;
+    for (const auto &row : result.rows) {
+        if (row[0] == Value{"root"}) {
+            sawRoot = true;
+        }
+        if (row[0] == Value{"child"}) {
+            sawChild = true;
+        }
+        if (row[0] == Value{"leaf"}) {
+            sawLeaf = true;
+        }
+        if (row[0] == Value{"other"}) {
+            sawOther = true;
+        }
+    }
+    EXPECT_TRUE(sawRoot);
+    EXPECT_TRUE(sawChild);
+    EXPECT_TRUE(sawLeaf);
+    EXPECT_TRUE(sawOther);
+}
+
+TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "WITH RECURSIVE t AS (SELECT id FROM Nodes) SELECT id FROM t;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "WITH t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
+                     "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
+                     "SELECT id FROM t;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION "
+                     "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
+                     "SELECT id FROM t;"),
+                 std::runtime_error);
+}
+
 TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
     Parser parser;
 
     // Derived tables require an alias.
     EXPECT_THROW((void)parser.parse("SELECT id FROM (SELECT id FROM Employees);"),
                  std::runtime_error);
+}
 
-    // Outer JOIN against a CTE/derived alias is rejected (body WHERE would mis-scope on the join).
+TEST(NestedSqlTests, OuterJoinAgainstCteAndDerivedAlias) {
+    Parser parser;
+    auto executor = makeExecutor("outer-join-cte");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                          "(2, \"Bob\", 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
     auto cteJoin = parser.parse(
-        "WITH high AS (SELECT id, name FROM Employees WHERE id = 1) "
-        "SELECT * FROM high JOIN Departments ON id = id;");
+        "WITH high AS (SELECT id, name, dept_id FROM Employees WHERE id = 1) "
+        "SELECT high.name, Departments.dept FROM high JOIN Departments "
+        "ON high.dept_id = Departments.id;");
     ASSERT_TRUE(std::holds_alternative<Select>(cteJoin));
-    EXPECT_THROW((void)rewriteSelect(std::get<Select>(cteJoin)), std::runtime_error);
+    const auto cteRewrite = rewriteSelect(std::get<Select>(cteJoin));
+    ASSERT_FALSE(cteRewrite.materialize.empty());
+    EXPECT_NE(cteRewrite.notes.front().find("join target"), std::string::npos);
 
-    auto derivedJoin = parser.parse(
-        "SELECT * FROM (SELECT id, name FROM Employees WHERE id = 1) AS high "
-        "JOIN Departments ON id = id;");
-    ASSERT_TRUE(std::holds_alternative<Select>(derivedJoin));
-    EXPECT_THROW((void)rewriteSelect(std::get<Select>(derivedJoin)), std::runtime_error);
+    auto cteResult = executor.execute(cteJoin);
+    ASSERT_TRUE(cteResult.success) << cteResult.message;
+    ASSERT_EQ(cteResult.rows.size(), 1U);
+    EXPECT_EQ(cteResult.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(cteResult.rows[0][1], Value{"Eng"});
+
+    auto derivedResult = executor.execute(parser.parse(
+        "SELECT high.name, Departments.dept FROM "
+        "(SELECT id, name, dept_id FROM Employees WHERE id = 1) AS high "
+        "JOIN Departments ON high.dept_id = Departments.id;"));
+    ASSERT_TRUE(derivedResult.success) << derivedResult.message;
+    ASSERT_EQ(derivedResult.rows.size(), 1U);
+    EXPECT_EQ(derivedResult.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(derivedResult.rows[0][1], Value{"Eng"});
+
+    auto rightCte = executor.execute(parser.parse(
+        "WITH depts AS (SELECT id, dept FROM Departments) "
+        "SELECT Employees.name, depts.dept FROM Employees RIGHT JOIN depts "
+        "ON Employees.dept_id = depts.id ORDER BY depts.dept;"));
+    ASSERT_TRUE(rightCte.success) << rightCte.message;
+    ASSERT_EQ(rightCte.rows.size(), 1U);
+    EXPECT_EQ(rightCte.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(rightCte.rows[0][1], Value{"Eng"});
 }
 
 TEST(NestedSqlTests, MaterializedCteFencesBaseTableIndex) {
@@ -896,17 +1005,60 @@ TEST(NestedSqlTests, MultiCteInliningAndUnusedCteNote) {
     EXPECT_NE(unusedRewrite.notes.front().find("FROM references a base table"), std::string::npos);
 }
 
-TEST(NestedSqlTests, NestedWithAndJoinInSubqueryDocumentedRefusals) {
+TEST(NestedSqlTests, JoinInsideInSubqueryFiltersByJoinedKeys) {
     Parser parser;
-    // JOIN inside IN/EXISTS remains unsupported.
-    EXPECT_THROW((void)parser.parse(
-                     "SELECT name FROM Employees WHERE id IN (SELECT Employees.id FROM Employees "
-                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
-                 std::runtime_error);
-    EXPECT_THROW((void)parser.parse(
-                     "SELECT name FROM Employees WHERE EXISTS (SELECT Employees.id FROM Employees "
-                     "JOIN Departments ON Employees.dept_id = Departments.id);"),
-                 std::runtime_error);
+    auto executor = makeExecutor("join-inside-in");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                          "(2, \"Bob\", 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN ("
+        "SELECT Employees.id FROM Employees JOIN Departments "
+        "ON Employees.dept_id = Departments.id) ORDER BY name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, JoinInsideExistsCorrelatesToOuterRow) {
+    Parser parser;
+    auto executor = makeExecutor("join-inside-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Assignments (emp_id INT, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\"), "
+                                          "(2, \"Bob\");"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Assignments VALUES (1, 10), (2, 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT e.name FROM Employees AS e WHERE EXISTS ("
+        "SELECT Assignments.emp_id FROM Assignments JOIN Departments "
+        "ON Assignments.dept_id = Departments.id WHERE Assignments.emp_id = e.id) "
+        "ORDER BY e.name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
 TEST(NestedSqlTests, WithInsideInSubqueryInlinesAndFilters) {

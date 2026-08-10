@@ -203,8 +203,28 @@ TEST(ParserTests, ParsesLeftJoinNonEquiLikeAndRegex) {
     ASSERT_TRUE(std::holds_alternative<Select>(regex));
     EXPECT_TRUE(std::holds_alternative<RegexPred>(*std::get<Select>(regex).where));
 
-    EXPECT_THROW((void)parser.parse("SELECT * FROM Employees RIGHT JOIN Departments ON id = id;"),
-                 std::runtime_error);
+}
+
+TEST(ParserTests, ParsesRightFullAndCrossJoins) {
+    Parser parser;
+
+    auto rightJoin = parser.parse(
+        "SELECT * FROM Employees RIGHT JOIN Departments ON Employees.dept_id = Departments.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(rightJoin));
+    EXPECT_EQ(std::get<Select>(rightJoin).joins[0].kind, JoinKind::RightOuter);
+
+    auto fullJoin = parser.parse(
+        "SELECT * FROM Employees FULL OUTER JOIN Departments ON Employees.dept_id = Departments.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(fullJoin));
+    EXPECT_EQ(std::get<Select>(fullJoin).joins[0].kind, JoinKind::FullOuter);
+
+    auto crossJoin = parser.parse("SELECT * FROM Employees CROSS JOIN Departments;");
+    ASSERT_TRUE(std::holds_alternative<Select>(crossJoin));
+    const auto &cj = std::get<Select>(crossJoin);
+    ASSERT_EQ(cj.joins.size(), 1U);
+    EXPECT_EQ(cj.joins[0].kind, JoinKind::Cross);
+    EXPECT_TRUE(cj.joins[0].leftColumn.empty());
+    EXPECT_TRUE(cj.joins[0].rightColumn.empty());
 }
 
 } // namespace VertexDB

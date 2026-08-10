@@ -7,6 +7,7 @@
 #include "VertexDB/parser/predicate.hpp"
 
 #include <memory>
+#include <unordered_map>
 #include <stdexcept>
 #include <utility>
 
@@ -52,19 +53,42 @@ Predicate SubqueryRuntime::materializePredicate(const Predicate &predicate) cons
 std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquery) const {
     RewriteResult rewrite;
     const Select prepared = prepareSelect(subquery, rewrite);
-    if (!prepared.joins.empty()) {
-        throw std::runtime_error("JOIN inside IN subquery is not supported");
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+    for (const auto &cte : rewrite.materialize) {
+        temps.emplace(cte.name, materializeCteTable(cte));
     }
-    auto table = owner_.selectEngine_.requireTable(prepared.table);
-    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
-    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
 
     if (prepared.columns.size() != 1 || isStarProjection(prepared.columns) ||
         prepared.columns.front().kind != SelectExpr::Kind::Column) {
         throw std::runtime_error("IN subquery must project exactly one column");
     }
+
+    if (!prepared.joins.empty()) {
+        auto result = owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        if (!result.success) {
+            throw std::runtime_error(result.message);
+        }
+        if (result.columns.size() != 1) {
+            throw std::runtime_error("IN subquery must project exactly one column");
+        }
+        std::vector<Value> values;
+        values.reserve(result.rows.size());
+        for (const auto &row : result.rows) {
+            values.push_back(row[0]);
+            if (prepared.limit && values.size() >= *prepared.limit) {
+                break;
+            }
+        }
+        return values;
+    }
+
+    auto table = owner_.selectEngine_.requireTable(prepared.table, temps);
+    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
+    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
+
     const auto columnIndex = table->columnIndex(prepared.columns.front().column);
     if (!columnIndex) {
+        // Joined/qualified names are unusual on single-table paths; try result-style resolve.
         throw std::runtime_error("unknown IN subquery projection column");
     }
 
@@ -90,11 +114,19 @@ std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquer
 bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
     RewriteResult rewrite;
     Select prepared = prepareSelect(subquery, rewrite);
-    if (!prepared.joins.empty()) {
-        throw std::runtime_error("JOIN inside EXISTS subquery is not supported");
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+    for (const auto &cte : rewrite.materialize) {
+        temps.emplace(cte.name, materializeCteTable(cte));
     }
     prepared.limit = 1;
-    auto table = owner_.selectEngine_.requireTable(prepared.table);
+    if (!prepared.joins.empty()) {
+        auto result = owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        if (!result.success) {
+            throw std::runtime_error(result.message);
+        }
+        return !result.rows.empty();
+    }
+    auto table = owner_.selectEngine_.requireTable(prepared.table, temps);
     const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
     auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
     return !rows.empty();
@@ -224,62 +256,13 @@ Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const
     return bindOuterReferences(predicate, outerRow, outerTable, outerTable.name());
 }
 
-std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const std::string &name,
-                                                           const Select &body) const {
-    RewriteResult rewrite;
-    const Select prepared = prepareSelect(body, rewrite);
-    QueryResult bodyResult;
-    if (!prepared.joins.empty()) {
-        bodyResult = owner_.selectEngine_.executeJoinSelect(prepared);
-    } else {
-        auto source = owner_.selectEngine_.requireTable(prepared.table);
-        const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *source, rewrite);
-        std::vector<std::string> sourceColumns;
-        for (const auto &column : source->schema()) {
-            sourceColumns.push_back(column.name);
-        }
-        auto rows = owner_.selectEngine_.collectRows(prepared, *source, plan);
-        bodyResult = owner_.selectEngine_.finalizeSelectResult(
-            prepared, std::move(sourceColumns), std::move(rows));
-        if (!bodyResult.success) {
-            throw std::runtime_error(bodyResult.message);
-        }
-        std::vector<Column> schema;
-        schema.reserve(bodyResult.columns.size());
-        if (hasAggregates(prepared.columns) || !prepared.groupBy.empty()) {
-            for (std::size_t i = 0; i < bodyResult.columns.size(); ++i) {
-                ColumnType type = ColumnType::Int;
-                for (const auto &row : bodyResult.rows) {
-                    if (!row[i].isNull()) {
-                        type = row[i].type();
-                        break;
-                    }
-                }
-                schema.push_back({bodyResult.columns[i], type, true});
-            }
-        } else {
-            std::vector<std::string> projectedNames;
-            const auto projection =
-                owner_.selectEngine_.resolveProjection(prepared, *source, projectedNames);
-            schema.reserve(projection.size());
-            for (std::size_t i = 0; i < projection.size(); ++i) {
-                const auto &sourceColumn = source->schema()[projection[i]];
-                schema.push_back({bodyResult.columns[i], sourceColumn.type, sourceColumn.nullable});
-            }
-        }
-        if (schema.empty()) {
-            throw std::runtime_error("materialized CTE produced no columns");
-        }
-        auto table = std::make_shared<Table>(name, std::move(schema));
-        for (auto &row : bodyResult.rows) {
-            table->insert(std::move(row));
-        }
-        for (const auto &column : table->schema()) {
-            (void)table->createIndex(std::string{"idx_"} + column.name, column.name);
-        }
-        return table;
-    }
+namespace {
 
+constexpr std::size_t kMaxRecursiveIterations = 1000;
+constexpr std::size_t kMaxRecursiveRows = 100000;
+
+[[nodiscard]] std::shared_ptr<Table> tableFromQueryResult(const std::string &name,
+                                                          QueryResult bodyResult) {
     if (!bodyResult.success) {
         throw std::runtime_error(bodyResult.message);
     }
@@ -293,7 +276,13 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const std::string &n
                 break;
             }
         }
-        schema.push_back({bodyResult.columns[i], type, true});
+        // Ephemeral CTE tables expose bare column names so later JOINs/filters can reference
+        // `id` even when the body projected `Nodes.id`.
+        std::string columnName = bodyResult.columns[i];
+        if (const auto dot = columnName.rfind('.'); dot != std::string::npos) {
+            columnName = columnName.substr(dot + 1);
+        }
+        schema.push_back({std::move(columnName), type, true});
     }
     if (schema.empty()) {
         throw std::runtime_error("materialized CTE produced no columns");
@@ -306,6 +295,72 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const std::string &n
         (void)table->createIndex(std::string{"idx_"} + column.name, column.name);
     }
     return table;
+}
+
+} // namespace
+
+std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte) const {
+    if (!cte.body) {
+        throw std::runtime_error("materialized CTE is missing a body");
+    }
+
+    auto evaluateSelectToResult =
+        [&](const Select &body,
+            const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps =
+                {}) -> QueryResult {
+        RewriteResult rewrite;
+        const Select prepared = prepareSelect(body, rewrite);
+        std::unordered_map<std::string, std::shared_ptr<Table>> temps = extraTemps;
+        for (const auto &nested : rewrite.materialize) {
+            temps.emplace(nested.name, materializeCteTable(nested));
+        }
+        if (!prepared.joins.empty()) {
+            return owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        }
+        auto source = owner_.selectEngine_.requireTable(prepared.table, temps);
+        const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *source, rewrite);
+        std::vector<std::string> sourceColumns;
+        for (const auto &column : source->schema()) {
+            sourceColumns.push_back(column.name);
+        }
+        auto rows = owner_.selectEngine_.collectRows(prepared, *source, plan);
+        return owner_.selectEngine_.finalizeSelectResult(prepared, std::move(sourceColumns),
+                                                         std::move(rows));
+    };
+
+    if (cte.recursive) {
+        if (!cte.recursiveArm) {
+            throw std::runtime_error("recursive CTE is missing a recursive arm");
+        }
+        auto anchorResult = evaluateSelectToResult(*cte.body);
+        // Copy rows before first tableFromQueryResult moves them out of anchorResult.
+        QueryResult deltaSource = anchorResult;
+        auto result = tableFromQueryResult(cte.name, std::move(anchorResult));
+        auto delta = tableFromQueryResult(cte.name + "#delta", std::move(deltaSource));
+
+        for (std::size_t iter = 0; iter < kMaxRecursiveIterations; ++iter) {
+            if (delta->rowCount() == 0) {
+                break;
+            }
+            std::unordered_map<std::string, std::shared_ptr<Table>> temps;
+            temps.emplace(cte.name, delta);
+            auto stepResult = evaluateSelectToResult(*cte.recursiveArm, temps);
+            QueryResult deltaCopy = stepResult;
+            for (const auto &row : stepResult.rows) {
+                result->insert(row);
+            }
+            if (result->rowCount() > kMaxRecursiveRows) {
+                throw std::runtime_error("WITH RECURSIVE exceeded maximum row count");
+            }
+            delta = tableFromQueryResult(cte.name + "#delta", std::move(deltaCopy));
+            if (iter + 1 == kMaxRecursiveIterations && delta->rowCount() > 0) {
+                throw std::runtime_error("WITH RECURSIVE exceeded maximum iteration count");
+            }
+        }
+        return result;
+    }
+
+    return tableFromQueryResult(cte.name, evaluateSelectToResult(*cte.body));
 }
 
 } // namespace VertexDB
