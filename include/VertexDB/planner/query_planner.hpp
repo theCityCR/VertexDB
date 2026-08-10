@@ -4,8 +4,8 @@
 // fields valid for that physical operation. CTE/derived rewrite is in rewriter.hpp.
 // AccessPath names match *Plan structs (HashEq ↔ HashEqPlan, …). Older docs may
 // say HashIndexLookup / OrderedIndexRange / HashIndexInLookup / MultiIndex*.
-// Sibling TUs: planner_predicate.cpp, query_planner_join.cpp, query_planner_format.cpp;
-// shared helpers in src/planner/planner_detail.hpp.
+// Sibling TUs: query_planner_select.cpp, planner_predicate.cpp, query_planner_join.cpp,
+// query_planner_format.cpp; shared helpers in src/planner/planner_detail.hpp.
 
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/relation_stats.hpp"

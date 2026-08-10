@@ -4,8 +4,11 @@
 
 #include <charconv>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace VertexDB {
 namespace parser_detail {
@@ -33,6 +36,31 @@ inline std::int64_t parseIntLiteral(std::string_view text) {
     return equalsIgnoreCase(lexeme, "JOIN") || equalsIgnoreCase(lexeme, "LEFT") ||
            equalsIgnoreCase(lexeme, "RIGHT") || equalsIgnoreCase(lexeme, "FULL") ||
            equalsIgnoreCase(lexeme, "INNER") || equalsIgnoreCase(lexeme, "CROSS");
+}
+
+[[nodiscard]] inline std::optional<std::string_view> columnQualifier(std::string_view name) {
+    const auto dot = name.find('.');
+    if (dot == std::string_view::npos) {
+        return std::nullopt;
+    }
+    return name.substr(0, dot);
+}
+
+[[nodiscard]] inline bool refersToOuterTable(std::string_view column, std::string_view innerTable,
+                                             const std::vector<std::string> &outerTables) {
+    if (const auto table = columnQualifier(column)) {
+        if (equalsIgnoreCase(*table, innerTable)) {
+            return false;
+        }
+        for (const auto &outer : outerTables) {
+            if (equalsIgnoreCase(*table, outer)) {
+                return true;
+            }
+        }
+        // Qualified name that is not the inner table is treated as an outer reference.
+        return !outerTables.empty();
+    }
+    return false;
 }
 
 } // namespace parser_detail

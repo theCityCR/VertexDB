@@ -2,7 +2,9 @@
 
 // CTE / derived-table / IN / EXISTS preparation and evaluation.
 // Implementation: subquery_runtime.cpp. Rewrites go through rewriter.hpp first.
+// Shared services and SelectEngine peer live in ExecutionContext.
 
+#include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/table.hpp"
@@ -14,11 +16,9 @@
 
 namespace VertexDB {
 
-class QueryExecutor;
-
 class SubqueryRuntime {
   public:
-    explicit SubqueryRuntime(QueryExecutor &owner) noexcept;
+    explicit SubqueryRuntime(ExecutionContext &ctx) noexcept;
 
     [[nodiscard]] Select prepareSelect(const Select &command, RewriteResult &rewrite) const;
     [[nodiscard]] Predicate materializePredicate(const Predicate &predicate) const;
@@ -37,7 +37,7 @@ class SubqueryRuntime {
     [[nodiscard]] std::shared_ptr<Table> materializeCteTable(const CteEntry &cte) const;
 
   private:
-    QueryExecutor &owner_;
+    ExecutionContext &ctx_;
 };
 
 } // namespace VertexDB

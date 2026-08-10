@@ -14,7 +14,9 @@ QueryExecutor::QueryExecutor(std::filesystem::path storageRoot)
     : storageManager_(storageRoot), wal_(storageRoot / "VertexDB.wal"),
       recovery_(storageManager_, wal_, session_, database_,
                 [this](const Query &query) { (void)executeUnlocked(query); }),
-      selectEngine_(*this), subqueryRuntime_(*this) {
+      ctx_{database_, planner_, session_}, selectEngine_(ctx_), subqueryRuntime_(ctx_) {
+    ctx_.select = &selectEngine_;
+    ctx_.subquery = &subqueryRuntime_;
     recovery_.recoverFromStorage();
 }
 
@@ -85,6 +87,24 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
 }
 
 std::shared_ptr<Database> QueryExecutor::currentDatabase() const noexcept { return database_; }
+
+QueryResult QueryExecutor::executeSelect(const Select &command) {
+    return selectEngine_.execute(command);
+}
+
+QueryResult QueryExecutor::executeExplain(const ExplainQuery &command) {
+    return selectEngine_.explain(command);
+}
+
+bool QueryExecutor::matches(const Row &row, const Table &table, const Predicate &predicate) const {
+    return selectEngine_.matches(row, table, predicate);
+}
+
+std::shared_ptr<Table> QueryExecutor::requireTable(
+    std::string_view tableName,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
+    return selectEngine_.requireTable(tableName, temps);
+}
 
 QueryResult QueryExecutor::executeCreateDatabase(const CreateDatabase &command) {
     if (const auto rejected = rejectIfTransactionActive("CREATE DATABASE"); !rejected.success) {

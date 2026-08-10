@@ -1,8 +1,10 @@
 #pragma once
 
 // SELECT / join / EXPLAIN execution owned by SelectEngine.
-// Implementation: select_engine.cpp. QueryExecutor remains the public façade.
+// Implementation: select_engine.cpp (+ select_engine_scan.cpp, select_engine_join.cpp).
+// QueryExecutor remains the public façade; shared services live in ExecutionContext.
 
+#include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/planner/query_planner.hpp"
@@ -18,13 +20,11 @@
 
 namespace VertexDB {
 
-class QueryExecutor;
-class SubqueryRuntime;
 struct RewriteResult;
 
 class SelectEngine {
   public:
-    explicit SelectEngine(QueryExecutor &owner) noexcept;
+    explicit SelectEngine(ExecutionContext &ctx) noexcept;
 
     [[nodiscard]] QueryResult execute(const Select &command);
     [[nodiscard]] QueryResult explain(const ExplainQuery &command);
@@ -34,34 +34,34 @@ class SelectEngine {
     requireTable(std::string_view tableName,
                  const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
 
-  private:
-    friend class SubqueryRuntime;
+    // Internal SELECT API used by SubqueryRuntime (via ExecutionContext::select).
+    [[nodiscard]] QueryResult executeJoinSelect(
+        const Select &command,
+        const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {});
+    [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
+                                               const QueryPlan &plan) const;
+    [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
+                                               const RewriteResult &rewrite) const;
+    [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
+                                                   std::vector<std::string> sourceColumns,
+                                                   std::vector<Row> rows) const;
 
+  private:
     [[nodiscard]] std::vector<std::size_t>
     resolveProjection(const Select &command, const Table &table,
                       std::vector<std::string> &columns) const;
     [[nodiscard]] std::vector<std::size_t>
     resolveProjectionFromNames(const Select &command, const std::vector<std::string> &sourceColumns,
                                std::vector<std::string> &projectedColumns) const;
-    [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
-                                               const QueryPlan &plan) const;
-    [[nodiscard]] QueryResult executeJoinSelect(
-        const Select &command,
-        const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {});
-    [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
-                                                   std::vector<std::string> sourceColumns,
-                                                   std::vector<Row> rows) const;
     void collectJoinRows(
         const Select &command, std::vector<std::string> &joinedColumns, std::vector<Row> &joinedRows,
         const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
-    [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
-                                               const RewriteResult &rewrite) const;
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> visibleEntriesForRead(const Table &table) const;
     [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,
                                                    std::span<const RowId> rowIds) const;
 
-    QueryExecutor &owner_;
+    ExecutionContext &ctx_;
 };
 
 } // namespace VertexDB

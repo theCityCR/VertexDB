@@ -3,8 +3,10 @@
 // SQL command façade: dispatch and public API only.
 // SelectEngine, SubqueryRuntime, PreparedStatementCatalog, TxnSession, and
 // RecoveryService own the execution subsystems composed by this façade.
+// Shared SELECT/subquery services are exposed via ExecutionContext (no friends).
 
 #include "VertexDB/concurrency/lock_manager.hpp"
+#include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/prepared_statement_catalog.hpp"
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/execution/recovery_service.hpp"
@@ -35,9 +37,6 @@ class QueryExecutor {
     [[nodiscard]] std::optional<Query> preparedAst(std::string_view name) const;
 
   private:
-    friend class SelectEngine;
-    friend class SubqueryRuntime;
-
     [[nodiscard]] QueryResult executeCreateDatabase(const CreateDatabase &command);
     [[nodiscard]] QueryResult executeCreateTable(const CreateTable &command);
     [[nodiscard]] QueryResult executeDropTable(const DropTable &command);
@@ -79,6 +78,7 @@ class QueryExecutor {
     QueryPlanner planner_;
     TxnSession session_;
     RecoveryService recovery_;
+    ExecutionContext ctx_;
     SelectEngine selectEngine_;
     SubqueryRuntime subqueryRuntime_;
     PreparedStatementCatalog prepared_;

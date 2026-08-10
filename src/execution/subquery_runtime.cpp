@@ -1,8 +1,8 @@
 #include "VertexDB/execution/subquery_runtime.hpp"
 
 #include "VertexDB/common/string_utils.hpp"
-#include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/recursive_cte_limits.hpp"
+#include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/select_scope.hpp"
 #include "VertexDB/parser/predicate.hpp"
@@ -19,7 +19,7 @@ RecursiveCteLimits &recursiveCteLimits() noexcept {
     return limits;
 }
 
-SubqueryRuntime::SubqueryRuntime(QueryExecutor &owner) noexcept : owner_(owner) {}
+SubqueryRuntime::SubqueryRuntime(ExecutionContext &ctx) noexcept : ctx_(ctx) {}
 
 Select SubqueryRuntime::prepareSelect(const Select &command, RewriteResult &rewrite) const {
     rewrite = rewriteSelect(command);
@@ -70,7 +70,7 @@ std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquer
     }
 
     if (!prepared.joins.empty()) {
-        auto result = owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        auto result = ctx_.select->executeJoinSelect(prepared, temps);
         if (!result.success) {
             throw std::runtime_error(result.message);
         }
@@ -88,9 +88,9 @@ std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquer
         return values;
     }
 
-    auto table = owner_.selectEngine_.requireTable(prepared.table, temps);
-    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
-    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
+    auto table = ctx_.select->requireTable(prepared.table, temps);
+    const auto plan = ctx_.select->planPreparedSelect(prepared, *table, rewrite);
+    auto rows = ctx_.select->collectRows(prepared, *table, plan);
 
     const auto columnIndex = table->columnIndex(prepared.columns.front().column);
     if (!columnIndex) {
@@ -126,15 +126,15 @@ bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
     }
     prepared.limit = 1;
     if (!prepared.joins.empty()) {
-        auto result = owner_.selectEngine_.executeJoinSelect(prepared, temps);
+        auto result = ctx_.select->executeJoinSelect(prepared, temps);
         if (!result.success) {
             throw std::runtime_error(result.message);
         }
         return !result.rows.empty();
     }
-    auto table = owner_.selectEngine_.requireTable(prepared.table, temps);
-    const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *table, rewrite);
-    auto rows = owner_.selectEngine_.collectRows(prepared, *table, plan);
+    auto table = ctx_.select->requireTable(prepared.table, temps);
+    const auto plan = ctx_.select->planPreparedSelect(prepared, *table, rewrite);
+    auto rows = ctx_.select->collectRows(prepared, *table, plan);
     return !rows.empty();
 }
 
@@ -318,17 +318,17 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
             temps.emplace(nested.name, materializeCteTable(nested));
         }
         if (!prepared.joins.empty()) {
-            return owner_.selectEngine_.executeJoinSelect(prepared, temps);
+            return ctx_.select->executeJoinSelect(prepared, temps);
         }
-        auto source = owner_.selectEngine_.requireTable(prepared.table, temps);
-        const auto plan = owner_.selectEngine_.planPreparedSelect(prepared, *source, rewrite);
+        auto source = ctx_.select->requireTable(prepared.table, temps);
+        const auto plan = ctx_.select->planPreparedSelect(prepared, *source, rewrite);
         std::vector<std::string> sourceColumns;
         for (const auto &column : source->schema()) {
             sourceColumns.push_back(column.name);
         }
-        auto rows = owner_.selectEngine_.collectRows(prepared, *source, plan);
-        return owner_.selectEngine_.finalizeSelectResult(prepared, std::move(sourceColumns),
-                                                         std::move(rows));
+        auto rows = ctx_.select->collectRows(prepared, *source, plan);
+        return ctx_.select->finalizeSelectResult(prepared, std::move(sourceColumns),
+                                                 std::move(rows));
     };
 
     if (cte.recursive) {
