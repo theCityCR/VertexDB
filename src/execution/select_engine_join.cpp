@@ -13,7 +13,8 @@ namespace VertexDB {
 
 void SelectEngine::collectJoinRows(
     const Select &command, std::vector<std::string> &joinedColumns, std::vector<Row> &joinedRows,
-    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const {
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &temps,
+    ExplainAnalyzeStats *stats) const {
     if (command.joins.empty()) {
         throw std::runtime_error("collectJoinRows requires at least one join");
     }
@@ -169,6 +170,9 @@ void SelectEngine::collectJoinRows(
 
         joinedColumns = std::move(nextColumns);
         joinedRows = std::move(nextRows);
+        if (stats) {
+            stats->joinActualRows.push_back(joinedRows.size());
+        }
     }
 
     if (command.where) {
@@ -183,6 +187,12 @@ void SelectEngine::collectJoinRows(
             }
         }
         joinedRows = std::move(filtered);
+        if (stats && !stats->joinActualRows.empty()) {
+            stats->joinActualRows.back() = joinedRows.size();
+        }
+    }
+    if (stats) {
+        stats->actualRows = joinedRows.size();
     }
 }
 

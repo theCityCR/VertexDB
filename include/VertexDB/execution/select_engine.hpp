@@ -13,6 +13,7 @@
 #include "VertexDB/storage/table.hpp"
 
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -23,6 +24,13 @@
 namespace VertexDB {
 
 struct RewriteResult;
+
+// Filled only during EXPLAIN ANALYZE. candidates is set when a residual filter ran.
+struct ExplainAnalyzeStats {
+    std::optional<std::size_t> candidates;
+    std::size_t actualRows{0};
+    std::vector<std::size_t> joinActualRows;
+};
 
 class SelectEngine {
   public:
@@ -41,10 +49,12 @@ class SelectEngine {
         const Select &command,
         const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {});
     [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
-                                               const QueryPlan &plan) const;
+                                               const QueryPlan &plan,
+                                               ExplainAnalyzeStats *stats = nullptr) const;
     // Same access-path visitor as collectRows, but keeps RowIds for UPDATE/DELETE.
     [[nodiscard]] std::vector<std::pair<RowId, Row>>
-    collectVisibleEntries(const Select &command, const Table &table, const QueryPlan &plan) const;
+    collectVisibleEntries(const Select &command, const Table &table, const QueryPlan &plan,
+                          ExplainAnalyzeStats *stats = nullptr) const;
     [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
                                                const RewriteResult &rewrite) const;
     [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
@@ -60,7 +70,8 @@ class SelectEngine {
                                std::vector<std::string> &projectedColumns) const;
     void collectJoinRows(
         const Select &command, std::vector<std::string> &joinedColumns, std::vector<Row> &joinedRows,
-        const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
+        const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {},
+        ExplainAnalyzeStats *stats = nullptr) const;
     [[nodiscard]] std::vector<Row> rowsSnapshotForRead(const Table &table) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> visibleEntriesForRead(const Table &table) const;
     [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,

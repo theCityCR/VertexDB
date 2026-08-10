@@ -1,6 +1,8 @@
 #include "VertexDB/planner/query_planner.hpp"
 
+#include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace VertexDB {
 
@@ -24,6 +26,21 @@ std::string formatJoinPlanExplanation(const JoinPlan &plan) {
     std::ostringstream out;
     out << plan.explanation;
     out << "\nest_rows=" << plan.estimatedRows << " cost=" << plan.estimatedCost;
+    return out.str();
+}
+
+std::string appendExplainAnalyzeActuals(std::string planText, std::size_t actualRows,
+                                        std::optional<std::size_t> candidates,
+                                        std::optional<double> timeMs) {
+    std::ostringstream out;
+    out << std::move(planText);
+    out << "\nactual_rows=" << actualRows;
+    if (candidates) {
+        out << "\ncandidates=" << *candidates;
+    }
+    if (timeMs) {
+        out << "\nactual_time_ms=" << std::fixed << std::setprecision(3) << *timeMs;
+    }
     return out.str();
 }
 

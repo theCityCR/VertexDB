@@ -20,7 +20,7 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` / `JOIN` inside them and
   correlation through four outer frames), outer `JOIN` against CTE/derived aliases (force
   materialize), expression indexes (including `trigram(column)`),
-  `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
+  `EXPLAIN` / `EXPLAIN ANALYZE`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
   `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete (UPDATE/DELETE `WHERE` uses the same planner index access paths as SELECT), table management,
@@ -41,7 +41,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   page-image WAL flush on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
-  selection (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), expression-index matching, and `EXPLAIN`
+  selection (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), expression-index matching,
+  `EXPLAIN`, and `EXPLAIN ANALYZE` (actual vs estimated rows)
 - Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks with
   a CI CTE cost-shape gate, CI
 
@@ -79,8 +80,9 @@ expression same-column `OR`→`IN`, and an MVCC fix so `UPDATE` closes the prior
 demo wedge (demo SQL, scaled regression, microbenchmarks, CI shape gate, BitmapAnd parity note).
 Catalog DDL and `SAVE`/`LOAD` remain rejected inside open transactions. Heterogeneous nested `OR`
 under `AND`, composite Intersect∪Union, and further recursive/set-op surface remain intentionally
-limited (see [sql.md](sql.md)). `EXPLAIN` for mutations and public `DROP INDEX` SQL are still out of
-scope.
+limited (see [sql.md](sql.md)). `EXPLAIN ANALYZE` for SELECT/WITH compares `est_rows` to measured
+`actual_rows` (and residual `candidates`) in one execute pass. `EXPLAIN` for mutations and public
+`DROP INDEX` SQL are still out of scope.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). Wedge **cost shape** (CTE: indexed

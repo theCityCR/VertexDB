@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 
@@ -12,11 +13,14 @@ namespace VertexDB {
 
 std::vector<std::pair<RowId, Row>>
 SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
-                                    const QueryPlan &plan) const {
+                                    const QueryPlan &plan, ExplainAnalyzeStats *stats) const {
     const std::string_view scope = selectScopeName(command);
     auto applyResidual = [&](std::vector<std::pair<RowId, Row>> entries) {
         if (!plan.residual()) {
             return entries;
+        }
+        if (stats) {
+            stats->candidates = entries.size();
         }
         std::vector<std::pair<RowId, Row>> filtered;
         filtered.reserve(entries.size());
@@ -28,7 +32,7 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
         return filtered;
     };
 
-    return std::visit(
+    auto entries = std::visit(
         [&](const auto &path) -> std::vector<std::pair<RowId, Row>> {
             using T = std::decay_t<decltype(path)>;
             if constexpr (std::is_same_v<T, HashEqPlan>) {
@@ -124,34 +128,43 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                 }
                 // Residual OR: index union covers indexable arms; complementary scan adds rows
                 // matching only the non-indexable residual (AND-style applyResidual would be wrong).
+                if (stats) {
+                    stats->candidates = ids.size();
+                }
                 std::unordered_set<RowId> seen(ids.begin(), ids.end());
-                auto entries = ids.empty() ? std::vector<std::pair<RowId, Row>>{}
-                                           : entriesByIdForRead(table, ids);
+                auto out = ids.empty() ? std::vector<std::pair<RowId, Row>>{}
+                                       : entriesByIdForRead(table, ids);
                 for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
                     if (seen.contains(rowId)) {
                         continue;
                     }
                     if (matches(row, table, *plan.residual(), scope)) {
-                        entries.emplace_back(rowId, row);
+                        out.emplace_back(rowId, row);
                     }
                 }
-                return entries;
+                return out;
             } else {
-                std::vector<std::pair<RowId, Row>> entries;
+                std::vector<std::pair<RowId, Row>> scanned;
                 for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
                     if (!command.where || matches(row, table, *command.where, scope)) {
-                        entries.emplace_back(rowId, row);
+                        scanned.emplace_back(rowId, row);
                     }
                 }
-                return entries;
+                return scanned;
             }
         },
         plan.path);
+
+    if (stats) {
+        stats->actualRows = entries.size();
+    }
+    return entries;
 }
 
 std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &table,
-                                           const QueryPlan &plan) const {
-    auto entries = collectVisibleEntries(command, table, plan);
+                                           const QueryPlan &plan,
+                                           ExplainAnalyzeStats *stats) const {
+    auto entries = collectVisibleEntries(command, table, plan, stats);
     std::vector<Row> rows;
     rows.reserve(entries.size());
     for (auto &entry : entries) {

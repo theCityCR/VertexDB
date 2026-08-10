@@ -7,6 +7,7 @@
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 
+#include <chrono>
 #include <stdexcept>
 #include <utility>
 
@@ -37,6 +38,8 @@ QueryResult SelectEngine::execute(const Select &command) {
 }
 
 QueryResult SelectEngine::explain(const ExplainQuery &command) {
+    const auto started = std::chrono::steady_clock::now();
+
     RewriteResult rewrite;
     const Select prepared = ctx_.subquery->prepareSelect(command.query, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
@@ -49,9 +52,14 @@ QueryResult SelectEngine::explain(const ExplainQuery &command) {
     result.message = "explain";
     result.columns = {"plan"};
 
+    ExplainAnalyzeStats stats;
+    ExplainAnalyzeStats *statsPtr = command.analyze ? &stats : nullptr;
+
     if (!prepared.joins.empty()) {
         auto leftTable = requireTable(prepared.table, temps);
         std::size_t leftRows = leftTable->rowCount();
+        std::vector<JoinPlan> joinPlans;
+        joinPlans.reserve(prepared.joins.size());
         for (std::size_t joinIndex = 0; joinIndex < prepared.joins.size(); ++joinIndex) {
             const auto &join = prepared.joins[joinIndex];
             auto rightTable = requireTable(join.table, temps);
@@ -61,8 +69,36 @@ QueryResult SelectEngine::explain(const ExplainQuery &command) {
             } else {
                 joinPlan = ctx_.planner.planJoinAgainstRows(leftRows, *rightTable, join);
             }
-            result.rows.push_back({Value{formatJoinPlanExplanation(joinPlan)}});
             leftRows = joinPlan.estimatedRows;
+            joinPlans.push_back(std::move(joinPlan));
+        }
+
+        if (command.analyze) {
+            std::vector<std::string> joinedColumns;
+            std::vector<Row> joinedRows;
+            collectJoinRows(prepared, joinedColumns, joinedRows, temps, statsPtr);
+            if (hasAggregates(prepared.columns) || !prepared.groupBy.empty()) {
+                auto aggregated = aggregateRows(prepared, joinedColumns, std::move(joinedRows));
+                stats.actualRows = aggregated.rows.size();
+                if (!stats.joinActualRows.empty()) {
+                    stats.joinActualRows.back() = stats.actualRows;
+                }
+            }
+        }
+
+        const auto elapsedMs = std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - started)
+                                   .count();
+        for (std::size_t i = 0; i < joinPlans.size(); ++i) {
+            auto text = formatJoinPlanExplanation(joinPlans[i]);
+            if (command.analyze) {
+                const std::size_t actual =
+                    i < stats.joinActualRows.size() ? stats.joinActualRows[i] : stats.actualRows;
+                const std::optional<double> time =
+                    i == 0 ? std::optional<double>{elapsedMs} : std::nullopt;
+                text = appendExplainAnalyzeActuals(std::move(text), actual, std::nullopt, time);
+            }
+            result.rows.push_back({Value{std::move(text)}});
         }
         for (const auto &note : rewrite.notes) {
             result.rows.push_back({Value{note}});
@@ -70,7 +106,25 @@ QueryResult SelectEngine::explain(const ExplainQuery &command) {
     } else {
         auto table = requireTable(prepared.table, temps);
         const auto plan = planPreparedSelect(prepared, *table, rewrite);
-        result.rows.push_back({Value{formatPlanExplanation(plan)}});
+        auto text = formatPlanExplanation(plan);
+
+        if (command.analyze) {
+            std::vector<std::string> sourceColumns;
+            for (const auto &column : table->schema()) {
+                sourceColumns.push_back(column.name);
+            }
+            auto rows = collectRows(prepared, *table, plan, statsPtr);
+            if (hasAggregates(prepared.columns) || !prepared.groupBy.empty()) {
+                auto aggregated = aggregateRows(prepared, sourceColumns, std::move(rows));
+                stats.actualRows = aggregated.rows.size();
+            }
+            const auto elapsedMs = std::chrono::duration<double, std::milli>(
+                                       std::chrono::steady_clock::now() - started)
+                                       .count();
+            text = appendExplainAnalyzeActuals(std::move(text), stats.actualRows, stats.candidates,
+                                               elapsedMs);
+        }
+        result.rows.push_back({Value{std::move(text)}});
     }
 
     if (hasAggregates(prepared.columns) || !prepared.groupBy.empty()) {

@@ -5,7 +5,7 @@
 VertexDB is a C++20 in-memory relational database engine. It implements a focused SQL execution
 pipeline with typed storage, indexes, persistence, write-ahead logging, concurrency control,
 transaction state, and MVCC read paths. A primary focus is index-aware query compilation for nested
-SQL: CTE inlining, `IN` subqueries, sargable predicate extraction, and `EXPLAIN`.
+SQL: CTE inlining, `IN` subqueries, sargable predicate extraction, `EXPLAIN`, and `EXPLAIN ANALYZE`.
 
 The engine is intentionally small and educational: the goal is clear architecture, modern C++
 design, correctness tests, and explicit tradeoffs in database internals—not production readiness.
@@ -14,7 +14,7 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 
 - SQL tokenization, parsing, AST construction, query planning, and execution for a focused SQL subset
 - `WITH` CTE inlining, derived tables, `WHERE col IN (SELECT …)`, cheapest-indexable `AND`
-  extraction with residual filters, and `EXPLAIN`
+  extraction with residual filters, `EXPLAIN`, and `EXPLAIN ANALYZE` (actual vs estimated)
 - Typed table storage with schema validation, nullable columns, page-backed row storage (page-byte
   directory as source of truth with an LRU buffer-pool access cache), and stable row IDs via
   tombstones with free-list reuse (persisted across save/load)
@@ -58,7 +58,8 @@ ROLLBACK;
 Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
-depth up to 3; minimal `WITH RECURSIVE`), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN`,
+depth up to 3; minimal `WITH RECURSIVE`), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN` /
+  `EXPLAIN ANALYZE`,
 prepared statements that store a typed AST with `?` parameter slots, table rename/drop/list
 operations, and `EXIT`.
 
@@ -98,7 +99,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 232 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 237 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:

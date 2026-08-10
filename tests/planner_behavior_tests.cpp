@@ -255,6 +255,89 @@ TEST(PlannerBehaviorTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
     EXPECT_NE(text.find("residual: no"), std::string::npos);
 }
 
+TEST(PlannerBehaviorTests, ExplainAnalyzeReportsActualRowsMatchingCardinality) {
+    Parser parser;
+    auto executor = makeExecutor("explain-analyze-eq");
+    seedEmployees(executor, parser, true, false);
+
+    auto plain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(plain.success);
+    const auto plainText = plain.rows.front().front().toString();
+    EXPECT_NE(plainText.find("est_rows="), std::string::npos);
+    EXPECT_EQ(plainText.find("actual_rows="), std::string::npos);
+    EXPECT_EQ(plainText.find("actual_time_ms="), std::string::npos);
+
+    auto analyzed =
+        executor.execute(parser.parse("EXPLAIN ANALYZE SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(analyzed.success);
+    const auto text = analyzed.rows.front().front().toString();
+    EXPECT_NE(text.find("est_rows="), std::string::npos);
+    EXPECT_NE(text.find("actual_rows=1"), std::string::npos);
+    EXPECT_NE(text.find("actual_time_ms="), std::string::npos);
+    EXPECT_EQ(text.find("candidates="), std::string::npos);
+
+    auto select =
+        executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(select.success);
+    EXPECT_EQ(select.rows.size(), 1U);
+}
+
+TEST(PlannerBehaviorTests, ExplainAnalyzeReportsCandidatesWhenResidualDropsRows) {
+    Parser parser;
+    auto executor = makeExecutor("explain-analyze-residual");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, \"a\"), (2, 1, \"b\"), (3, 1, \"c\"), (4, 2, \"d\");"))
+                    .success);
+
+    auto analyzed = executor.execute(
+        parser.parse("EXPLAIN ANALYZE SELECT name FROM Employees WHERE dept = 1 AND id = 1;"));
+    ASSERT_TRUE(analyzed.success);
+    const auto text = analyzed.rows.front().front().toString();
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+    EXPECT_NE(text.find("actual_rows=1"), std::string::npos);
+    EXPECT_NE(text.find("candidates=3"), std::string::npos);
+    EXPECT_NE(text.find("actual_time_ms="), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, ExplainAnalyzeJoinReportsActualRowsPerStep) {
+    Parser parser;
+    auto executor = makeExecutor("explain-analyze-join");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Employees (id INT, dept_id INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, name STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, 10, \"Alice\"), (2, 10, \"Bob\"), "
+                        "(3, 20, \"Cara\");"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Departments VALUES (10, \"Eng\"), (20, \"Sales\");"))
+                    .success);
+
+    auto analyzed = executor.execute(parser.parse(
+        "EXPLAIN ANALYZE SELECT Employees.name FROM Employees "
+        "JOIN Departments ON Employees.dept_id = Departments.id;"));
+    ASSERT_TRUE(analyzed.success);
+    ASSERT_FALSE(analyzed.rows.empty());
+    const auto text = analyzed.rows.front().front().toString();
+    EXPECT_NE(text.find("est_rows="), std::string::npos);
+    EXPECT_NE(text.find("actual_rows=3"), std::string::npos);
+    EXPECT_NE(text.find("actual_time_ms="), std::string::npos);
+}
+
 TEST(PlannerBehaviorTests, UpdateAndDeleteWherePlansHashIndexWhenPredicateColumnIndexed) {
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};

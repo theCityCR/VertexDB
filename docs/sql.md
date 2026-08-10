@@ -70,6 +70,7 @@ WITH RECURSIVE tree AS (
 )
 SELECT name FROM tree;
 EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
+EXPLAIN ANALYZE SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
 ANALYZE;
@@ -160,6 +161,20 @@ the access path or each join algorithm in a left-deep chain, CTE inlining/materi
 residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
 present.
 
+`EXPLAIN ANALYZE SELECT …` / `EXPLAIN ANALYZE WITH … SELECT …` uses a **single pass**: plan as usual,
+then execute the query once (without returning data rows) and append measured fields next to the
+estimates:
+
+| Field | Meaning |
+| --- | --- |
+| `actual_rows` | Rows after access path + residual / post-join `WHERE`, before `ORDER BY` / `LIMIT`; with aggregates/`GROUP BY`, row count after aggregation |
+| `candidates` | Pre-residual index candidate count when a residual filter ran (omitted otherwise) |
+| `actual_time_ms` | Wall time for the whole ANALYZE execute (on the first plan row) |
+
+Plain `EXPLAIN` does not include these fields. `EXPLAIN` / `EXPLAIN ANALYZE` remain SELECT/WITH-only
+(mutations are rejected at parse). This is distinct from standalone `ANALYZE` / `ANALYZE TABLE`,
+which builds planner histograms.
+
 `JOIN` / `INNER JOIN`, `LEFT` / `RIGHT` / `FULL [OUTER] JOIN`, and `CROSS JOIN` support left-deep
 chains (`t0 [AS a] JOIN t1 [AS b] ON … JOIN t2 ON …`). Non-`CROSS` joins use `ON col op col` where
 `op` is `=`, `<`, or `>`; `CROSS JOIN` has no `ON`. Equi-joins may use hash join or nested-loop
@@ -178,7 +193,7 @@ group results. `SELECT *` is rejected with aggregates/`GROUP BY`.
 `UPDATE` and `DELETE` plan their `WHERE` clause with the same cost-based access paths as
 `SELECT` (hash equality, ordered range, `IN`, intersect/union, prefix `LIKE`, residuals). Candidate
 `RowId`s are collected first, then mutated, so mid-statement index rebuilds cannot skip hits.
-`EXPLAIN` remains SELECT-only.
+`EXPLAIN` / `EXPLAIN ANALYZE` remain SELECT-only.
 
 Prepared statements parse once into a typed `Query` AST with `?` parameter slots (`Value` parameter
 placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST and executes without

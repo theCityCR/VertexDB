@@ -227,6 +227,8 @@ struct ExecutePrepared {
 };
 struct ExplainQuery {
     Select query;
+    // When true, execute once and append actual_rows / candidates / actual_time_ms.
+    bool analyze{false};
 };
 struct Analyze {
     // Empty means analyze every table in the active database.

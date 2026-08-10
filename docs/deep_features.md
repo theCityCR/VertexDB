@@ -116,7 +116,9 @@ cheaper), the planner keeps a full scan. Same-column equality `OR` is rewritten 
 whether top-level or nested under `AND`. A heterogeneous `OR` nested under `AND` may stay as a
 residual while another conjunct uses an index. `EXPLAIN` surfaces the chosen path (including
 intersected or unioned columns), residual status, `est_rows` / `cost`, and rewrite notes such as
-CTE inlining.
+`inlined CTE`. `EXPLAIN ANALYZE` executes once and appends `actual_rows` (post-filter / post-join,
+pre-`LIMIT`; post-aggregation when grouping), optional residual `candidates`, and statement
+`actual_time_ms` — distinct from standalone `ANALYZE` histogram collection.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe, including
 per-join planning for left-deep multi-join chains. Non-equi and `LEFT` joins fall back to

@@ -122,4 +122,9 @@ class QueryPlanner {
 [[nodiscard]] std::string formatPlanExplanation(const QueryPlan &plan);
 [[nodiscard]] std::string formatJoinPlanExplanation(const JoinPlan &plan);
 
+// Append EXPLAIN ANALYZE actuals; omit unset optional fields.
+[[nodiscard]] std::string appendExplainAnalyzeActuals(
+    std::string planText, std::size_t actualRows, std::optional<std::size_t> candidates = std::nullopt,
+    std::optional<double> timeMs = std::nullopt);
+
 } // namespace VertexDB

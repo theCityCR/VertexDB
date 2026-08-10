@@ -219,11 +219,15 @@ Select Parser::parseSelectAfterSelectKeyword() {
 }
 
 ExplainQuery Parser::parseExplain() {
+    ExplainQuery explain;
+    explain.analyze = match(TokenType::Identifier, "ANALYZE");
     if (match(TokenType::Identifier, "WITH")) {
-        return ExplainQuery{parseWithSelect()};
+        explain.query = parseWithSelect();
+        return explain;
     }
     expect(TokenType::Identifier, "SELECT");
-    return ExplainQuery{parseSelectAfterSelectKeyword()};
+    explain.query = parseSelectAfterSelectKeyword();
+    return explain;
 }
 
 } // namespace VertexDB

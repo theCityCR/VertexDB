@@ -265,4 +265,37 @@ TEST(ParserTests, ParenthesizedOrBushyJoinSyntaxIsRejected) {
                  std::runtime_error);
 }
 
+TEST(ParserTests, ParsesExplainAnalyzeSelectAndWith) {
+    Parser parser;
+
+    auto plain = parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;");
+    ASSERT_TRUE(std::holds_alternative<ExplainQuery>(plain));
+    EXPECT_FALSE(std::get<ExplainQuery>(plain).analyze);
+
+    auto analyze = parser.parse("EXPLAIN ANALYZE SELECT name FROM Employees WHERE id = 1;");
+    ASSERT_TRUE(std::holds_alternative<ExplainQuery>(analyze));
+    const auto &analyzed = std::get<ExplainQuery>(analyze);
+    EXPECT_TRUE(analyzed.analyze);
+    EXPECT_EQ(analyzed.query.table, "Employees");
+
+    auto withAnalyze = parser.parse(
+        "EXPLAIN ANALYZE WITH high AS (SELECT id, name FROM Employees) "
+        "SELECT name FROM high WHERE id = 1;");
+    ASSERT_TRUE(std::holds_alternative<ExplainQuery>(withAnalyze));
+    EXPECT_TRUE(std::get<ExplainQuery>(withAnalyze).analyze);
+    EXPECT_EQ(std::get<ExplainQuery>(withAnalyze).query.table, "high");
+
+    // Standalone ANALYZE remains histogram stats, not EXPLAIN ANALYZE.
+    auto histogram = parser.parse("ANALYZE;");
+    ASSERT_TRUE(std::holds_alternative<Analyze>(histogram));
+}
+
+TEST(ParserTests, ExplainAnalyzeRejectsMutations) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse("EXPLAIN ANALYZE UPDATE Employees SET name = \"x\" WHERE id = 1;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("EXPLAIN ANALYZE DELETE FROM Employees WHERE id = 1;"),
+                 std::runtime_error);
+}
+
 } // namespace VertexDB
