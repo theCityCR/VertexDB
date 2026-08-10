@@ -46,7 +46,7 @@ Select Parser::parseSelectAfterSelectKeyword() {
                 const auto agg = aggregateOpFromName(peek().lexeme);
                 if (agg && current_ + 1 < tokens_.size() &&
                     tokens_[current_ + 1].type == TokenType::LeftParen) {
-                    advance(); // aggregate name
+                    (void)advance(); // aggregate name
                     expect(TokenType::LeftParen);
                     if (*agg == AggregateOp::Count && match(TokenType::Star)) {
                         expect(TokenType::RightParen);
@@ -218,195 +218,12 @@ Select Parser::parseSelectAfterSelectKeyword() {
     return query;
 }
 
-Select Parser::parseWithSelect() { return parseWithSelectAtDepth(0); }
-
-Select Parser::parseWithSelectAtDepth(int depth) {
-    const bool recursiveWith = match(TokenType::Identifier, "RECURSIVE");
-    std::vector<CteEntry> ctes;
-    std::size_t recursiveCount = 0;
-    do {
-        const auto name = advance();
-        if (name.type != TokenType::Identifier) {
-            throw std::runtime_error("expected CTE name");
-        }
-        expect(TokenType::Identifier, "AS");
-        MaterializeMode mode = MaterializeMode::DefaultInline;
-        if (match(TokenType::Identifier, "NOT")) {
-            expect(TokenType::Identifier, "MATERIALIZED");
-            mode = MaterializeMode::NotMaterialized;
-        } else if (match(TokenType::Identifier, "MATERIALIZED")) {
-            mode = MaterializeMode::Materialized;
-        }
-        expect(TokenType::LeftParen);
-        Select body;
-        if (match(TokenType::Identifier, "WITH")) {
-            if (depth >= kMaxNestedWithDepth) {
-                throw std::runtime_error("nested WITH exceeds maximum depth");
-            }
-            body = parseWithSelectAtDepth(depth + 1);
-        } else {
-            body = parseSelect();
-        }
-        std::shared_ptr<Select> recursiveArm;
-        bool recursive = false;
-        if (match(TokenType::Identifier, "UNION")) {
-            if (!match(TokenType::Identifier, "ALL")) {
-                throw std::runtime_error("WITH RECURSIVE requires UNION ALL");
-            }
-            if (!recursiveWith) {
-                throw std::runtime_error("UNION ALL in CTE requires WITH RECURSIVE");
-            }
-            Select arm;
-            if (match(TokenType::Identifier, "WITH")) {
-                throw std::runtime_error("WITH inside recursive arm is not supported");
-            }
-            arm = parseSelect();
-            recursiveArm = std::make_shared<Select>(std::move(arm));
-            recursive = true;
-            ++recursiveCount;
-            if (recursiveCount > 1) {
-                throw std::runtime_error("only one recursive CTE is supported");
-            }
-            auto countSelfRefs = [](const Select &select, std::string_view cteName) {
-                std::size_t count = 0;
-                if (equalsIgnoreCase(select.table, cteName)) {
-                    ++count;
-                }
-                for (const auto &join : select.joins) {
-                    if (equalsIgnoreCase(join.table, cteName)) {
-                        ++count;
-                    }
-                }
-                return count;
-            };
-            if (countSelfRefs(body, name.lexeme) != 0) {
-                throw std::runtime_error("recursive CTE anchor must not reference itself");
-            }
-            if (countSelfRefs(*recursiveArm, name.lexeme) != 1) {
-                throw std::runtime_error(
-                    "recursive CTE arm must reference the CTE name exactly once");
-            }
-        }
-        expect(TokenType::RightParen);
-        ctes.push_back(CteEntry{name.lexeme, std::make_shared<Select>(std::move(body)), mode,
-                                recursive, std::move(recursiveArm)});
-    } while (match(TokenType::Comma));
-
-    if (recursiveWith && recursiveCount == 0) {
-        throw std::runtime_error("WITH RECURSIVE requires a UNION ALL recursive CTE");
-    }
-
-    expect(TokenType::Identifier, "SELECT");
-    auto query = parseSelectAfterSelectKeyword();
-    // Derived-table CTEs are closest to FROM; append WITH CTEs after so a colliding FROM alias
-    // prefers the derived table, while WITH names remain available for bodies/siblings.
-    if (!query.ctes.empty()) {
-        auto combined = std::move(query.ctes);
-        for (auto &cte : ctes) {
-            combined.push_back(std::move(cte));
-        }
-        query.ctes = std::move(combined);
-    } else {
-        query.ctes = std::move(ctes);
-    }
-    return query;
-}
-
 ExplainQuery Parser::parseExplain() {
     if (match(TokenType::Identifier, "WITH")) {
         return ExplainQuery{parseWithSelect()};
     }
     expect(TokenType::Identifier, "SELECT");
     return ExplainQuery{parseSelectAfterSelectKeyword()};
-}
-
-Select Parser::parseSubquerySelect(bool /*allowOuterRefs*/) {
-    if (currentFromTable_.empty()) {
-        throw std::runtime_error("subquery is missing an outer FROM scope");
-    }
-    outerTableStack_.push_back(currentFromTable_);
-    const auto savedFrom = currentFromTable_;
-    Select subquery;
-    if (match(TokenType::Identifier, "WITH")) {
-        subquery = parseWithSelectAtDepth(0);
-    } else {
-        expect(TokenType::Identifier, "SELECT");
-        subquery = parseSelectAfterSelectKeyword();
-    }
-    currentFromTable_ = savedFrom;
-    const bool nestedUnderCorrelated = outerTableStack_.size() > 1;
-    markOuterRefs(subquery, selectScopeName(subquery), nestedUnderCorrelated);
-    outerTableStack_.pop_back();
-    return subquery;
-}
-
-void Parser::markOuterRefs(Select &select, std::string_view innerTable,
-                           bool nestedUnderCorrelated) {
-    for (auto &cte : select.ctes) {
-        if (!cte.body) {
-            continue;
-        }
-        markOuterRefs(*cte.body, selectScopeName(*cte.body), nestedUnderCorrelated);
-        if (cte.body->hasOuterRefs) {
-            select.hasOuterRefs = true;
-        }
-    }
-    if (select.where) {
-        markOuterRefs(*select.where, innerTable, nestedUnderCorrelated);
-        if (predicateReferencesOuter(*select.where)) {
-            select.hasOuterRefs = true;
-        }
-    }
-}
-
-void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
-                           bool nestedUnderCorrelated) {
-    using parser_detail::columnQualifier;
-    using parser_detail::refersToOuterTable;
-    (void)nestedUnderCorrelated;
-    std::visit(
-        [&](auto &node) {
-            using T = std::decay_t<decltype(node)>;
-            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
-                markOuterRefs(*node.left, innerTable, nestedUnderCorrelated);
-                markOuterRefs(*node.right, innerTable, nestedUnderCorrelated);
-            } else if constexpr (std::is_same_v<T, InSubqueryPred> ||
-                                 std::is_same_v<T, ExistsPred>) {
-                if (node.subquery && node.subquery->hasOuterRefs) {
-                    node.referencesOuter = true;
-                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
-                        throw std::runtime_error(
-                            "correlated subquery exceeds maximum outer depth");
-                    }
-                }
-            } else if constexpr (std::is_same_v<T, ComparisonPred>) {
-                bool outer = refersToOuterTable(node.column, innerTable, outerTableStack_);
-                if (node.rhsColumn) {
-                    if (refersToOuterTable(*node.rhsColumn, innerTable, outerTableStack_) ||
-                        (!columnQualifier(*node.rhsColumn) && !outerTableStack_.empty())) {
-                        outer = true;
-                    }
-                }
-                if (outer) {
-                    // Allow up to four outer FROM frames while correlating.
-                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
-                        throw std::runtime_error(
-                            "correlated subquery exceeds maximum outer depth");
-                    }
-                    node.referencesOuter = true;
-                }
-            } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred> ||
-                                 std::is_same_v<T, InListPred>) {
-                if (refersToOuterTable(node.column, innerTable, outerTableStack_)) {
-                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
-                        throw std::runtime_error(
-                            "correlated subquery exceeds maximum outer depth");
-                    }
-                    node.referencesOuter = true;
-                }
-            }
-        },
-        predicate);
 }
 
 } // namespace VertexDB

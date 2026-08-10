@@ -1,7 +1,8 @@
 #pragma once
 
 // SQL Parser type. Grammar TUs: parser.cpp (dispatch), parser_ddl.cpp,
-// parser_dml.cpp, parser_select.cpp, parser_predicate.cpp. AST catalog: ast.hpp.
+// parser_dml.cpp, parser_select.cpp, parser_with.cpp, parser_outer_refs.cpp,
+// parser_predicate.cpp. AST catalog: ast.hpp.
 
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/parser/token.hpp"
