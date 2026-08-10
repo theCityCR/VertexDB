@@ -18,6 +18,7 @@
 #include <future>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -450,6 +451,89 @@ TEST(DeepFeatureTests, StorageManagerLoadsLegacySparseSnapshots) {
     ASSERT_NE(table->getRow(2), std::nullopt);
     EXPECT_EQ((*table->getRow(2))[0], Value{static_cast<std::int64_t>(30)});
     EXPECT_EQ(table->insert({Value{static_cast<std::int64_t>(40)}}), 1U);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(DeepFeatureTests, StorageManagerLoadsLegacyPagePayloadV3Snapshots) {
+    // v3: page-directory payloads without durable index pages; indexes rebuild from rows on load.
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_v3_snapshot_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+
+    PageStoreSnapshot snapshot;
+    {
+        Table source{"Employees",
+                     {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+        ASSERT_TRUE(source.createIndex("idx_id", "id"));
+        (void)source.insert({Value{static_cast<std::int64_t>(1)}, Value{std::string{"Alice"}}});
+        (void)source.insert({Value{static_cast<std::int64_t>(2)}, Value{std::string{"Bob"}}});
+        ASSERT_TRUE(source.erase(1));
+        snapshot = source.exportPageStore();
+        ASSERT_FALSE(snapshot.pages.empty());
+    }
+
+    {
+        std::ofstream out{root / "legacy_v3.tcrdb", std::ios::binary};
+        ASSERT_TRUE(out);
+
+        const auto writePod = [&](const auto &value) {
+            out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+        };
+        const auto writeString = [&](std::string_view value) {
+            writePod(static_cast<std::uint64_t>(value.size()));
+            out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        };
+
+        out.write("TCRDB001", 8);
+        writePod(std::uint32_t{3}); // page-payload format without index pages
+        writeString("legacy_v3");
+        writePod(std::uint64_t{1}); // table count
+        writeString("Employees");
+        writePod(std::uint64_t{2}); // column count
+        writeString("id");
+        writePod(std::uint8_t{0}); // INT
+        writePod(std::uint8_t{0}); // not nullable
+        writeString("name");
+        writePod(std::uint8_t{2}); // STRING
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint64_t{1}); // one index (rebuilt on load)
+        writeString("idx_id");
+        writeString("id");
+
+        writePod(static_cast<std::uint64_t>(snapshot.rowsPerPage));
+        writePod(static_cast<std::uint64_t>(snapshot.capacity));
+        writePod(static_cast<std::uint64_t>(snapshot.freeList.size()));
+        for (const auto rowId : snapshot.freeList) {
+            writePod(static_cast<std::uint64_t>(rowId));
+        }
+        writePod(static_cast<std::uint64_t>(snapshot.pages.size()));
+        for (const auto &[pageId, bytes] : snapshot.pages) {
+            writePod(static_cast<std::uint64_t>(pageId));
+            writePod(static_cast<std::uint64_t>(bytes.size()));
+            if (!bytes.empty()) {
+                out.write(reinterpret_cast<const char *>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+            }
+        }
+    }
+
+    StorageManager storage{root};
+    auto database = storage.loadDatabase("legacy_v3");
+    auto table = database->table("Employees");
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->rowCount(), 1U);
+    EXPECT_EQ(table->freeList(), snapshot.freeList);
+    ASSERT_NE(table->getRow(0), std::nullopt);
+    EXPECT_EQ((*table->getRow(0))[0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ((*table->getRow(0))[1], Value{std::string{"Alice"}});
+    EXPECT_EQ(table->getRow(1), std::nullopt);
+    EXPECT_EQ(table->indexedLookup("id", Value{static_cast<std::int64_t>(1)})
+                  .value_or(std::vector<RowId>{}),
+              std::vector<RowId>{0});
+    EXPECT_EQ(table->insert({Value{static_cast<std::int64_t>(3)}, Value{std::string{"Cara"}}}), 1U);
 
     std::filesystem::remove_all(root);
 }

@@ -135,6 +135,8 @@ previous iteration's **delta** (new rows only). Exactly one self-reference to `n
 the recursive arm (as `FROM`/`JOIN` table). Bare `UNION`, multiple recursive CTEs, and mutual
 recursion are rejected. Iteration stops when the delta is empty, or when a safety cap is hit
 (1000 iterations or 100000 accumulated rows) — those caps are intentional v1 limits.
+The row cap is checked before inserting a recursive step so a single oversized step cannot
+partially accumulate past the limit.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where

@@ -98,7 +98,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 190 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 197 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:

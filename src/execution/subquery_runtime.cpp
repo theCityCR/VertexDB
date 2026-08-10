@@ -2,16 +2,22 @@
 
 #include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/query_executor.hpp"
+#include "VertexDB/execution/recursive_cte_limits.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/select_scope.hpp"
 #include "VertexDB/parser/predicate.hpp"
 
 #include <memory>
-#include <unordered_map>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace VertexDB {
+
+RecursiveCteLimits &recursiveCteLimits() noexcept {
+    static RecursiveCteLimits limits;
+    return limits;
+}
 
 SubqueryRuntime::SubqueryRuntime(QueryExecutor &owner) noexcept : owner_(owner) {}
 
@@ -258,9 +264,6 @@ Predicate SubqueryRuntime::bindOuterReferences(const Predicate &predicate, const
 
 namespace {
 
-constexpr std::size_t kMaxRecursiveIterations = 1000;
-constexpr std::size_t kMaxRecursiveRows = 100000;
-
 [[nodiscard]] std::shared_ptr<Table> tableFromQueryResult(const std::string &name,
                                                           QueryResult bodyResult) {
     if (!bodyResult.success) {
@@ -338,22 +341,22 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
         auto result = tableFromQueryResult(cte.name, std::move(anchorResult));
         auto delta = tableFromQueryResult(cte.name + "#delta", std::move(deltaSource));
 
-        for (std::size_t iter = 0; iter < kMaxRecursiveIterations; ++iter) {
+        for (std::size_t iter = 0; iter < recursiveCteLimits().maxIterations; ++iter) {
             if (delta->rowCount() == 0) {
                 break;
             }
             std::unordered_map<std::string, std::shared_ptr<Table>> temps;
             temps.emplace(cte.name, delta);
             auto stepResult = evaluateSelectToResult(*cte.recursiveArm, temps);
+            if (result->rowCount() + stepResult.rows.size() > recursiveCteLimits().maxRows) {
+                throw std::runtime_error("WITH RECURSIVE exceeded maximum row count");
+            }
             QueryResult deltaCopy = stepResult;
             for (const auto &row : stepResult.rows) {
                 result->insert(row);
             }
-            if (result->rowCount() > kMaxRecursiveRows) {
-                throw std::runtime_error("WITH RECURSIVE exceeded maximum row count");
-            }
             delta = tableFromQueryResult(cte.name + "#delta", std::move(deltaCopy));
-            if (iter + 1 == kMaxRecursiveIterations && delta->rowCount() > 0) {
+            if (iter + 1 == recursiveCteLimits().maxIterations && delta->rowCount() > 0) {
                 throw std::runtime_error("WITH RECURSIVE exceeded maximum iteration count");
             }
         }

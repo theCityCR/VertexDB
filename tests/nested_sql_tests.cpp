@@ -1,6 +1,7 @@
 #include "test_support.hpp"
 
 #include "VertexDB/execution/query_executor.hpp"
+#include "VertexDB/execution/recursive_cte_limits.hpp"
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
@@ -8,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -495,6 +497,42 @@ TEST(NestedSqlTests, ThreeLevelCorrelationBindsOutermost) {
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
+TEST(NestedSqlTests, FourLevelCorrelationBindsOutermost) {
+    // Documented max: up to four outer FROM frames may correlate.
+    Parser parser;
+    auto executor = makeExecutor("four-level-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Bonuses VALUES (1, 500.0), (1, 1500.0), "
+                                          "(2, 100.0);"))
+                    .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "    SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "      SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "        SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id AND amount > 1000.0"
+        "      )"
+        "    )"
+        "  )"
+        ") ORDER BY name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
 TEST(NestedSqlTests, FiveLevelCorrelationIsRejected) {
     Parser parser;
     EXPECT_THROW(
@@ -811,11 +849,89 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
                  std::runtime_error);
 }
 
+TEST(NestedSqlTests, WithRecursiveExceedsDocumentedIterationCap) {
+    // Intentional v1 limit: default maxIterations is 1000 (sql.md). Lower for a fast throw path.
+    ASSERT_EQ(recursiveCteLimits().maxIterations, 1000U);
+    ASSERT_EQ(recursiveCteLimits().maxRows, 100000U);
+
+    const auto saved = recursiveCteLimits();
+    recursiveCteLimits().maxIterations = 5;
+    struct Restore {
+        RecursiveCteLimits previous;
+        ~Restore() { recursiveCteLimits() = previous; }
+    } restore{saved};
+
+    Parser parser;
+    auto executor = makeExecutor("recursive-iter-cap");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Seed (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Seed VALUES (1);")).success);
+
+    const auto query = parser.parse(
+        "WITH RECURSIVE t AS ("
+        "  SELECT id FROM Seed WHERE id = 1 "
+        "  UNION ALL "
+        "  SELECT id FROM t"
+        ") SELECT id FROM t;");
+    try {
+        (void)executor.execute(query);
+        FAIL() << "expected WITH RECURSIVE iteration cap to throw";
+    } catch (const std::runtime_error &ex) {
+        EXPECT_NE(std::string_view{ex.what()}.find("maximum iteration count"),
+                  std::string_view::npos)
+            << ex.what();
+    }
+}
+
+TEST(NestedSqlTests, WithRecursiveExceedsDocumentedRowCap) {
+    // Intentional v1 limit: default maxRows is 100000 (sql.md). Lower for a fast throw path.
+    ASSERT_EQ(recursiveCteLimits().maxRows, 100000U);
+
+    const auto saved = recursiveCteLimits();
+    recursiveCteLimits().maxRows = 10;
+    struct Restore {
+        RecursiveCteLimits previous;
+        ~Restore() { recursiveCteLimits() = previous; }
+    } restore{saved};
+
+    Parser parser;
+    auto executor = makeExecutor("recursive-row-cap");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Seed (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Numbers (n INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Seed VALUES (1);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Numbers VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), "
+                        "(10);"))
+                    .success);
+
+    const auto query = parser.parse(
+        "WITH RECURSIVE t AS ("
+        "  SELECT id FROM Seed WHERE id = 1 "
+        "  UNION ALL "
+        "  SELECT Numbers.n FROM Numbers CROSS JOIN t"
+        ") SELECT id FROM t LIMIT 1;");
+    try {
+        (void)executor.execute(query);
+        FAIL() << "expected WITH RECURSIVE row cap to throw";
+    } catch (const std::runtime_error &ex) {
+        EXPECT_NE(std::string_view{ex.what()}.find("maximum row count"), std::string_view::npos)
+            << ex.what();
+    }
+}
+
 TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
     Parser parser;
 
     // Derived tables require an alias.
     EXPECT_THROW((void)parser.parse("SELECT id FROM (SELECT id FROM Employees);"),
+                 std::runtime_error);
+
+    // Derived-table syntax in the JOIN position is unsupported (use a CTE name instead).
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT Employees.id FROM Employees JOIN (SELECT id FROM Departments) AS d "
+                     "ON Employees.dept_id = d.id;"),
                  std::runtime_error);
 }
 

@@ -779,4 +779,105 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhileConjunctUsesIndex
     EXPECT_NE(text.find("residual: yes"), std::string::npos);
 }
 
+TEST(PlannerBehaviorTests, RegexPredicateUsesResidualFullScan) {
+    // Documented: col ~ pattern is always a residual full-scan filter (sql.md).
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    table.insert({Value{1}, Value{std::string{"Alice"}}});
+    table.insert({Value{2}, Value{std::string{"Bob"}}});
+    ASSERT_TRUE(table.createIndex("idx_name", "name"));
+
+    Predicate where = RegexPred{"name", "^A.*"};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Regex);
+    EXPECT_EQ(plan.estimates.explanation, "full table scan");
+
+    Parser parser;
+    auto executor = makeExecutor("regex-residual-scan");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\"), (2, \"Bob\");"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE name ~ \"^A\";"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("full table scan"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, PrefixLikeUsesOrderedIndexAccessPath) {
+    Parser parser;
+    auto executor = makeExecutor("prefix-like-plan");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\"), (2, \"Bob\"), "
+                        "(3, \"Alicia\");"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE name LIKE \"Al%\";"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("ordered index prefix LIKE on name"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    table.insert({Value{1}, Value{std::string{"Alice"}}});
+    ASSERT_TRUE(table.createIndex("idx_name", "name"));
+    Predicate where = LikePred{"name", "Al%"};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::PrefixLike);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
+}
+
+TEST(PlannerBehaviorTests, TrigramSubstringLikeUsesIntersectAccessPath) {
+    Parser parser;
+    auto executor = makeExecutor("trigram-like-plan");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, note STRING);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", \"hello world\"), "
+                        "(2, \"Bob\", \"goodbye\"), (3, \"Cara\", \"say hello\");"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_note_tri ON Employees((trigram(note)));"))
+            .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE note LIKE \"%hello%\";"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("trigram intersect for LIKE on note"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"note", ColumnType::String}}};
+    table.insert({Value{1}, Value{std::string{"Alice"}}, Value{std::string{"hello"}}});
+    IndexExpression trigram{IndexExpression::Kind::Trigram, "note", {}};
+    ASSERT_TRUE(table.createIndex("idx_note_tri", trigram));
+    Predicate where = LikePred{"note", "%hello%"};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::Intersect);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
+}
+
 } // namespace VertexDB
