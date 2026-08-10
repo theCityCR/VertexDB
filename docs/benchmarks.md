@@ -114,55 +114,60 @@ residual after CTE inlining. Without an index, the same SQL is a full scan. See
 
 ## Summary — 2026-08-10
 
-Illustrative local snapshot (not the CI gate). Machine: Apple Silicon host, 12 logical CPUs (Google
-Benchmark reported 2600 MHz). Binary: `build-benchmark/VertexDB_benchmarks` with
-`CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`). Short run with `--benchmark_min_time=0.05s` and no
-repetitions. Times are Google Benchmark **CPU time**. Executor `Update`/`Delete` benches are omitted
-from this table (multi‑minute iterations under page-image WAL); they remain in the binary for local
-runs.
+Illustrative snapshot from GitHub Actions `ubuntu-latest` (not the CI shape gate). Google Benchmark
+context: 4 logical CPUs, 3244 MHz, `release` build, host `runnervmvrwv9` (run
+[31396669419](https://github.com/theCityCR/VertexDB/actions/runs/31396669419), artifact
+`benchmark-report-json`). Median of 5 repetitions at `--benchmark_min_time=0.5s` with random
+interleaving — the same settings as `scripts/run-benchmarks.sh`. Times are Google Benchmark **CPU
+time**. Executor `Update`/`Delete` benches are omitted from this table (multi‑minute iterations under
+page-image WAL); they remain in the binary for local runs. Concurrent workers stop at 4 because
+`hardware_concurrency` on the runner is 4.
 
-CI and `scripts/run-benchmarks.sh` use median-of-5 at `--benchmark_min_time=0.5s` and gate on the
-ratio table above, not these nanoseconds.
+The shape gate still uses only ratios from the CTE subset; absolute nanoseconds here are illustrative
+and will differ across runners and days.
 
 | Benchmark | Arg | CPU time |
 | --- | ---: | ---: |
-| `BM_IndexedPointLookup` | 1,000 | ~166 ns |
-| `BM_IndexedPointLookup` | 100,000 | ~163 ns |
-| `BM_FilteredSelect` | 1,000 | ~3.2 µs |
-| `BM_FilteredSelect` | 100,000 | ~3.5 µs |
-| `BM_NonIndexedFilteredSelect` | 1,000 | ~235 µs |
-| `BM_NonIndexedFilteredSelect` | 100,000 | ~31 ms |
-| `BM_ConcurrentPointLookups` | 1 | ~29 µs |
-| `BM_ConcurrentPointLookups` | 2 | ~51 µs |
-| `BM_ConcurrentPointLookups` | 12 | ~235 µs |
-| `BM_CteIndexedWinSelect` | 1,000 | ~6.1 µs |
-| `BM_CteIndexedWinSelect` | 100,000 | ~5.9 µs |
-| `BM_CteNonIndexedSelect` | 1,000 | ~297 µs |
-| `BM_CteNonIndexedSelect` | 100,000 | ~38 ms |
-| `BM_CteMaterializedSelect` | 1,000 | ~118 ms |
-| `BM_CteMaterializedSelect` | 10,000 | ~1.58 s |
-| `BM_VectorRowStoreInsert` | 1,000 | ~166 µs |
-| `BM_VectorRowStoreInsert` | 100,000 | ~19 ms |
-| `BM_PageRowStoreInsert` | 1,000 | ~33 ms |
-| `BM_PageRowStoreInsert` | 10,000 | ~378 ms |
-| `BM_VectorRowStoreSelect` | 1,000 / 100,000 | ~2.6–2.7 ns |
-| `BM_PageRowStoreSelect` | 1,000 / 100,000 | ~12–16 ns |
-| `BM_BTreeRangeQuery` | 1,000 | ~5.3 µs |
-| `BM_BTreeRangeQuery` | 100,000 | ~916 µs |
-| `BM_TransactionSnapshotRead` | 1,000 | ~4.3 µs |
-| `BM_TransactionSnapshotRead` | 10,000 | ~3.4 µs |
-| `BM_TransactionRollback` | 100 | ~533 ms |
-| `BM_TransactionRollback` | 1,000 | ~5.5 s |
+| `BM_IndexedPointLookup` | 1,000 | ~50.1 ns |
+| `BM_IndexedPointLookup` | 100,000 | ~50.2 ns |
+| `BM_FilteredSelect` | 1,000 | ~1.16 µs |
+| `BM_FilteredSelect` | 100,000 | ~1.17 µs |
+| `BM_NonIndexedFilteredSelect` | 1,000 | ~106 µs |
+| `BM_NonIndexedFilteredSelect` | 100,000 | ~19.8 ms |
+| `BM_ConcurrentPointLookups` | 1 | ~25.5 µs |
+| `BM_ConcurrentPointLookups` | 2 | ~48.1 µs |
+| `BM_ConcurrentPointLookups` | 4 | ~154 µs |
+| `BM_CteIndexedWinSelect` | 1,000 | ~1.96 µs |
+| `BM_CteIndexedWinSelect` | 100,000 | ~1.97 µs |
+| `BM_CteNonIndexedSelect` | 1,000 | ~152 µs |
+| `BM_CteNonIndexedSelect` | 100,000 | ~25.7 ms |
+| `BM_CteMaterializedSelect` | 1,000 | ~36.1 ms |
+| `BM_CteMaterializedSelect` | 10,000 | ~428 ms |
+| `BM_VectorRowStoreInsert` | 1,000 | ~63.2 µs |
+| `BM_VectorRowStoreInsert` | 100,000 | ~6.12 ms |
+| `BM_PageRowStoreInsert` | 1,000 | ~11.9 ms |
+| `BM_PageRowStoreInsert` | 10,000 | ~150 ms |
+| `BM_VectorRowStoreSelect` | 1,000 | ~1.56 ns |
+| `BM_VectorRowStoreSelect` | 100,000 | ~1.56 ns |
+| `BM_PageRowStoreSelect` | 1,000 | ~7.32 ns |
+| `BM_PageRowStoreSelect` | 100,000 | ~7.38 ns |
+| `BM_BTreeRangeQuery` | 1,000 | ~1.84 µs |
+| `BM_BTreeRangeQuery` | 100,000 | ~442 µs |
+| `BM_TransactionSnapshotRead` | 1,000 | ~1.16 µs |
+| `BM_TransactionSnapshotRead` | 10,000 | ~1.17 µs |
+| `BM_TransactionRollback` | 100 | ~144 ms |
+| `BM_TransactionRollback` | 1,000 | ~1.35 s |
 
 Takeaways from this run:
 
-- Inlined CTE index-win stays near point-lookup cost as N grows (~6 µs); the non-indexed CTE
-  baseline grows with table size (~38 ms at 100k). `AS MATERIALIZED` pays a large temp-build cost
-  each iteration (~10⁴× slower than the index-win inline path here).
-- Indexed filtered `SELECT` stays ~3–4 µs across 1k–100k rows; non-indexed filtered `SELECT` grows
-  with N (~31 ms at 100k).
-- Concurrent point lookups scale sub-linearly in CPU time as worker count rises (1 → 12).
-- Vector row-store appends remain much cheaper than page-store appends; mid-row `get` is ~5–6× faster
+- Inlined CTE index-win stays flat as N grows (~2 µs); the non-indexed CTE baseline grows with table
+  size (~26 ms at 100k). `AS MATERIALIZED` pays a large temp-build cost each iteration (~10⁴× slower
+  than the index-win inline path here).
+- Indexed filtered `SELECT` stays ~1.2 µs across 1k–100k rows; non-indexed filtered `SELECT` grows
+  with N (~20 ms at 100k).
+- Concurrent point lookups scale sub-linearly in CPU time as worker count rises (1 → 4 on this
+  runner).
+- Vector row-store appends remain much cheaper than page-store appends; mid-row `get` is ~5× faster
   on the vector store (contiguous vs page deserialize/cache).
 - B+ range cost grows with result cardinality (half the table).
 - Snapshot reads stay cheap; SQL `INSERT`+`ROLLBACK` undo is expensive relative to direct table
@@ -170,9 +175,9 @@ Takeaways from this run:
 
 ## Remaining Follow-ups
 
-- Refresh this illustrative absolute-time table from a `benchmark-report-json` artifact (or a quiet
-  local `scripts/run-benchmarks.sh`) after planner or storage changes. The shape gate already runs
-  on every push/PR.
+- Refresh this illustrative absolute-time table from a new `benchmark-report-json` artifact (or a
+  quiet local `scripts/run-benchmarks.sh`) after planner or storage changes. The shape gate already
+  runs on every push/PR.
 - Optional: Debug vs Release and sanitizer comparison tables.
 - Optional: include executor `Update`/`Delete` once those paths are cheap enough for short
   `--benchmark_min_time` report runs.
