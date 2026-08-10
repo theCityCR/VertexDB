@@ -12,6 +12,7 @@ only on ratios:
 
 Usage:
   python3 scripts/check_benchmark_shape.py path/to/benchmark.json
+  python3 scripts/check_benchmark_shape.py --markdown-table path/to/benchmark.json
   python3 scripts/check_benchmark_shape.py --self-test
 """
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import statistics
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -32,6 +34,25 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "benchmark_shape"
 INDEXED = "BM_CteIndexedWinSelect"
 SCAN = "BM_CteNonIndexedSelect"
 MATERIALIZED = "BM_CteMaterializedSelect"
+
+# Order for docs/benchmarks.md illustrative table. Args are taken from the JSON
+# (ConcurrentPointLookups' last arg follows hardware_concurrency).
+REPORT_BENCH_ORDER = (
+    "BM_IndexedPointLookup",
+    "BM_FilteredSelect",
+    "BM_NonIndexedFilteredSelect",
+    "BM_ConcurrentPointLookups",
+    "BM_CteIndexedWinSelect",
+    "BM_CteNonIndexedSelect",
+    "BM_CteMaterializedSelect",
+    "BM_VectorRowStoreInsert",
+    "BM_PageRowStoreInsert",
+    "BM_VectorRowStoreSelect",
+    "BM_PageRowStoreSelect",
+    "BM_BTreeRangeQuery",
+    "BM_TransactionSnapshotRead",
+    "BM_TransactionRollback",
+)
 
 # Conservative gates: local Release ratios are ~1, ~10^3–10^4, ~10^4, ~10^2.
 # GHA noise should not collapse these; a planner/storage regression to scan or
@@ -118,6 +139,93 @@ def format_ns(ns: float) -> str:
     if abs_ns >= 1e3:
         return f"{ns / 1e3:.3f} µs"
     return f"{ns:.3f} ns"
+
+
+def format_table_time(ns: float) -> str:
+    """Illustrative table cell: ~value with about three significant figures."""
+    abs_ns = abs(ns)
+    if abs_ns >= 1e9:
+        value, unit = ns / 1e9, "s"
+    elif abs_ns >= 1e6:
+        value, unit = ns / 1e6, "ms"
+    elif abs_ns >= 1e3:
+        value, unit = ns / 1e3, "µs"
+    else:
+        value, unit = ns, "ns"
+    if value == 0:
+        return f"~0 {unit}"
+    digits = 3 - 1 - math.floor(math.log10(abs(value)))
+    rounded = round(value, digits)
+    if digits <= 0:
+        text = f"{int(rounded)}"
+    else:
+        text = f"{rounded:.{digits}f}".rstrip("0").rstrip(".")
+    return f"~{text} {unit}"
+
+
+def format_arg(arg: int) -> str:
+    return f"{arg:,}"
+
+
+def summary_date(context: dict[str, Any]) -> str | None:
+    raw = context.get("date")
+    if not raw:
+        return None
+    text = str(raw)
+    return text[:10] if len(text) >= 10 else text
+
+
+def render_markdown_table(payload: dict[str, Any]) -> tuple[str, list[str]]:
+    times = load_cpu_times(payload)
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    warnings: list[str] = []
+    rows: list[str] = [
+        "| Benchmark | Arg | CPU time |",
+        "| --- | ---: | ---: |",
+    ]
+    for bench in REPORT_BENCH_ORDER:
+        args = sorted(arg for (name, arg) in times if name == bench)
+        if not args:
+            warnings.append(f"missing {bench} in benchmark JSON")
+            continue
+        for arg in args:
+            rows.append(
+                f"| `{bench}` | {format_arg(arg)} | {format_table_time(times[(bench, arg)])} |"
+            )
+
+    date = summary_date(context) or "undated"
+    cpus = context.get("num_cpus")
+    mhz = context.get("mhz_per_cpu")
+    build = context.get("library_build_type")
+    host = context.get("host_name")
+    facts: list[str] = []
+    if cpus is not None:
+        facts.append(f"{cpus} logical CPUs")
+    if mhz is not None:
+        facts.append(f"{mhz} MHz")
+    if build:
+        facts.append(f"`{build}` build")
+    if host:
+        facts.append(f"host `{host}`")
+    fact_text = ", ".join(facts) if facts else "see JSON context"
+    header = (
+        f"## Summary — {date}\n\n"
+        f"Illustrative snapshot (not the CI shape gate). Google Benchmark context: "
+        f"{fact_text}. Times are median CPU time from this JSON.\n\n"
+    )
+    return header + "\n".join(rows) + "\n", warnings
+
+
+def run_markdown_table(path: Path) -> int:
+    try:
+        table, warnings = render_markdown_table(load_json(path))
+    except ShapeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(table, end="")
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    return 0
 
 
 def check_shape(
@@ -279,6 +387,27 @@ def run_self_test(
     if failed:
         print(f"{failed} fixture case(s) failed", file=sys.stderr)
         return 1
+
+    table_fixture = FIXTURE_DIR / "good_report_table.json"
+    expected_path = FIXTURE_DIR / "good_report_table.markdown"
+    if not table_fixture.is_file() or not expected_path.is_file():
+        print("FAIL markdown table: missing good_report_table fixture", file=sys.stderr)
+        return 1
+    try:
+        actual, _warnings = render_markdown_table(load_json(table_fixture))
+    except ShapeError as exc:
+        print(f"FAIL markdown table: {exc}", file=sys.stderr)
+        return 1
+    expected = expected_path.read_text(encoding="utf-8")
+    if actual != expected:
+        print("FAIL markdown table: output does not match good_report_table.markdown", file=sys.stderr)
+        print("--- expected ---", file=sys.stderr)
+        print(expected, file=sys.stderr, end="")
+        print("--- actual ---", file=sys.stderr)
+        print(actual, file=sys.stderr, end="")
+        return 1
+    print("ok   good_report_table.json (--markdown-table)")
+
     print("all benchmark-shape fixtures passed")
     return 0
 
@@ -295,6 +424,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--self-test",
         action="store_true",
         help="run fixture cases under tests/benchmark_shape/",
+    )
+    parser.add_argument(
+        "--markdown-table",
+        action="store_true",
+        help="print an illustrative docs/benchmarks.md table from JSON (median CPU time)",
     )
     parser.add_argument("--max-indexed-growth", type=float, default=DEFAULT_MAX_INDEXED_GROWTH)
     parser.add_argument("--min-scan-vs-win", type=float, default=DEFAULT_MIN_SCAN_VS_WIN)
@@ -320,6 +454,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.json_path is None:
         print("error: json_path is required unless --self-test", file=sys.stderr)
         return 2
+    if args.markdown_table:
+        return run_markdown_table(args.json_path)
     return run_check(args.json_path, **kwargs)
 
 

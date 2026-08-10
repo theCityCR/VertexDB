@@ -7,6 +7,9 @@
 #   scripts/run-benchmarks.sh --check-shape   # CTE benches only (CI gate)
 #   scripts/run-benchmarks.sh --skip-build    # use an existing binary
 #
+# Full-report JSON is the input for docs/benchmarks.md refresh:
+#   python3 scripts/check_benchmark_shape.py --markdown-table "$VERTEXDB_BENCH_OUT/benchmark-report.json"
+#
 # Env:
 #   VERTEXDB_BENCH_BIN, VERTEXDB_BENCH_BUILD_DIR, VERTEXDB_BENCH_OUT
 #   VERTEXDB_BENCH_REPETITIONS (default 5)
@@ -30,7 +33,7 @@ REPORT_FILTER='BM_IndexedPointLookup|BM_FilteredSelect|BM_NonIndexedFilteredSele
 SHAPE_FILTER='BM_CteIndexedWinSelect|BM_CteNonIndexedSelect|BM_CteMaterializedSelect/1000$'
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ "${1:-}" != "" ]; do

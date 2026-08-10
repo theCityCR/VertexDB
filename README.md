@@ -77,6 +77,9 @@ scripts/run-sanitizers.sh
 scripts/run-coverage.sh
 python3 scripts/check_benchmark_shape.py --self-test
 scripts/run-benchmarks.sh --check-shape
+# optional full report (slow); or trigger the CI `benchmark report` job instead
+# scripts/run-benchmarks.sh
+# python3 scripts/check_benchmark_shape.py --markdown-table build-benchmark/benchmark-report.json
 ```
 
 Run the CLI:
@@ -103,7 +106,8 @@ Or feed an example script:
   and MATERIALIZED baselines, page vs vector row-store, B+ range, transaction snapshot/rollback,
   update/delete throughput, and concurrent indexed point lookups; summarized in
   [docs/benchmarks.md](docs/benchmarks.md). CI gates CTE **cost shape** (ratios, not absolute ns)
-  via `scripts/run-benchmarks.sh --check-shape`.
+  via `scripts/run-benchmarks.sh --check-shape`. A full absolute-time report for doc refresh is a
+  separate `benchmark report` CI job, not every push/PR.
 
 ## Current Limitations
 

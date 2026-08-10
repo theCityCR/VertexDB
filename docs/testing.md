@@ -22,7 +22,7 @@ VertexDB uses three levels of automated testing:
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY`, prepared statements, `ANALYZE` |
 | `deep_feature_tests.cpp` | Cross-cutting deep-feature coverage |
 | `regression_tests.cpp` | Bug fixes and non-obvious failure modes |
-| `benchmark_shape/*.json` | CTE cost-shape checker fixtures (`scripts/check_benchmark_shape.py --self-test`) |
+| `benchmark_shape/*` | CTE cost-shape + markdown-table fixtures (`scripts/check_benchmark_shape.py --self-test`) |
 
 ## Current Coverage
 
@@ -67,5 +67,7 @@ scripts/run-benchmarks.sh --check-shape
 ```
 
 `scripts/check_benchmark_shape.py --self-test` exercises JSON fixtures under `tests/benchmark_shape/`
-(desired pass/fail ratios, median vs iteration fallback, missing CTE benches). CI also runs Release
-CTE microbenchmarks and fails if the cost *shape* regresses; see [benchmarks.md](benchmarks.md).
+(desired pass/fail ratios, median vs iteration fallback, missing CTE benches, illustrative markdown
+table). CI also runs Release CTE microbenchmarks and fails if the cost *shape* regresses; see
+[benchmarks.md](benchmarks.md). A full-report JSON for doc refresh is a separate `benchmark report`
+CI job (`workflow_dispatch` or a `[benchmark-report]` commit), not every push/PR.

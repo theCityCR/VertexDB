@@ -1,0 +1,75 @@
+{
+  "context": {
+    "date": "2026-08-10T13:55:25+00:00",
+    "host_name": "runnervmvrwv9",
+    "num_cpus": 4,
+    "mhz_per_cpu": 2888,
+    "library_build_type": "release"
+  },
+  "benchmarks": [
+    {
+      "name": "BM_IndexedPointLookup/1000_median",
+      "run_name": "BM_IndexedPointLookup/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 166.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_IndexedPointLookup/100000_median",
+      "run_name": "BM_IndexedPointLookup/100000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 163.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_FilteredSelect/1000_median",
+      "run_name": "BM_FilteredSelect/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 3200.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_ConcurrentPointLookups/4_median",
+      "run_name": "BM_ConcurrentPointLookups/4",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 80000.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_ConcurrentPointLookups/1_median",
+      "run_name": "BM_ConcurrentPointLookups/1",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 29000.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_CteIndexedWinSelect/1000_median",
+      "run_name": "BM_CteIndexedWinSelect/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 1816.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_CteMaterializedSelect/1000_median",
+      "run_name": "BM_CteMaterializedSelect/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 0.0365,
+      "time_unit": "s"
+    },
+    {
+      "name": "BM_TransactionRollback/1000_median",
+      "run_name": "BM_TransactionRollback/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 5.5,
+      "time_unit": "s"
+    }
+  ]
+}

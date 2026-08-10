@@ -35,8 +35,23 @@ python3 scripts/check_benchmark_shape.py --self-test
 
 CI runs `--check-shape` on `ubuntu-latest` and fails if the wedge shape regresses (indexed CTE at
 100k ≈ full scan, or `AS MATERIALIZED` no longer ≫ inline). Absolute nanoseconds are not gated:
-shared runners are too noisy. The JSON artifact is uploaded for optional doc refresh; do not
-auto-commit it.
+shared runners are too noisy. The CTE JSON artifact is uploaded for the shape gate. A **full report**
+JSON (all illustrative benches, median of 5) is produced by the `benchmark report` CI job — not on
+ordinary push/PR. Do not commit the raw JSON.
+
+Refresh this table without a local run:
+
+```sh
+# once the job exists on the default branch:
+gh workflow run ci.yml
+# or push a commit whose message contains [benchmark-report]
+gh run download <run-id> --name benchmark-report-json
+python3 scripts/check_benchmark_shape.py --markdown-table benchmark-report.json
+```
+
+Paste the printed summary into the section below. Label the runner honestly (`ubuntu-latest` vs a
+quiet local host). Concurrent worker counts follow `hardware_concurrency` (4 on GHA, 12 on a
+12-thread laptop).
 
 Equivalent flags if you invoke the binary directly:
 
@@ -155,8 +170,9 @@ Takeaways from this run:
 
 ## Remaining Follow-ups
 
-- Refresh this illustrative absolute-time table when publishing a new local or CI snapshot (optional;
-  the shape gate already runs on every push/PR).
+- Refresh this illustrative absolute-time table from a `benchmark-report-json` artifact (or a quiet
+  local `scripts/run-benchmarks.sh`) after planner or storage changes. The shape gate already runs
+  on every push/PR.
 - Optional: Debug vs Release and sanitizer comparison tables.
 - Optional: include executor `Update`/`Delete` once those paths are cheap enough for short
   `--benchmark_min_time` report runs.

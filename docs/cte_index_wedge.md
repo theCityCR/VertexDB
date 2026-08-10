@@ -151,6 +151,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 | `NestedSqlTests::ScaledCteWinQueryUsesHashIndexAndResidual` | Scaled plan regression |
 | `BM_CteIndexedWinSelect` / `BM_CteNonIndexedSelect` | Cost shape at 1k/100k |
 | [`scripts/run-benchmarks.sh --check-shape`](../scripts/run-benchmarks.sh) | CI gate: median CPU ratios (flat win, scan grows, materialize ≫ inline) |
+| CI `benchmark report` job + `--markdown-table` | Optional absolute-time table refresh without a local run |
 | [`scripts/compare_cte_materialize.sh`](../scripts/compare_cte_materialize.sh) | Live Postgres/VertexDB plans |
 
 ## First milestone — shipped

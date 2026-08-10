@@ -59,8 +59,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 ## Next Steps
 
 1. Optional: refresh the illustrative absolute-time table in [benchmarks.md](benchmarks.md) after
-   planner or storage changes. CTE **cost shape** (indexed stays flat, scan grows, materialize ≫
-   inline) is already gated in CI via `scripts/run-benchmarks.sh --check-shape`.
+   planner or storage changes. Prefer the CI `benchmark report` artifact (`workflow_dispatch`, or a
+   push whose commit message contains `[benchmark-report]`) plus
+   `python3 scripts/check_benchmark_shape.py --markdown-table …` so a busy local machine is not
+   required. CTE **cost shape** (indexed stays flat, scan grows, materialize ≫ inline) is already
+   gated on every push/PR via `scripts/run-benchmarks.sh --check-shape`.
 2. Optional nested-SQL polish still in educational scope: join-table aliases, clearer diagnostics
    with source positions, or correlation deeper than two frames.
 
