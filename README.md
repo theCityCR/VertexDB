@@ -55,10 +55,12 @@ COMMIT;
 ROLLBACK;
 ```
 
-Also supported: nullable columns, compound predicates, left-deep equi-join chains, aggregates
-(`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default), derived
-tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN`, prepared statements that
-store a typed AST with `?` parameter slots, table rename/drop/list operations, and `EXIT`.
+Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
+`INNER` / `LEFT [OUTER]` join chains with `ON col op col` (`=`, `<`, `>`), aggregates
+(`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
+depth up to 3), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN`,
+prepared statements that store a typed AST with `?` parameter slots, table rename/drop/list
+operations, and `EXIT`.
 
 See [examples/](examples/) for a runnable walkthrough.
 
@@ -120,20 +122,23 @@ Or feed an example script:
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
-- Nested SQL is intentionally limited: nested `WITH` deeper than one level, correlation deeper than
-  four outer frames, outer `JOIN` against a CTE/derived alias, or `JOIN` inside `IN`/`EXISTS`
-  subqueries; expression indexes cover column / unary minus / `+/-` literal only (no regex/substring
-  indexes). `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
+- Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3, correlation deeper than
+  four outer frames, outer `JOIN` against a CTE/derived alias, `JOIN` inside `IN`/`EXISTS`
+  subqueries, or `WITH RECURSIVE`. Expression indexes cover column / unary minus / `+/-` literal /
+  `trigram(column)` (substring `LIKE`); prefix `LIKE` uses ordered indexes; regex `~` is residual
+  full-scan. `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
   supported. Parser failures report `line`/`column` via `ParseError`.
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
-  Joins are left-deep equi-join chains only (no outer/cross joins)
+  Joins are left-deep `INNER` / `LEFT [OUTER]` chains with `ON` `=` / `<` / `>` (`RIGHT` / `FULL` /
+  `CROSS` unsupported)
 
 ## Roadmap
 
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
-one-level nested `WITH` and correlation through four outer frames, join-table aliases, parse
+`WITH` nesting depth up to 3 and correlation through four outer frames, `INNER`/`LEFT` joins with
+non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, parse
 diagnostics with source positions, CI CTE cost-shape gating, and a dated absolute-time benchmark
 summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 

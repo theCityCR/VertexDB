@@ -19,7 +19,7 @@ SELECT name FROM Employees WHERE salary > 100000.0 OR name = "Alice";
 SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY salary DESC LIMIT 10;
 SELECT * FROM Employees JOIN Departments ON dept_id = id LIMIT 10;
 SELECT Employees.name, Departments.dept
-FROM Employees JOIN Departments ON Employees.dept_id = Departments.id
+FROM Employees LEFT JOIN Departments ON Employees.dept_id = Departments.id
 WHERE Departments.dept > "A"
 ORDER BY Employees.name DESC
 LIMIT 5;
@@ -27,6 +27,11 @@ SELECT Employees.name, Offices.city
 FROM Employees
 JOIN Departments ON Employees.dept_id = Departments.id
 JOIN Offices ON Departments.office_id = Offices.id;
+SELECT e.name, d.dept FROM Employees e
+LEFT OUTER JOIN Departments d ON e.dept_id > d.id;
+SELECT name FROM Employees WHERE name LIKE "Al%";
+SELECT name FROM Employees WHERE note LIKE "%hello%";
+SELECT name FROM Employees WHERE name ~ "^A.*";
 SELECT dept_id, COUNT(*), SUM(salary), AVG(salary), MIN(salary), MAX(salary)
 FROM Employees
 GROUP BY dept_id
@@ -57,7 +62,13 @@ DELETE FROM Employees WHERE id = 5;
 CREATE INDEX idx_salary ON Employees(salary);
 CREATE INDEX idx_neg_salary ON Employees((-salary));
 CREATE INDEX idx_id_plus ON Employees((id+1));
+CREATE INDEX idx_note_tri ON Employees((trigram(note)));
 SELECT name FROM Employees WHERE (-salary) = -120000.0;
+WITH mid AS (
+  WITH inner AS (SELECT id, name FROM Employees WHERE salary > 100000.0)
+  SELECT * FROM inner
+)
+SELECT name FROM mid WHERE id = 1;
 PREPARE by_id AS "SELECT name FROM Employees WHERE id = ?;";
 EXECUTE by_id VALUES (1);
 SAVE DATABASE;
@@ -72,16 +83,19 @@ EXIT;
 `CREATE INDEX` builds maintained hash and ordered index structures for the target column or
 expression. Equality predicates can use hash index lookup. Less-than and greater-than predicates can
 use ordered index range lookup when the filtered column (or matching expression) is indexed.
-Compound `AND` predicates select the cheapest indexable access path using live row counts, index
-distinct-key statistics, and optional `ANALYZE` histograms (equality ≈ \(N/D\), range ≈ histogram
-selectivity or \(N/3\), `IN` ≈ histogram ndistinct or \(K\cdot N/D\)). When ≥2 equality (or
-expression-equality) conjuncts are indexed and their estimated intersection is cheaper than a single
-index + residual, the planner chooses a multi-index intersect of sorted `RowId` lists; `EXPLAIN`
-lists the intersected columns. Remaining conjuncts evaluate as a residual filter. Top-level `OR`
-of equality (or expression-equality) index probes uses a multi-index union of sorted `RowId` lists
-when the indexable subset is cheaper than a full scan; `EXPLAIN` lists the unioned columns.
-Non-indexable disjuncts become a residual OR complementary scan (partial OR, `residual: yes`).
-When no disjunct is indexable, the planner keeps a full scan. An `OR` nested under
+Prefix `LIKE 'lit%'` (no other wildcards) can use an ordered index prefix scan; substring
+`LIKE '%lit%'` can use a trigram expression index (`CREATE INDEX … ON t((trigram(col)))`) via
+multi-key intersect, with the `LIKE` kept as a residual. Regex `col ~ 'pattern'` is always a
+residual full-scan filter. Compound `AND` predicates select the cheapest indexable access path using
+live row counts, index distinct-key statistics, and optional `ANALYZE` histograms (equality ≈
+\(N/D\), range ≈ histogram selectivity or \(N/3\), `IN` ≈ histogram ndistinct or \(K\cdot N/D\)).
+When ≥2 equality (or expression-equality) conjuncts are indexed and their estimated intersection is
+cheaper than a single index + residual, the planner chooses a multi-index intersect of sorted
+`RowId` lists; `EXPLAIN` lists the intersected columns. Remaining conjuncts evaluate as a residual
+filter. Top-level `OR` of equality (or expression-equality) index probes uses a multi-index union of
+sorted `RowId` lists when the indexable subset is cheaper than a full scan; `EXPLAIN` lists the
+unioned columns. Non-indexable disjuncts become a residual OR complementary scan (partial OR,
+`residual: yes`). When no disjunct is indexable, the planner keeps a full scan. An `OR` nested under
 `AND` may remain as a residual while another conjunct uses an index.
 
 `WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use
@@ -94,17 +108,18 @@ use indexes) and probes the outer column via hash index `IN` lookup when indexed
 bind outer values per candidate row for up to four outer FROM frames. Deeper correlation is
 rejected. `FROM` / `JOIN` tables accept an optional `[AS] alias` used as the qualification and
 correlation scope (aliases rewrite to physical table qualifiers on join results). CTE and
-derived-table bodies may include equi-joins (including left-deep multi-join chains). One level of
-nested `WITH` inside a CTE body is supported, and `WITH` / derived tables are allowed inside
-`IN`/`EXISTS` subqueries (still no `JOIN` inside those subqueries). Deeper `WITH` nesting and outer
-`JOIN` against a CTE/derived alias remain unsupported.
+derived-table bodies may include `INNER` / `LEFT` joins (including left-deep multi-join chains).
+`WITH` nesting depth up to 3 is supported (nested `WITH` up to three levels inside a CTE body).
+`WITH` / derived tables are allowed inside `IN`/`EXISTS` subqueries (still no `JOIN` inside those
+subqueries). `WITH RECURSIVE` and outer `JOIN` against a CTE/derived alias remain unsupported.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
-`CREATE INDEX idx ON t((expr))` builds the same structures on an evaluated expression key, where
-`expr` is a column, unary `-column`, or `column +/- literal`. Predicates of the form `(expr) = const`
-or `(expr) >/< const` can use the expression index; `EXPLAIN` reports expression hash/ordered
-access. Expression metadata is stored with index definitions in snapshot v4 (`expr:…` encoding) so
-SAVE/LOAD restores expression indexes without losing keys.
+`CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where
+`expr` is a column, unary `-column`, `column +/- literal`, or `trigram(column)` (hash-only trigram
+keys for substring `LIKE`). Predicates of the form `(expr) = const` or `(expr) >/< const` can use
+arithmetic expression indexes; `EXPLAIN` reports expression hash/ordered access. Expression
+metadata is stored with index definitions in snapshot v4 (`expr:…` encoding) so SAVE/LOAD restores
+expression indexes without losing keys.
 
 `ANALYZE` / `ANALYZE TABLE name` scans live rows and builds per-column equi-height histograms
 (default 32 buckets) plus distinct counts. Histograms feed range/`IN` selectivity in the planner.
@@ -116,13 +131,15 @@ the access path or each join algorithm in a left-deep chain, CTE inlining/materi
 residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
 present.
 
-`JOIN` supports left-deep equi-join chains (`t0 [AS a] JOIN t1 [AS b] ON … JOIN t2 ON …`). Joined
-result columns are qualified with physical table names (`LeftTable.column` / `RightTable.column`);
-`FROM`/`JOIN` aliases in `SELECT`/`WHERE`/`ON` rewrite to those qualifiers. Projection, `WHERE`,
-`ORDER BY`, and `LIMIT` can reference qualified columns (alias or table); unqualified references are
-allowed when the column name is not ambiguous. The planner chooses between an in-memory hash join
-and a nested-loop index probe per join when a join key is indexed and cheaper; after the first join,
-the left side is an intermediate row set so only hash join or right-side index probe apply.
+`JOIN` / `INNER JOIN` and `LEFT [OUTER] JOIN` support left-deep chains
+(`t0 [AS a] JOIN t1 [AS b] ON … JOIN t2 ON …`) with `ON col op col` where `op` is `=`, `<`, or `>`.
+Equi-joins may use hash join or nested-loop index probe; non-equi and `LEFT` joins use nested-loop
+compare (no hash join). `RIGHT` / `FULL` / `CROSS` joins are rejected. Joined result columns are
+qualified with physical table names (`LeftTable.column` / `RightTable.column`); `FROM`/`JOIN`
+aliases in `SELECT`/`WHERE`/`ON` rewrite to those qualifiers. Projection, `WHERE`, `ORDER BY`, and
+`LIMIT` can reference qualified columns (alias or table); unqualified references are allowed when
+the column name is not ambiguous. After the first join, the left side is an intermediate row set so
+only hash join or right-side index probe apply for remaining equi-joins.
 
 Aggregates `COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, and `MAX` run as a hash aggregate after
 filter/join. `GROUP BY` is required for non-aggregated selected columns; `ORDER BY`/`LIMIT` apply to
@@ -171,8 +188,11 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`column` (message prefix
 `line L, column C: …`). The CLI prints `error: ` plus that message.
 
-## Near-Term Grammar Work
+## Remaining Grammar Gaps
 
-- Specialized indexes for substring/regex predicates.
-- Outer / non-equi joins.
-- Nested `WITH` deeper than one level.
+Intentional out-of-scope items (not near-term polish):
+
+- `RIGHT` / `FULL` / `CROSS` joins
+- `WITH RECURSIVE`
+- `JOIN` inside `IN` / `EXISTS` subqueries
+- Outer `JOIN` against a CTE / derived-table alias

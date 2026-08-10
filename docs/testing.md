@@ -11,12 +11,12 @@ VertexDB uses three levels of automated testing:
 | File | Concern |
 | --- | --- |
 | `test_support.hpp` / `test_support.cpp` | Shared `makeTempExecutor` / `makeTempRoot` / `seedEmployees` |
-| `parser_tests.cpp` | Tokenization, AST grammar, `ParseError` source positions |
+| `parser_tests.cpp` | Tokenization, AST grammar (`JOIN` kinds, `LIKE`/`~`, nested `WITH` depth), `ParseError` source positions |
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
-| `index_tests.cpp` | Hash / B+ tree unit behavior |
-| `execution_tests.cpp` | End-to-end DML/SELECT smoke and concurrency |
-| `nested_sql_tests.cpp` | CTE/derived inlining, nested `WITH`, FROM/JOIN aliases, `WITH` in `IN`/`EXISTS`, correlation (≤4 frames), refusals |
-| `planner_behavior_tests.cpp` | Access paths, residuals, stats/cost, multi-index intersect/union, `EXPLAIN` |
+| `index_tests.cpp` | Hash / B+ tree unit behavior, expression/`trigram` index metadata |
+| `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/non-equi joins, `LIKE`/trigram paths, concurrency |
+| `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH` in `IN`/`EXISTS`, correlation (≤4 frames), refusals |
+| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect), residuals, stats/cost, multi-index intersect/union, `EXPLAIN` |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK, MVCC visibility, deferred WAL |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY`, prepared statements, `ANALYZE` |

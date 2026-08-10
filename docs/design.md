@@ -13,18 +13,21 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
   recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
-  predicates, ordering, limits, left-deep equi-joins with optional join-table aliases, aggregates/
-  `GROUP BY`, `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, one level of nested `WITH`),
-  derived tables, `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` inside
-  them and correlation through four outer frames), expression indexes, `EXPLAIN`, transactions,
-  prepared statements (typed AST + `?` slots), save/load, exit, and `ParseError` diagnostics with
-  source positions
+  predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT [OUTER]`
+  joins with `ON col op col` (`=`, `<`, `>`) and optional join-table aliases, aggregates/`GROUP BY`,
+  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3), derived tables,
+  `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` inside them and
+  correlation through four outer frames), expression indexes (including `trigram(column)`),
+  `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
+  `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
-  delete, table management, multi-join chains, CTE/derived-table inlining or materialization,
-  correlated `IN`/`EXISTS` with alias scopes, expression-index maintenance, prepared AST binding,
-  save/load, recovery, and transactional read routing
+  delete, table management, multi-join chains (`INNER`/`LEFT`, equi and non-equi), CTE/derived-table
+  inlining or materialization, correlated `IN`/`EXISTS` with alias scopes, expression-index
+  maintenance (including trigram), prepared AST binding, save/load, recovery, and transactional
+  read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
-  and range lookup (column and expression keys), plus hash index `IN` multi-lookup
+  and range lookup (column and expression keys), hash index `IN` multi-lookup, ordered prefix
+  `LIKE`, and hash trigram indexes for substring `LIKE`
 - Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
   sparse v2, and dense v1 still readable) under `.tcrdb` files, with `tcrdb_codec` owning the layout
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
@@ -33,9 +36,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Concurrency: executor-level reader/writer synchronization and concurrent client tests
 - Transactions: commit-aware MVCC snapshot isolation, undo-log DML rollback, transaction-batched
   page-image WAL flush on `COMMIT`
-- Planner: cost-based access paths (including multi-index AND intersect and top-level OR union with
-  partial residual OR), residual filters, join algorithm selection, expression-index matching, and
-  `EXPLAIN`
+- Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
+  partial residual OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
+  selection (`INNER`/`LEFT`, equi and non-equi), expression-index matching, and `EXPLAIN`
 - Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks with
   a CI CTE cost-shape gate, CI
 
@@ -49,20 +52,23 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   complementary scan (partial OR). When no disjunct is indexable, or the indexable union is not
   cheaper than a scan, the planner keeps a full scan. Nested `OR` under `AND` may remain as a
   residual while another conjunct uses an index.
-- Nested SQL is limited: nested `WITH` deeper than one level, correlation deeper than four outer
+- Nested SQL is limited: `WITH` nesting deeper than depth 3, correlation deeper than four outer
   frames, outer `JOIN` against a CTE/derived alias, `JOIN` inside `IN`/`EXISTS` subqueries, and
-  regex/substring indexes are unsupported. Supported nested forms include one nested `WITH`,
+  `WITH RECURSIVE` are unsupported. Supported nested forms include `WITH` nesting depth up to 3,
   `WITH` / derived tables inside `IN`/`EXISTS`, `FROM` / `JOIN` table aliases (`AS` optional) for
   qualification and correlation scopes, correlated `IN`/`EXISTS` through up to four outer frames,
-  and expression indexes (`column`, `-column`, `column+/-literal`). CTE/derived bodies may include
-  equi-joins. Parser/tokenizer failures report `line`/`column` source positions via `ParseError`.
-- Aggregates/`GROUP BY` are supported; joins are left-deep equi-join chains only (no outer/cross
-  joins). General DDL beyond the current table/index commands is still out of scope.
+  and expression indexes (`column`, `-column`, `column+/-literal`, `trigram(column)`). CTE/derived
+  bodies may include `INNER` / `LEFT` joins. Parser/tokenizer failures report `line`/`column`
+  source positions via `ParseError`.
+- Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT [OUTER]` chains with
+  `ON col op col` for `=`, `<`, or `>` (`RIGHT` / `FULL` / `CROSS` unsupported). General DDL beyond
+  the current table/index commands is still out of scope.
 
 ## Next Steps
 
-Optional educational follow-ups outside the current nested-SQL polish: specialized indexes for
-substring/regex predicates, outer / non-equi joins, or raising nested `WITH` beyond one level.
+Optional educational follow-ups still intentionally out of scope: `RIGHT` / `FULL` / `CROSS`
+joins, `WITH RECURSIVE`, `JOIN` inside `IN`/`EXISTS` subqueries, and outer `JOIN` against a
+CTE/derived alias.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays
