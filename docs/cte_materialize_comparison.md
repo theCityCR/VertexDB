@@ -89,7 +89,7 @@ variables.
   `AS NOT MATERIALIZED` or by writing the flat `WHERE`.
 - The win is a **deliberate default**: nested SQL should not silently lose base-table indexes.
 - Limitations: cost-based planning with row/distinct-key stats (and optional histograms);
-  `WITH RECURSIVE` and correlation deeper than four outer frames remain unsupported (`WITH`
+  correlation deeper than four outer frames remains unsupported; minimal `WITH RECURSIVE` is supported (`WITH`
   nesting depth up to 3 is supported; outer `JOIN` against a CTE/derived alias force-materializes).
   User-facing `AS MATERIALIZED` / `AS NOT MATERIALIZED` are available; default remains inline.
 

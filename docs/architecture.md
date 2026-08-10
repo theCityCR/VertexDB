@@ -132,7 +132,7 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
-   chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes and nesting depth up to 3,
+   chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes, nesting depth up to 3, and minimal `WITH RECURSIVE`,
    `IN`/`EXISTS`, `LIKE`/`~`, expression indexes including trigram, and `EXPLAIN`). Prepared
    statements store that AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including nested

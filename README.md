@@ -58,7 +58,7 @@ ROLLBACK;
 Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
-depth up to 3), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN`,
+depth up to 3; minimal `WITH RECURSIVE`), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN`,
 prepared statements that store a typed AST with `?` parameter slots, table rename/drop/list
 operations, and `EXIT`.
 
@@ -122,9 +122,10 @@ Or feed an example script:
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
-- Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3, correlation deeper than
-  four outer frames, or `WITH RECURSIVE`. Outer `JOIN` against a CTE/derived alias force-materializes the CTE. `JOIN` inside `IN`/`EXISTS` is
-  supported. Expression indexes cover column / unary minus / `+/-` literal /
+- Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3 and correlation deeper
+  than four outer frames are rejected. Outer `JOIN` against a CTE/derived alias force-materializes
+  the CTE. Minimal `WITH RECURSIVE` (`UNION ALL`, delta iteration, safety caps) and `JOIN` inside
+  `IN`/`EXISTS` are supported. Expression indexes cover column / unary minus / `+/-` literal /
   `trigram(column)` (substring `LIKE`); prefix `LIKE` uses ordered indexes; regex `~` is residual
   full-scan. `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
   supported. Parser failures report `line`/`column` via `ParseError`.
@@ -138,9 +139,10 @@ Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shi
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
 `WITH` nesting depth up to 3 and correlation through four outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
-non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, parse
-diagnostics with source positions, CI CTE cost-shape gating, and a dated absolute-time benchmark
-summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
+inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
+positions, CI CTE cost-shape gating, and a dated absolute-time benchmark summary (last refreshed
+2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 [materialize vs inline comparison](docs/cte_materialize_comparison.md).

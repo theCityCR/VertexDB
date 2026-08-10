@@ -27,8 +27,12 @@ enum class MaterializeMode {
 
 struct CteEntry {
     std::string name;
+    // Anchor body; for recursive CTEs this is the non-recursive UNION ALL arm.
     std::shared_ptr<Select> body;
     MaterializeMode materializeMode{MaterializeMode::DefaultInline};
+    bool recursive{false};
+    // Recursive UNION ALL arm; self-references `name` (bound to the working delta).
+    std::shared_ptr<Select> recursiveArm;
 };
 
 struct CreateDatabase {

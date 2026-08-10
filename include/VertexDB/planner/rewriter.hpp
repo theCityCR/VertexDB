@@ -14,8 +14,8 @@ namespace VertexDB {
 struct RewriteResult {
     Select query;
     std::vector<std::string> notes;
-    // MATERIALIZED CTEs: execute body into an ephemeral table before planning.
-    std::vector<std::pair<std::string, Select>> materialize;
+    // MATERIALIZED / recursive CTEs: execute into an ephemeral table before planning.
+    std::vector<CteEntry> materialize;
 };
 
 // Inline WITH CTEs into the main SELECT (default / NOT MATERIALIZED). MATERIALIZED CTEs are

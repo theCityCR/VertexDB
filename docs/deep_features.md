@@ -126,7 +126,8 @@ lists when uncorrelated; correlated `IN`/`EXISTS` bind outer scopes per row for 
 frames, including `FROM` / `JOIN` table aliases. Nested `WITH` up to depth 3 reuses the same
 inliner.
 Expression indexes match `(expr) =/>/< const` predicates; `trigram(column)` indexes serve substring
-`LIKE '%lit%'`. Regex `~` remains a residual full scan. CTE/derived bodies may carry `INNER`/`LEFT`
+`LIKE '%lit%'`. Regex `~` remains a residual full scan. Minimal `WITH RECURSIVE` (`UNION ALL`, delta binding, iteration/row caps) force-materializes.
+CTE/derived bodies may carry `INNER`/`LEFT`
 joins (including multi-join chains) through inlining. Aggregates/`GROUP BY` are planned as a
 post-join hash aggregate (`EXPLAIN` reports `aggregation`).
 

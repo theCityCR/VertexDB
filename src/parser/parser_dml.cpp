@@ -241,7 +241,9 @@ Select Parser::parseSelectAfterSelectKeyword() {
 Select Parser::parseWithSelect() { return parseWithSelectAtDepth(0); }
 
 Select Parser::parseWithSelectAtDepth(int depth) {
+    const bool recursiveWith = match(TokenType::Identifier, "RECURSIVE");
     std::vector<CteEntry> ctes;
+    std::size_t recursiveCount = 0;
     do {
         const auto name = advance();
         if (name.type != TokenType::Identifier) {
@@ -265,9 +267,54 @@ Select Parser::parseWithSelectAtDepth(int depth) {
         } else {
             body = parseSelect();
         }
+        std::shared_ptr<Select> recursiveArm;
+        bool recursive = false;
+        if (match(TokenType::Identifier, "UNION")) {
+            if (!match(TokenType::Identifier, "ALL")) {
+                throw std::runtime_error("WITH RECURSIVE requires UNION ALL");
+            }
+            if (!recursiveWith) {
+                throw std::runtime_error("UNION ALL in CTE requires WITH RECURSIVE");
+            }
+            Select arm;
+            if (match(TokenType::Identifier, "WITH")) {
+                throw std::runtime_error("WITH inside recursive arm is not supported");
+            }
+            arm = parseSelect();
+            recursiveArm = std::make_shared<Select>(std::move(arm));
+            recursive = true;
+            ++recursiveCount;
+            if (recursiveCount > 1) {
+                throw std::runtime_error("only one recursive CTE is supported");
+            }
+            auto countSelfRefs = [](const Select &select, std::string_view cteName) {
+                std::size_t count = 0;
+                if (equalsIgnoreCase(select.table, cteName)) {
+                    ++count;
+                }
+                for (const auto &join : select.joins) {
+                    if (equalsIgnoreCase(join.table, cteName)) {
+                        ++count;
+                    }
+                }
+                return count;
+            };
+            if (countSelfRefs(body, name.lexeme) != 0) {
+                throw std::runtime_error("recursive CTE anchor must not reference itself");
+            }
+            if (countSelfRefs(*recursiveArm, name.lexeme) != 1) {
+                throw std::runtime_error(
+                    "recursive CTE arm must reference the CTE name exactly once");
+            }
+        }
         expect(TokenType::RightParen);
-        ctes.push_back(CteEntry{name.lexeme, std::make_shared<Select>(std::move(body)), mode});
+        ctes.push_back(CteEntry{name.lexeme, std::make_shared<Select>(std::move(body)), mode,
+                                recursive, std::move(recursiveArm)});
     } while (match(TokenType::Comma));
+
+    if (recursiveWith && recursiveCount == 0) {
+        throw std::runtime_error("WITH RECURSIVE requires a UNION ALL recursive CTE");
+    }
 
     expect(TokenType::Identifier, "SELECT");
     auto query = parseSelectAfterSelectKeyword();

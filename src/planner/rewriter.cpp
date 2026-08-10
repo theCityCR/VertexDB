@@ -2,6 +2,7 @@
 
 #include "VertexDB/common/string_utils.hpp"
 
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -91,7 +92,14 @@ RewriteResult rewriteSelect(const Select &query) {
         for (const auto *cte : joinTargets) {
             Select bodySelect = rewriteBody(*cte->body, result);
             result.notes.push_back("materialized CTE " + cte->name + " (join target)");
-            result.materialize.emplace_back(cte->name, std::move(bodySelect));
+            CteEntry materializeEntry = *cte;
+            materializeEntry.body = std::make_shared<Select>(std::move(bodySelect));
+            if (cte->recursive && cte->recursiveArm) {
+                materializeEntry.recursiveArm =
+                    std::make_shared<Select>(rewriteBody(*cte->recursiveArm, result));
+                result.notes.back() = "materialized recursive CTE " + cte->name + " (join target)";
+            }
+            result.materialize.push_back(std::move(materializeEntry));
         }
         result.query = stripCtes(std::move(remaining));
         return result;
@@ -108,6 +116,32 @@ RewriteResult rewriteSelect(const Select &query) {
     // Fully rewrite the CTE/derived body first (nested derived tables become synthetic CTEs).
     Select bodySelect = rewriteBody(*matched->body, result);
 
+    if (matched->recursive) {
+        result.notes.push_back("materialized recursive CTE " + matched->name);
+        Select remaining = query;
+        remaining.ctes.clear();
+        for (const auto &cte : query.ctes) {
+            if (!equalsIgnoreCase(cte.name, matched->name)) {
+                remaining.ctes.push_back(cte);
+            }
+        }
+        CteEntry materializeEntry = *matched;
+        materializeEntry.body = std::make_shared<Select>(std::move(bodySelect));
+        if (matched->recursiveArm) {
+            materializeEntry.recursiveArm =
+                std::make_shared<Select>(rewriteBody(*matched->recursiveArm, result));
+        }
+        result.materialize.push_back(std::move(materializeEntry));
+        if (!remaining.ctes.empty()) {
+            auto recursive = rewriteSelect(remaining);
+            result.query = std::move(recursive.query);
+            appendRewrite(result, std::move(recursive));
+            return result;
+        }
+        result.query = stripCtes(std::move(remaining));
+        return result;
+    }
+
     if (matched->materializeMode == MaterializeMode::Materialized) {
         result.notes.push_back("materialized CTE " + matched->name);
         Select remaining = query;
@@ -117,7 +151,9 @@ RewriteResult rewriteSelect(const Select &query) {
                 remaining.ctes.push_back(cte);
             }
         }
-        result.materialize.emplace_back(matched->name, std::move(bodySelect));
+        CteEntry materializeEntry = *matched;
+        materializeEntry.body = std::make_shared<Select>(std::move(bodySelect));
+        result.materialize.push_back(std::move(materializeEntry));
         if (!remaining.ctes.empty()) {
             auto recursive = rewriteSelect(remaining);
             result.query = std::move(recursive.query);

@@ -34,8 +34,7 @@ class SubqueryRuntime {
     [[nodiscard]] Predicate bindOuterReferences(const Predicate &predicate, const Row &outerRow,
                                                 const Table &outerTable,
                                                 std::string_view outerScope) const;
-    [[nodiscard]] std::shared_ptr<Table> materializeCteTable(const std::string &name,
-                                                            const Select &body) const;
+    [[nodiscard]] std::shared_ptr<Table> materializeCteTable(const CteEntry &cte) const;
 
   private:
     QueryExecutor &owner_;

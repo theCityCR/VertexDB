@@ -110,8 +110,15 @@ rejected. `FROM` / `JOIN` tables accept an optional `[AS] alias` used as the qua
 correlation scope (aliases rewrite to physical table qualifiers on join results). CTE and
 derived-table bodies may include `INNER` / `LEFT` joins (including left-deep multi-join chains).
 `WITH` nesting depth up to 3 is supported (nested `WITH` up to three levels inside a CTE body).
-`WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. `WITH RECURSIVE`
-remain unsupported. Outer `JOIN` against a CTE/derived alias force-materializes the CTE.
+`WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. Outer `JOIN`
+against a CTE/derived alias force-materializes the CTE.
+
+`WITH RECURSIVE name AS ( anchor UNION ALL recursive_arm )` materializes a working table by
+evaluating the anchor, then repeatedly evaluating the recursive arm with the CTE name bound to the
+previous iteration's **delta** (new rows only). Exactly one self-reference to `name` is required in
+the recursive arm (as `FROM`/`JOIN` table). Bare `UNION`, multiple recursive CTEs, and mutual
+recursion are rejected. Iteration stops when the delta is empty, or when a safety cap is hit
+(1000 iterations or 100000 accumulated rows) — those caps are intentional v1 limits.
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where
@@ -191,6 +198,8 @@ Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`colum
 
 ## Remaining Grammar Gaps
 
-Intentional out-of-scope items (not near-term polish):
+Intentional out-of-scope items for recursive CTEs (documented v1 limits, not near-term polish):
 
-- `WITH RECURSIVE`
+- `UNION` (deduplicating) inside recursive CTEs; only `UNION ALL` is supported
+- Multiple recursive CTEs in one `WITH`, mutual recursion, or self-ref to the full accumulator
+- General set operations outside recursive CTE bodies

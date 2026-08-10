@@ -739,6 +739,78 @@ TEST(NestedSqlTests, NestedWithDeeperThanMaxIsRejected) {
                  std::runtime_error);
 }
 
+TEST(NestedSqlTests, WithRecursiveWalksHierarchy) {
+    Parser parser;
+    auto executor = makeExecutor("with-recursive");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Nodes (id INT, parent_id INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Nodes VALUES (1, 0, \"root\"), (2, 1, \"child\"), "
+                        "(3, 2, \"leaf\"), (4, 1, \"other\");"))
+                    .success);
+
+    auto parsed = parser.parse(
+        "WITH RECURSIVE tree AS ("
+        "SELECT id, parent_id, name FROM Nodes WHERE id = 1 "
+        "UNION ALL "
+        "SELECT Nodes.id, Nodes.parent_id, Nodes.name FROM Nodes JOIN tree "
+        "ON Nodes.parent_id = tree.id"
+        ") SELECT name FROM tree ORDER BY id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(parsed));
+    const auto &select = std::get<Select>(parsed);
+    ASSERT_EQ(select.ctes.size(), 1U);
+    EXPECT_TRUE(select.ctes[0].recursive);
+    ASSERT_TRUE(select.ctes[0].recursiveArm);
+
+    auto result = executor.execute(parsed);
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 4U);
+    // ORDER BY id on recursive result — ids 1,2,3,4 in walk order may vary; check membership.
+    bool sawRoot = false;
+    bool sawChild = false;
+    bool sawLeaf = false;
+    bool sawOther = false;
+    for (const auto &row : result.rows) {
+        if (row[0] == Value{"root"}) {
+            sawRoot = true;
+        }
+        if (row[0] == Value{"child"}) {
+            sawChild = true;
+        }
+        if (row[0] == Value{"leaf"}) {
+            sawLeaf = true;
+        }
+        if (row[0] == Value{"other"}) {
+            sawOther = true;
+        }
+    }
+    EXPECT_TRUE(sawRoot);
+    EXPECT_TRUE(sawChild);
+    EXPECT_TRUE(sawLeaf);
+    EXPECT_TRUE(sawOther);
+}
+
+TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "WITH RECURSIVE t AS (SELECT id FROM Nodes) SELECT id FROM t;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "WITH t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
+                     "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
+                     "SELECT id FROM t;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION "
+                     "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
+                     "SELECT id FROM t;"),
+                 std::runtime_error);
+}
+
 TEST(NestedSqlTests, NestedSqlDocumentedRefusalsAreRejected) {
     Parser parser;
 

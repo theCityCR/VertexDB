@@ -15,7 +15,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
   predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` `[OUTER]` and `CROSS`
   joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
-  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3), derived tables,
+  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3, minimal
+  `WITH RECURSIVE` with `UNION ALL`), derived tables,
   `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` inside them and
   correlation through four outer frames), expression indexes (including `trigram(column)`),
   `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
@@ -53,7 +54,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   cheaper than a scan, the planner keeps a full scan. Nested `OR` under `AND` may remain as a
   residual while another conjunct uses an index.
 - Nested SQL is limited: `WITH` nesting deeper than depth 3, correlation deeper than four outer
-  frames, `WITH RECURSIVE` is unsupported. Outer `JOIN` against a CTE/derived alias force-materializes the CTE. `JOIN` inside `IN`/`EXISTS` is supported. Supported nested forms include `WITH` nesting depth up to 3,
+  frames. Outer `JOIN` against a CTE/derived alias force-materializes the CTE. `WITH RECURSIVE`
+  (`UNION ALL`, delta self-ref, iteration/row safety caps) is supported. `JOIN` inside `IN`/`EXISTS` is supported. Supported nested forms include `WITH` nesting depth up to 3,
   `WITH` / derived tables inside `IN`/`EXISTS`, `FROM` / `JOIN` table aliases (`AS` optional) for
   qualification and correlation scopes, correlated `IN`/`EXISTS` through up to four outer frames,
   and expression indexes (`column`, `-column`, `column+/-literal`, `trigram(column)`). CTE/derived
@@ -65,7 +67,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-Optional educational follow-ups still intentionally out of scope: `WITH RECURSIVE`.
+The optional educational follow-ups from the prior roadmap (`RIGHT`/`FULL`/`CROSS` joins, `JOIN`
+inside `IN`/`EXISTS`, outer `JOIN` against CTE/derived aliases, and minimal `WITH RECURSIVE`) are
+shipped. Further recursive/set-op surface remains intentionally limited (see [sql.md](sql.md)).
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays

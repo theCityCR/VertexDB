@@ -15,7 +15,7 @@ VertexDB uses three levels of automated testing:
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
 | `index_tests.cpp` | Hash / B+ tree unit behavior, expression/`trigram` index metadata |
 | `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/non-equi joins, `LIKE`/trigram paths, concurrency |
-| `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH` in `IN`/`EXISTS`, correlation (≤4 frames), refusals |
+| `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH`/`JOIN` in `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, correlation (≤4 frames) |
 | `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect), residuals, stats/cost, multi-index intersect/union, `EXPLAIN` |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK, MVCC visibility, deferred WAL |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
