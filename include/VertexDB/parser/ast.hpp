@@ -61,12 +61,20 @@ struct OrderBy {
     bool ascending{true};
 };
 
+enum class JoinKind : std::uint8_t {
+    Inner,
+    LeftOuter,
+};
+
 struct JoinClause {
     std::string table;
     std::string leftColumn;
     std::string rightColumn;
     // Optional JOIN alias (`JOIN Departments AS d`); qualifiers use this scope name.
     std::optional<std::string> tableAlias;
+    JoinKind kind{JoinKind::Inner};
+    // ON leftColumn op rightColumn; non-Equal forces nested-loop compare (no hash join).
+    ComparisonOperator op{ComparisonOperator::Equal};
 };
 
 [[nodiscard]] inline std::string_view joinScopeName(const JoinClause &join) noexcept {

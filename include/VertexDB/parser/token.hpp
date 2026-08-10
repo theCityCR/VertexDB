@@ -20,6 +20,7 @@ enum class TokenType : std::uint8_t {
     Plus,
     Minus,
     Parameter,
+    Tilde,
     End,
 };
 

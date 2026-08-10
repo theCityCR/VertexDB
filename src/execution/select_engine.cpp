@@ -180,6 +180,17 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                     }
                 }
                 return applyResidual(rowsByIdForRead(table, combined));
+            } else if constexpr (std::is_same_v<T, PrefixLikePlan>) {
+                std::vector<RowId> combined;
+                if (auto exact = table.indexedLookup(path.indexColumn, Value{path.prefix})) {
+                    combined.insert(combined.end(), exact->begin(), exact->end());
+                }
+                if (auto greater =
+                        table.orderedLookup(path.indexColumn, ComparisonOperator::Greater,
+                                            Value{path.prefix})) {
+                    combined.insert(combined.end(), greater->begin(), greater->end());
+                }
+                return applyResidual(rowsByIdForRead(table, combined));
             } else if constexpr (std::is_same_v<T, IntersectPlan>) {
                 if (path.intersectProbes.empty()) {
                     return {};
@@ -336,24 +347,38 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
             joined.insert(joined.end(), rightRow.begin(), rightRow.end());
             nextRows.push_back(std::move(joined));
         };
+        auto appendLeftOnly = [&](const Row &leftRow) {
+            Row joined = leftRow;
+            joined.resize(leftRow.size() + rightTable->schema().size(), Value{});
+            nextRows.push_back(std::move(joined));
+        };
 
         auto unqualified = [](const std::string &name) {
             const auto dot = name.rfind('.');
             return dot == std::string::npos ? name : name.substr(dot + 1);
         };
 
-        if (joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe && joinPlan.outerIsLeft) {
+        const bool leftOuter = join.kind == JoinKind::LeftOuter;
+        const bool equi = join.op == ComparisonOperator::Equal;
+
+        if (equi && joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe &&
+            joinPlan.outerIsLeft && !joinPlan.probeColumn.empty()) {
             const auto probeColumn = unqualified(join.rightColumn);
             for (const auto &leftRow : joinedRows) {
+                bool matched = false;
                 if (auto rowIds =
                         rightTable->indexedLookup(probeColumn, leftRow[*leftJoinColumn])) {
                     for (const auto &rightRow : rowsByIdForRead(*rightTable, *rowIds)) {
                         appendJoined(leftRow, rightRow);
+                        matched = true;
                     }
                 }
+                if (leftOuter && !matched) {
+                    appendLeftOnly(leftRow);
+                }
             }
-        } else if (joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe && !joinPlan.outerIsLeft &&
-                   joinIndex == 0) {
+        } else if (equi && joinPlan.algorithm == JoinAlgorithm::NestedLoopIndexProbe &&
+                   !joinPlan.outerIsLeft && joinIndex == 0 && !leftOuter) {
             const auto outerRows = rowsSnapshotForRead(*rightTable);
             const auto probeColumn = unqualified(join.leftColumn);
             for (const auto &rightRow : outerRows) {
@@ -363,7 +388,7 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
                     }
                 }
             }
-        } else {
+        } else if (equi && joinPlan.algorithm == JoinAlgorithm::HashJoin) {
             const auto rightRows = rowsSnapshotForRead(*rightTable);
             std::map<Value, std::vector<Row>> rightRowsByKey;
             for (const auto &row : rightRows) {
@@ -372,10 +397,29 @@ void SelectEngine::collectJoinRows(const Select &command, std::vector<std::strin
             for (const auto &leftRow : joinedRows) {
                 auto matchingRightRows = rightRowsByKey.find(leftRow[*leftJoinColumn]);
                 if (matchingRightRows == rightRowsByKey.end()) {
+                    if (leftOuter) {
+                        appendLeftOnly(leftRow);
+                    }
                     continue;
                 }
                 for (const auto &rightRow : matchingRightRows->second) {
                     appendJoined(leftRow, rightRow);
+                }
+            }
+        } else {
+            // Non-equi (or left-outer without usable probe): nested-loop compare.
+            const auto rightRows = rowsSnapshotForRead(*rightTable);
+            for (const auto &leftRow : joinedRows) {
+                bool matched = false;
+                for (const auto &rightRow : rightRows) {
+                    if (compareValues(leftRow[*leftJoinColumn], join.op,
+                                      rightRow[*rightJoinColumn])) {
+                        appendJoined(leftRow, rightRow);
+                        matched = true;
+                    }
+                }
+                if (leftOuter && !matched) {
+                    appendLeftOnly(leftRow);
                 }
             }
         }

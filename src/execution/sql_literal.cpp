@@ -62,6 +62,10 @@ std::string predicateLiteral(const Predicate &predicate) {
                 return node.column + " IN (SELECT ...)";
             } else if constexpr (std::is_same_v<T, ExistsPred>) {
                 return "EXISTS (SELECT ...)";
+            } else if constexpr (std::is_same_v<T, LikePred>) {
+                return node.column + " LIKE " + sqlLiteral(Value{node.pattern});
+            } else if constexpr (std::is_same_v<T, RegexPred>) {
+                return node.column + " ~ " + sqlLiteral(Value{node.pattern});
             } else {
                 std::string op;
                 switch (node.op) {

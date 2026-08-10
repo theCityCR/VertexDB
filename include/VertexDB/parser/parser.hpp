@@ -33,7 +33,7 @@ class Parser {
     [[nodiscard]] Select parseSelect();
     [[nodiscard]] Select parseSelectAfterSelectKeyword();
     [[nodiscard]] Select parseWithSelect();
-    // depth 0 = top-level WITH; depth 1 = one nested WITH inside a CTE body (max supported).
+    // depth 0 = top-level WITH; deeper WITH inside CTE bodies up to kMaxNestedWithDepth.
     [[nodiscard]] Select parseWithSelectAtDepth(int depth);
     [[nodiscard]] Update parseUpdate();
     [[nodiscard]] Delete parseDelete();
@@ -65,6 +65,8 @@ class Parser {
 
     // Max outer FROM frames while parsing nested IN/EXISTS (four-level correlation).
     static constexpr std::size_t kMaxOuterCorrelationDepth = 4;
+    // Max WITH nesting depth inside a CTE body (depth 0 = top-level WITH).
+    static constexpr int kMaxNestedWithDepth = 3;
 };
 
 } // namespace VertexDB

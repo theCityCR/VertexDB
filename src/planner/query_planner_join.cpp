@@ -10,6 +10,18 @@
 
 namespace VertexDB {
 
+namespace {
+
+[[nodiscard]] bool isEquiJoin(const JoinClause &join) {
+    return join.op == ComparisonOperator::Equal;
+}
+
+[[nodiscard]] std::string_view joinKindLabel(JoinKind kind) {
+    return kind == JoinKind::LeftOuter ? "left outer" : "inner";
+}
+
+} // namespace
+
 JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
                                 const JoinClause &join) const {
     using namespace planner_detail;
@@ -18,12 +30,37 @@ JoinPlan QueryPlanner::planJoin(const Table &left, const Table &right,
     const auto leftRows = left.rowCount();
     const auto rightRows = right.rowCount();
     plan.estimatedRows = std::max(leftRows, rightRows);
+    plan.outerIsLeft = true;
+
+    // Non-equi and LEFT OUTER cannot use hash join; fall back to nested-loop compare.
+    if (!isEquiJoin(join) || join.kind == JoinKind::LeftOuter) {
+        plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
+        plan.estimatedCost =
+            static_cast<double>(std::max<std::size_t>(leftRows, 1) *
+                                std::max<std::size_t>(rightRows, 1));
+        if (isEquiJoin(join) && right.hasIndex(join.rightColumn)) {
+            const double fanout =
+                averageRowsPerKey(rightRows, distinctOrOne(right, right, join.rightColumn));
+            plan.estimatedCost =
+                static_cast<double>(std::max<std::size_t>(leftRows, 1)) * fanout;
+            plan.probeTable = right.name();
+            plan.probeColumn = join.rightColumn;
+            plan.explanation = std::string{joinKindLabel(join.kind)} +
+                               " nested loop join (index probe on " + right.name() + "." +
+                               join.rightColumn + ")";
+        } else {
+            plan.probeTable.clear();
+            plan.probeColumn.clear();
+            plan.explanation = std::string{joinKindLabel(join.kind)} + " nested loop join";
+        }
+        return plan;
+    }
+
     // Build hash table on the right, probe from the left (matches the executor's hash join).
     plan.estimatedCost =
         static_cast<double>(std::max<std::size_t>(leftRows, 1) + std::max<std::size_t>(rightRows, 1));
     plan.explanation = "hash join";
     plan.algorithm = JoinAlgorithm::HashJoin;
-    plan.outerIsLeft = true;
 
     const bool rightIndexed = right.hasIndex(join.rightColumn);
     const bool leftIndexed = left.hasIndex(join.leftColumn);
@@ -64,11 +101,33 @@ JoinPlan QueryPlanner::planJoinAgainstRows(std::size_t leftRows, const Table &ri
     JoinPlan plan;
     const auto rightRows = right.rowCount();
     plan.estimatedRows = std::max(leftRows, rightRows);
+    plan.outerIsLeft = true;
+
+    if (!isEquiJoin(join) || join.kind == JoinKind::LeftOuter) {
+        plan.algorithm = JoinAlgorithm::NestedLoopIndexProbe;
+        plan.estimatedCost =
+            static_cast<double>(std::max<std::size_t>(leftRows, 1) *
+                                std::max<std::size_t>(rightRows, 1));
+        if (isEquiJoin(join) && right.hasIndex(join.rightColumn)) {
+            const double fanout =
+                averageRowsPerKey(rightRows, distinctOrOne(right, right, join.rightColumn));
+            plan.estimatedCost =
+                static_cast<double>(std::max<std::size_t>(leftRows, 1)) * fanout;
+            plan.probeTable = right.name();
+            plan.probeColumn = join.rightColumn;
+            plan.explanation = std::string{joinKindLabel(join.kind)} +
+                               " nested loop join (index probe on " + right.name() + "." +
+                               join.rightColumn + ")";
+        } else {
+            plan.explanation = std::string{joinKindLabel(join.kind)} + " nested loop join";
+        }
+        return plan;
+    }
+
     plan.estimatedCost =
         static_cast<double>(std::max<std::size_t>(leftRows, 1) + std::max<std::size_t>(rightRows, 1));
     plan.explanation = "hash join";
     plan.algorithm = JoinAlgorithm::HashJoin;
-    plan.outerIsLeft = true;
 
     if (right.hasIndex(join.rightColumn)) {
         const double fanout =

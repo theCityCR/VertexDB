@@ -40,6 +40,10 @@ buildOrTree(const std::vector<const Predicate *> &disjuncts);
 [[nodiscard]] bool isIndexableInList(const Predicate &predicate, const RelationStats &stats,
                                      const IndexCatalogView &indexes, double &cost,
                                      std::size_t rowCount);
+// Fills path with PrefixLike or Intersect (trigram) when applicable; residual LIKE still required.
+[[nodiscard]] bool isIndexableLike(const Predicate &predicate, const IndexCatalogView &indexes,
+                                   AccessPath &path, double &cost, std::size_t rowCount,
+                                   std::optional<IntersectPlan> &trigramIntersect);
 [[nodiscard]] bool isEqualityIndexProbe(const Predicate &predicate,
                                         const IndexCatalogView &indexes);
 

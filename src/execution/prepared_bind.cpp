@@ -57,6 +57,8 @@ Predicate bindPredicate(const Predicate &predicate, const std::vector<Value> &pa
                     bound.subquery =
                         std::make_shared<Select>(bindSelect(*node.subquery, parameters, seen));
                 }
+            } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred>) {
+                // Pattern is a string literal today; no parameter slots.
             } else {
                 bound.value = bindValue(node.value, parameters, seen);
                 if (node.expression) {

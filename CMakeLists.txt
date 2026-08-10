@@ -25,6 +25,7 @@ include(GNUInstallDirs)
 add_library(VertexDB
     src/common/value.cpp
     src/common/index_expression.cpp
+    src/common/string_pattern.cpp
     src/parser/parser.cpp
     src/parser/parser_ddl.cpp
     src/parser/parser_dml.cpp

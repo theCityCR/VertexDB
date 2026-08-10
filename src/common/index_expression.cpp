@@ -142,6 +142,8 @@ std::string indexExpressionToString(const IndexExpression &expression) {
         return expression.column + "+" + expression.literal.toString();
     case IndexExpression::Kind::Subtract:
         return expression.column + "-" + expression.literal.toString();
+    case IndexExpression::Kind::Trigram:
+        return "trigram(" + expression.column + ")";
     }
     return {};
 }
@@ -171,6 +173,18 @@ std::optional<IndexExpression> parseIndexExpressionString(std::string_view text)
     }
     std::string column{text.substr(0, identEnd)};
     const auto rest = text.substr(identEnd);
+
+    // trigram(column)
+    if (column == "trigram" && !rest.empty() && rest.front() == '(') {
+        if (rest.back() != ')') {
+            return std::nullopt;
+        }
+        std::string inner;
+        if (!tryParseIdentifier(trim(rest.substr(1, rest.size() - 2)), inner)) {
+            return std::nullopt;
+        }
+        return IndexExpression{IndexExpression::Kind::Trigram, std::move(inner), {}};
+    }
 
     if (rest.empty()) {
         return IndexExpression{IndexExpression::Kind::Column, std::move(column), {}};
@@ -210,6 +224,9 @@ Value evaluateIndexExpression(
         return addValues(base, expression.literal);
     case IndexExpression::Kind::Subtract:
         return subtractValues(base, expression.literal);
+    case IndexExpression::Kind::Trigram:
+        // Multi-key indexing is handled by IndexManager; single-key eval returns the raw string.
+        return base;
     }
     throw std::runtime_error("unsupported index expression");
 }

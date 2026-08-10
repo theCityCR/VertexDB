@@ -129,6 +129,9 @@ std::vector<Token> Tokenizer::tokenize(std::string_view sql) const {
         case '?':
             tokens.push_back(makeToken(TokenType::Parameter, "?", start));
             break;
+        case '~':
+            tokens.push_back(makeToken(TokenType::Tilde, "~", start));
+            break;
         default:
             throw ParseError("unexpected character in SQL input", start.line, start.column,
                              start.pos);

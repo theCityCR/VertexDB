@@ -1,8 +1,11 @@
 #include "VertexDB/execution/predicate_eval.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/common/string_pattern.hpp"
 
 #include <stdexcept>
+#include <string>
+#include <variant>
 
 namespace VertexDB {
 
@@ -32,6 +35,21 @@ bool evalPredicate(const Predicate &predicate, const Row &row, const ColumnLooku
                 throw std::runtime_error("IN subquery must be materialized before evaluation");
             } else if constexpr (std::is_same_v<T, ExistsPred>) {
                 throw std::runtime_error("EXISTS must be evaluated by the executor");
+            } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred>) {
+                const auto index = lookup(node.column);
+                if (!index) {
+                    throw std::runtime_error("unknown predicate column");
+                }
+                const Value &leftValue = row[*index];
+                if (leftValue.isNull() || leftValue.type() != ColumnType::String) {
+                    return false;
+                }
+                const auto &text = std::get<std::string>(leftValue.data());
+                if constexpr (std::is_same_v<T, LikePred>) {
+                    return matchLikePattern(text, node.pattern);
+                } else {
+                    return matchRegexPattern(text, node.pattern);
+                }
             } else {
                 Value leftValue;
                 if (node.expression) {

@@ -1,6 +1,7 @@
 #include "planner_detail.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/common/string_pattern.hpp"
 #include "VertexDB/storage/histogram.hpp"
 
 #include <algorithm>
@@ -191,6 +192,53 @@ std::string probeLabel(const IndexEqualityProbe &probe) {
         return "(" + indexExpressionToString(*probe.expression) + ")";
     }
     return probe.column;
+}
+
+bool isIndexableLike(const Predicate &predicate, const IndexCatalogView &indexes, AccessPath &path,
+                     double &cost, std::size_t rowCount,
+                     std::optional<IntersectPlan> &trigramIntersect) {
+    const auto *like = std::get_if<LikePred>(&predicate);
+    if (like == nullptr) {
+        return false;
+    }
+    trigramIntersect.reset();
+
+    if (const auto prefix = likePrefixLiteral(like->pattern)) {
+        if (!indexes.hasIndex(like->column)) {
+            return false;
+        }
+        path = AccessPath::PrefixLike;
+        cost = std::max(static_cast<double>(rowCount) / 10.0, 1.0);
+        return true;
+    }
+
+    if (const auto needle = likeContainsLiteral(like->pattern)) {
+        if (needle->size() < 3) {
+            return false;
+        }
+        IndexExpression trigram{IndexExpression::Kind::Trigram, like->column, {}};
+        if (!indexes.hasExpressionIndex(trigram)) {
+            return false;
+        }
+        const auto grams = extractTrigrams(*needle);
+        if (grams.empty()) {
+            return false;
+        }
+        IntersectPlan intersect;
+        intersect.intersectProbes.reserve(grams.size());
+        for (const auto &gram : grams) {
+            IndexEqualityProbe probe;
+            probe.column = like->column;
+            probe.expression = trigram;
+            probe.value = Value{gram};
+            intersect.intersectProbes.push_back(std::move(probe));
+        }
+        path = AccessPath::Intersect;
+        cost = std::max(static_cast<double>(rowCount) / 20.0, 1.0);
+        trigramIntersect = std::move(intersect);
+        return true;
+    }
+    return false;
 }
 
 } // namespace planner_detail
