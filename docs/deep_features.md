@@ -153,3 +153,15 @@ SELECT name FROM high WHERE id = 1;
 against the temp result (fencing the base-table `id` index). Full write-up, limitations, and
 comparison artifacts: [cte_index_wedge.md](cte_index_wedge.md) (Demo) and
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
+
+### Multi-index intersect demo
+
+```sql
+SELECT name FROM Employees WHERE dept = 1 AND city = 1;
+```
+
+With medium-cardinality indexes on both columns, `EXPLAIN` reports `multi-index intersect on
+dept, city`. With only one column indexed, the plan is hash equality plus a residual filter on the
+other predicate. Full write-up and Postgres BitmapAnd parity:
+[multi_index_intersect_wedge.md](multi_index_intersect_wedge.md) and
+[bitmap_and_comparison.md](bitmap_and_comparison.md).

@@ -876,6 +876,59 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes) 
     EXPECT_EQ(result.rows[1][0], Value{std::string{"both-b"}});
 }
 
+TEST(PlannerBehaviorTests, ScaledMultiIndexIntersectUsesBothIndexes) {
+    // Medium-cardinality dept/city so neither probe is near-unique and intersect stays cheaper
+    // than a single index + residual. Seed via Table::insert for CI speed; EXPLAIN/SELECT still
+    // go through the full planner/executor path. 10k matches the CTE scaled-wedge lower bound.
+    constexpr std::int64_t kRowCount = 10000;
+
+    Parser parser;
+    auto executor = makeExecutor("multi-index-scale");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+
+    auto database = executor.currentDatabase();
+    ASSERT_NE(database, nullptr);
+    auto table = database->table("Employees");
+    ASSERT_NE(table, nullptr);
+
+    for (std::int64_t id = 1; id <= kRowCount; ++id) {
+        const auto dept = static_cast<std::int64_t>(id % 10);
+        const auto city = static_cast<std::int64_t>((id / 10) % 10);
+        table->insert({Value{id}, Value{dept}, Value{city}, Value{"n" + std::to_string(id)}});
+    }
+    ASSERT_TRUE(table->createIndex("idx_dept", "dept"));
+    ASSERT_TRUE(table->createIndex("idx_city", "city"));
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE dept = 1 AND city = 1;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(text.find("dept"), std::string::npos);
+    EXPECT_NE(text.find("city"), std::string::npos);
+    EXPECT_EQ(text.find("full table scan"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE dept = 1 AND city = 1 ORDER BY id;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_FALSE(result.rows.empty());
+    for (const auto &row : result.rows) {
+        // Names are "n" + id; id must satisfy id%10==1 and (id/10)%10==1.
+        const auto name = row[0].toString();
+        ASSERT_FALSE(name.empty());
+        ASSERT_EQ(name.front(), 'n');
+        const auto id = std::stoll(name.substr(1));
+        EXPECT_EQ(id % 10, 1);
+        EXPECT_EQ((id / 10) % 10, 1);
+    }
+    EXPECT_EQ(result.rows.size(), static_cast<std::size_t>(kRowCount / 100));
+}
+
 TEST(PlannerBehaviorTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"score", ColumnType::Int}}};
     for (int i = 1; i <= 90; ++i) {

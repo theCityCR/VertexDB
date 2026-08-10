@@ -31,6 +31,38 @@
       "aggregate_name": "median",
       "cpu_time": 38000000.0,
       "time_unit": "ns"
+    },
+    {
+      "name": "BM_MultiIndexIntersectSelect/1000_median",
+      "run_name": "BM_MultiIndexIntersectSelect/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 15000.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_MultiIndexIntersectSelect/100000_median",
+      "run_name": "BM_MultiIndexIntersectSelect/100000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 400000.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_SingleIndexResidualSelect/1000_median",
+      "run_name": "BM_SingleIndexResidualSelect/1000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 80000.0,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_SingleIndexResidualSelect/100000_median",
+      "run_name": "BM_SingleIndexResidualSelect/100000",
+      "run_type": "aggregate",
+      "aggregate_name": "median",
+      "cpu_time": 8000000.0,
+      "time_unit": "ns"
     }
   ]
 }

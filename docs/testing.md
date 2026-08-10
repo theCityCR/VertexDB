@@ -16,13 +16,13 @@ VertexDB uses three levels of automated testing:
 | `index_tests.cpp` | Hash / B+ tree unit behavior, expression/`trigram` index metadata |
 | `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/`RIGHT`/`FULL`/`CROSS`/non-equi joins, `LIKE`/trigram/NULL edges, concurrency |
 | `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH`/`JOIN` in `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE` (incl. iteration/row caps and documented refusals), correlation (≤4 frames, NULL outer keys), documented grammar refusals |
-| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan / non-prefix LIKE), same-column OR→IN rewrite (incl. expression), residuals, stats/cost, multi-index intersect/union, outer/`CROSS` join plans, `EXPLAIN`, indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
+| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan / non-prefix LIKE), same-column OR→IN rewrite (incl. expression), residuals, stats/cost, multi-index intersect/union (incl. scaled intersect wedge), outer/`CROSS` join plans, `EXPLAIN`, indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), deferred WAL, transactional `CREATE INDEX`, still-forbidden catalog DDL/persistence |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY` (incl. NULL group keys), prepared statements (AST immutability), `ANALYZE` |
 | `deep_feature_tests.cpp` | Cross-cutting deep-feature coverage (incl. legacy `.tcrdb` v1–v3 load) |
 | `regression_tests.cpp` | Bug fixes and non-obvious failure modes |
-| `benchmark_shape/*` | CTE cost-shape + markdown-table fixtures (`scripts/check_benchmark_shape.py --self-test`) |
+| `benchmark_shape/*` | CTE + multi-index-intersect cost-shape + markdown-table fixtures (`scripts/check_benchmark_shape.py --self-test`) |
 
 ## Current Coverage
 
@@ -30,7 +30,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 231 discovered GoogleTest cases across the files above.
+The current suite contains 232 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

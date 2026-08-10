@@ -240,6 +240,58 @@ void BM_CteNonIndexedSelect(benchmark::State &state) {
 
 BENCHMARK(BM_CteNonIndexedSelect)->Arg(1000)->Arg(100000);
 
+void seedIntersectEmployees(QueryExecutor &executor, std::int64_t rowCount, bool indexCity) {
+    Parser parser;
+    (void)executor.execute(parser.parse("CREATE DATABASE bench;"));
+    (void)executor.execute(
+        parser.parse("CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"));
+
+    auto table = executor.currentDatabase()->table("Employees");
+    for (std::int64_t id = 1; id <= rowCount; ++id) {
+        const auto dept = static_cast<std::int64_t>(id % 10);
+        const auto city = static_cast<std::int64_t>((id / 10) % 10);
+        table->insert({Value{id}, Value{dept}, Value{city}, Value{std::string{"Emp"}}});
+    }
+    (void)table->createIndex("idx_dept", "dept");
+    if (indexCity) {
+        (void)table->createIndex("idx_city", "city");
+    }
+}
+
+// Two medium-cardinality equality indexes: expected plan is multi-index intersect.
+void BM_MultiIndexIntersectSelect(benchmark::State &state) {
+    TempExecutor env;
+    seedIntersectEmployees(env.executor, state.range(0), true);
+
+    Parser parser;
+    const auto query =
+        parser.parse("SELECT name FROM Employees WHERE dept = 1 AND city = 1;");
+
+    for (auto _ : state) {
+        auto result = env.executor.execute(query);
+        benchmark::DoNotOptimize(result);
+    }
+}
+
+BENCHMARK(BM_MultiIndexIntersectSelect)->Arg(1000)->Arg(100000);
+
+// Same SQL with only dept indexed: expected plan is hash equality + residual city filter.
+void BM_SingleIndexResidualSelect(benchmark::State &state) {
+    TempExecutor env;
+    seedIntersectEmployees(env.executor, state.range(0), false);
+
+    Parser parser;
+    const auto query =
+        parser.parse("SELECT name FROM Employees WHERE dept = 1 AND city = 1;");
+
+    for (auto _ : state) {
+        auto result = env.executor.execute(query);
+        benchmark::DoNotOptimize(result);
+    }
+}
+
+BENCHMARK(BM_SingleIndexResidualSelect)->Arg(1000)->Arg(100000);
+
 // Page-backed vs vector-backed row-store insert throughput (storage layer).
 void BM_VectorRowStoreInsert(benchmark::State &state) {
     for (auto _ : state) {

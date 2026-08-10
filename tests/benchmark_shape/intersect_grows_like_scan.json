@@ -1,7 +1,4 @@
 {
-  "context": {
-    "num_cpus": 4
-  },
   "benchmarks": [
     {
       "name": "BM_CteIndexedWinSelect/1000_median",
@@ -56,7 +53,7 @@
       "run_name": "BM_MultiIndexIntersectSelect/100000",
       "run_type": "aggregate",
       "aggregate_name": "median",
-      "cpu_time": 400000.0,
+      "cpu_time": 3000000.0,
       "time_unit": "ns"
     },
     {

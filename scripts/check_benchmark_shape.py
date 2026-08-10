@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check VertexDB CTE benchmark *shape* from Google Benchmark JSON.
+"""Check VertexDB wedge benchmark *shape* from Google Benchmark JSON.
 
 Compares median CPU times from one run (same binary, same process) so shared
 noise mostly cancels. Absolute nanoseconds are printed for humans; CI gates
@@ -9,6 +9,9 @@ only on ratios:
   non-indexed CTE at 100k is far slower than the indexed win path
   AS MATERIALIZED at 1k is far slower than inlined indexed CTE at 1k
   non-indexed CTE grows with table size (100k / 1k)
+  multi-index intersect at 100k is far cheaper than single-index residual
+  single-index residual grows with posting-list size (100k / 1k)
+  intersect growth stays bounded (does not collapse to full-scan growth)
 
 Usage:
   python3 scripts/check_benchmark_shape.py path/to/benchmark.json
@@ -34,6 +37,8 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "benchmark_shape"
 INDEXED = "BM_CteIndexedWinSelect"
 SCAN = "BM_CteNonIndexedSelect"
 MATERIALIZED = "BM_CteMaterializedSelect"
+INTERSECT = "BM_MultiIndexIntersectSelect"
+RESIDUAL = "BM_SingleIndexResidualSelect"
 
 # Order for docs/benchmarks.md illustrative table. Args are taken from the JSON
 # (ConcurrentPointLookups' last arg follows hardware_concurrency).
@@ -45,6 +50,8 @@ REPORT_BENCH_ORDER = (
     "BM_CteIndexedWinSelect",
     "BM_CteNonIndexedSelect",
     "BM_CteMaterializedSelect",
+    "BM_MultiIndexIntersectSelect",
+    "BM_SingleIndexResidualSelect",
     "BM_VectorRowStoreInsert",
     "BM_PageRowStoreInsert",
     "BM_VectorRowStoreSelect",
@@ -54,13 +61,17 @@ REPORT_BENCH_ORDER = (
     "BM_TransactionRollback",
 )
 
-# Conservative gates: local Release ratios are ~1, ~10^3–10^4, ~10^4, ~10^2.
+# Conservative gates: local Release CTE ratios are ~1, ~10^3–10^4, ~10^4, ~10^2.
 # GHA noise should not collapse these; a planner/storage regression to scan or
-# accidental inline-of-materialize will.
+# accidental inline-of-materialize will. Intersect posting lists grow with N
+# (~N/10), so max growth is looser than a point-lookup flatness gate.
 DEFAULT_MAX_INDEXED_GROWTH = 8.0
 DEFAULT_MIN_SCAN_VS_WIN = 20.0
 DEFAULT_MIN_MATERIALIZE_VS_INLINE = 50.0
 DEFAULT_MIN_SCAN_GROWTH = 10.0
+DEFAULT_MIN_RESIDUAL_VS_INTERSECT = 5.0
+DEFAULT_MIN_RESIDUAL_GROWTH = 10.0
+DEFAULT_MAX_INTERSECT_GROWTH = 150.0
 
 _AGG_SUFFIXES = ("_median", "_mean", "_stddev", "_cv")
 _TIME_SCALE_TO_NS = {"ns": 1.0, "us": 1e3, "ms": 1e6, "s": 1e9}
@@ -235,25 +246,39 @@ def check_shape(
     min_scan_vs_win: float,
     min_materialize_vs_inline: float,
     min_scan_growth: float,
+    min_residual_vs_intersect: float,
+    min_residual_growth: float,
+    max_intersect_growth: float,
 ) -> tuple[list[str], list[str]]:
     indexed_1k = require_ns(times, INDEXED, 1000)
     indexed_100k = require_ns(times, INDEXED, 100000)
     scan_1k = require_ns(times, SCAN, 1000)
     scan_100k = require_ns(times, SCAN, 100000)
     materialized_1k = require_ns(times, MATERIALIZED, 1000)
+    intersect_1k = require_ns(times, INTERSECT, 1000)
+    intersect_100k = require_ns(times, INTERSECT, 100000)
+    residual_1k = require_ns(times, RESIDUAL, 1000)
+    residual_100k = require_ns(times, RESIDUAL, 100000)
 
     indexed_growth = indexed_100k / indexed_1k
     scan_vs_win = scan_100k / indexed_100k
     materialize_vs_inline = materialized_1k / indexed_1k
     scan_growth = scan_100k / scan_1k
+    residual_vs_intersect = residual_100k / intersect_100k
+    residual_growth = residual_100k / residual_1k
+    intersect_growth = intersect_100k / intersect_1k
 
     lines = [
-        "CTE cost shape (CPU time, median when repetitions produced aggregates)",
-        f"  indexed 1k:           {format_ns(indexed_1k)}",
-        f"  indexed 100k:         {format_ns(indexed_100k)}",
-        f"  scan 1k:              {format_ns(scan_1k)}",
-        f"  scan 100k:            {format_ns(scan_100k)}",
-        f"  materialized 1k:      {format_ns(materialized_1k)}",
+        "Wedge cost shape (CPU time, median when repetitions produced aggregates)",
+        f"  indexed CTE 1k:       {format_ns(indexed_1k)}",
+        f"  indexed CTE 100k:     {format_ns(indexed_100k)}",
+        f"  scan CTE 1k:          {format_ns(scan_1k)}",
+        f"  scan CTE 100k:        {format_ns(scan_100k)}",
+        f"  materialized CTE 1k:  {format_ns(materialized_1k)}",
+        f"  intersect 1k:         {format_ns(intersect_1k)}",
+        f"  intersect 100k:       {format_ns(intersect_100k)}",
+        f"  residual AND 1k:      {format_ns(residual_1k)}",
+        f"  residual AND 100k:    {format_ns(residual_100k)}",
         "",
         "| Ratio | Value | Gate | Result |",
         "| --- | ---: | --- | --- |",
@@ -283,6 +308,24 @@ def check_shape(
             scan_growth,
             f">= {min_scan_growth:g}",
             scan_growth >= min_scan_growth,
+        ),
+        (
+            "residual 100k / intersect 100k",
+            residual_vs_intersect,
+            f">= {min_residual_vs_intersect:g}",
+            residual_vs_intersect >= min_residual_vs_intersect,
+        ),
+        (
+            "residual 100k / residual 1k",
+            residual_growth,
+            f">= {min_residual_growth:g}",
+            residual_growth >= min_residual_growth,
+        ),
+        (
+            "intersect 100k / intersect 1k",
+            intersect_growth,
+            f"<= {max_intersect_growth:g}",
+            intersect_growth <= max_intersect_growth,
         ),
     ]
 
@@ -314,6 +357,9 @@ def run_check(
     min_scan_vs_win: float,
     min_materialize_vs_inline: float,
     min_scan_growth: float,
+    min_residual_vs_intersect: float,
+    min_residual_growth: float,
+    max_intersect_growth: float,
 ) -> int:
     try:
         times = load_cpu_times(load_json(path))
@@ -323,6 +369,9 @@ def run_check(
             min_scan_vs_win=min_scan_vs_win,
             min_materialize_vs_inline=min_materialize_vs_inline,
             min_scan_growth=min_scan_growth,
+            min_residual_vs_intersect=min_residual_vs_intersect,
+            min_residual_growth=min_residual_growth,
+            max_intersect_growth=max_intersect_growth,
         )
     except ShapeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -331,7 +380,7 @@ def run_check(
     print("\n".join(lines))
     if failures:
         print("", file=sys.stderr)
-        print("CTE cost-shape check failed:", file=sys.stderr)
+        print("Wedge cost-shape check failed:", file=sys.stderr)
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
         return 1
@@ -346,6 +395,9 @@ SELF_TEST_CASES = (
     ("materialize_collapsed.json", 1),
     ("indexed_grows_like_scan.json", 1),
     ("missing_cte.json", 1),
+    ("missing_intersect.json", 1),
+    ("regress_intersect_to_residual.json", 1),
+    ("intersect_grows_like_scan.json", 1),
 )
 
 
@@ -355,8 +407,20 @@ def run_self_test(
     min_scan_vs_win: float,
     min_materialize_vs_inline: float,
     min_scan_growth: float,
+    min_residual_vs_intersect: float,
+    min_residual_growth: float,
+    max_intersect_growth: float,
 ) -> int:
     failed = 0
+    kwargs = dict(
+        max_indexed_growth=max_indexed_growth,
+        min_scan_vs_win=min_scan_vs_win,
+        min_materialize_vs_inline=min_materialize_vs_inline,
+        min_scan_growth=min_scan_growth,
+        min_residual_vs_intersect=min_residual_vs_intersect,
+        min_residual_growth=min_residual_growth,
+        max_intersect_growth=max_intersect_growth,
+    )
     for name, expected in SELF_TEST_CASES:
         path = FIXTURE_DIR / name
         if not path.is_file():
@@ -366,13 +430,7 @@ def run_self_test(
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            code = run_check(
-                path,
-                max_indexed_growth=max_indexed_growth,
-                min_scan_vs_win=min_scan_vs_win,
-                min_materialize_vs_inline=min_materialize_vs_inline,
-                min_scan_growth=min_scan_growth,
-            )
+            code = run_check(path, **kwargs)
         if code == expected:
             print(f"ok   {name} (exit {code})")
         else:
@@ -438,6 +496,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_MIN_MATERIALIZE_VS_INLINE,
     )
     parser.add_argument("--min-scan-growth", type=float, default=DEFAULT_MIN_SCAN_GROWTH)
+    parser.add_argument(
+        "--min-residual-vs-intersect",
+        type=float,
+        default=DEFAULT_MIN_RESIDUAL_VS_INTERSECT,
+    )
+    parser.add_argument(
+        "--min-residual-growth",
+        type=float,
+        default=DEFAULT_MIN_RESIDUAL_GROWTH,
+    )
+    parser.add_argument(
+        "--max-intersect-growth",
+        type=float,
+        default=DEFAULT_MAX_INTERSECT_GROWTH,
+    )
     return parser.parse_args(argv)
 
 
@@ -448,6 +521,9 @@ def main(argv: list[str] | None = None) -> int:
         min_scan_vs_win=args.min_scan_vs_win,
         min_materialize_vs_inline=args.min_materialize_vs_inline,
         min_scan_growth=args.min_scan_growth,
+        min_residual_vs_intersect=args.min_residual_vs_intersect,
+        min_residual_growth=args.min_residual_growth,
+        max_intersect_growth=args.max_intersect_growth,
     )
     if args.self_test:
         return run_self_test(**kwargs)

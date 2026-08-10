@@ -75,21 +75,29 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 Quality polish shipped literal `IN (v1, v2, …)` parsing, indexed `UPDATE`/`DELETE` edge-path tests,
 expression same-column `OR`→`IN`, and an MVCC fix so `UPDATE` closes the prior version (UPDATE then
-`DELETE` no longer resurrects the pre-update image). Catalog DDL and `SAVE`/`LOAD` remain rejected
-inside open transactions. Heterogeneous nested `OR` under `AND`, composite Intersect∪Union, and
-further recursive/set-op surface remain intentionally limited (see [sql.md](sql.md)). `EXPLAIN` for
-mutations and public `DROP INDEX` SQL are still out of scope.
+`DELETE` no longer resurrects the pre-update image). Multi-index AND intersect is packaged as a second
+demo wedge (demo SQL, scaled regression, microbenchmarks, CI shape gate, BitmapAnd parity note).
+Catalog DDL and `SAVE`/`LOAD` remain rejected inside open transactions. Heterogeneous nested `OR`
+under `AND`, composite Intersect∪Union, and further recursive/set-op surface remain intentionally
+limited (see [sql.md](sql.md)). `EXPLAIN` for mutations and public `DROP INDEX` SQL are still out of
+scope.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
-from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays
-flat, scan grows, materialize ≫ inline) is gated on every push/PR via
-`scripts/run-benchmarks.sh --check-shape`. Re-refresh the absolute-time summary only after planner
-or storage changes that make those numbers stale — prefer `workflow_dispatch` or a commit message
-containing `[benchmark-report]`, then
-`python3 scripts/check_benchmark_shape.py --markdown-table …`.
+from the CI `benchmark report` artifact (GHA `ubuntu-latest`). Wedge **cost shape** (CTE: indexed
+stays flat, scan grows, materialize ≫ inline; intersect: residual ≫ intersect, residual grows,
+intersect growth bounded) is gated on every push/PR via `scripts/run-benchmarks.sh --check-shape`.
+Re-refresh the absolute-time summary only after planner or storage changes that make those numbers
+stale — prefer `workflow_dispatch` or a commit message containing `[benchmark-report]`, then
+`python3 scripts/check_benchmark_shape.py --markdown-table …` (include the new intersect benches
+when refreshing).
 
-CTE inlining so outer predicates hit base-table indexes is packaged as a demo wedge: see
-[cte_index_wedge.md](cte_index_wedge.md) and [cte_materialize_comparison.md](cte_materialize_comparison.md).
+Demo wedges:
+
+- CTE inlining so outer predicates hit base-table indexes:
+  [cte_index_wedge.md](cte_index_wedge.md), [cte_materialize_comparison.md](cte_materialize_comparison.md)
+- Multi-index AND intersect vs single-index residual:
+  [multi_index_intersect_wedge.md](multi_index_intersect_wedge.md),
+  [bitmap_and_comparison.md](bitmap_and_comparison.md)
 
 ## Definition of Done
 

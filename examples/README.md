@@ -58,3 +58,28 @@ materialize vs inline comparison. Regenerate live plans with:
 ```sh
 scripts/compare_cte_materialize.sh
 ```
+
+## Multi-index intersect win
+
+[`multi_index_intersect_win.sql`](multi_index_intersect_win.sql) loads 200 employees with
+medium-cardinality `dept` / `city` keys, indexes both columns, then runs:
+
+```sql
+SELECT name FROM Employees WHERE dept = 1 AND city = 1;
+```
+
+`EXPLAIN` should report `multi-index intersect on dept, city`. A contrast table with only `dept`
+indexed shows hash equality on `dept` plus a residual `city` filter — the cost model intersects
+only when both probes are available and cheaper than a single index + residual.
+
+```sh
+./build/VertexDB_cli < examples/multi_index_intersect_win.sql
+```
+
+See [docs/multi_index_intersect_wedge.md](../docs/multi_index_intersect_wedge.md) and the Postgres
+BitmapAnd parity note in [docs/bitmap_and_comparison.md](../docs/bitmap_and_comparison.md).
+Regenerate live plans with:
+
+```sh
+scripts/compare_bitmap_and.sh
+```

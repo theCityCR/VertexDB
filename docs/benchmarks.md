@@ -18,6 +18,10 @@ broad performance regressions and compare storage and access paths under control
 - CTE index-win `SELECT` (inlined `WITH` + outer equality) with an `id` hash index, at 1,000 and
   100,000 rows.
 - Same CTE `SELECT` without an index (full-scan baseline) at 1,000 and 100,000 rows.
+- Multi-index AND intersect `SELECT` (`dept = 1 AND city = 1` with both columns indexed) at 1,000
+  and 100,000 rows.
+- Same AND query with only `dept` indexed (hash equality + residual `city`) at 1,000 and 100,000
+  rows.
 - Page-backed vs vector-backed row-store insert/select.
 - B+ tree ordered range lookup (`id > mid`).
 - Transaction snapshot read (`BEGIN` + indexed `SELECT`) and `BEGIN`/`ROLLBACK` undo path.
@@ -29,15 +33,16 @@ JSON and then checks **CTE cost-shape ratios** from the same process (CPU time, 
 
 ```sh
 scripts/run-benchmarks.sh                 # full report suite + shape check
-scripts/run-benchmarks.sh --check-shape   # CTE benches only (CI gate)
+scripts/run-benchmarks.sh --check-shape   # CTE + intersect benches (CI gate)
 python3 scripts/check_benchmark_shape.py --self-test
 ```
 
-CI runs `--check-shape` on `ubuntu-latest` and fails if the wedge shape regresses (indexed CTE at
-100k ≈ full scan, or `AS MATERIALIZED` no longer ≫ inline). Absolute nanoseconds are not gated:
-shared runners are too noisy. The CTE JSON artifact is uploaded for the shape gate. A **full report**
-JSON (all illustrative benches, median of 5) is produced by the `benchmark report` CI job — not on
-ordinary push/PR. Do not commit the raw JSON.
+CI runs `--check-shape` on `ubuntu-latest` and fails if a wedge shape regresses (indexed CTE at
+100k ≈ full scan, `AS MATERIALIZED` no longer ≫ inline, or multi-index intersect no longer ≪
+single-index residual). Absolute nanoseconds are not gated: shared runners are too noisy. The shape
+JSON artifact is uploaded for the shape gate. A **full report** JSON (all illustrative benches,
+median of 5) is produced by the `benchmark report` CI job — not on ordinary push/PR. Do not commit
+the raw JSON.
 
 Refresh this table without a local run:
 
@@ -62,7 +67,7 @@ cmake -S . -B build-benchmark \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build-benchmark
 ./build-benchmark/VertexDB_benchmarks \
-  --benchmark_filter='BM_IndexedPointLookup|BM_FilteredSelect|BM_NonIndexedFilteredSelect|BM_ConcurrentPointLookups|BM_VectorRowStore|BM_PageRowStore|BM_BTreeRangeQuery|BM_Transaction|BM_Cte' \
+  --benchmark_filter='BM_IndexedPointLookup|BM_FilteredSelect|BM_NonIndexedFilteredSelect|BM_ConcurrentPointLookups|BM_VectorRowStore|BM_PageRowStore|BM_BTreeRangeQuery|BM_Transaction|BM_Cte|BM_MultiIndexIntersectSelect|BM_SingleIndexResidualSelect' \
   --benchmark_repetitions=5 \
   --benchmark_report_aggregates_only=true \
   --benchmark_min_time=0.5s \
@@ -81,6 +86,9 @@ Suggested comparisons:
   cost; non-indexed grows with table size.
 - Inlined CTE vs `AS MATERIALIZED` (`BM_CteMaterializedSelect`) — materialize rebuilds a temp each
   iteration and should be far slower than the index-win inline path.
+- Multi-index intersect (`BM_MultiIndexIntersectSelect`) vs single-index residual
+  (`BM_SingleIndexResidualSelect`) — intersect should stay cheaper than probing one medium-cardinality
+  index and residual-filtering the other predicate; residual cost grows with posting-list size.
 - Page vs vector row-store insert/select.
 - Single-thread read vs. multi-thread read (`BM_ConcurrentPointLookups`).
 - Debug vs. release builds.
@@ -94,9 +102,14 @@ CI shape gates (median CPU time, same process):
 | scan CTE 100k / indexed CTE 100k | ≥ 20× | win at 100k is not a full scan |
 | materialized CTE 1k / indexed CTE 1k | ≥ 50× | `AS MATERIALIZED` is far slower than inline |
 | scan CTE 100k / scan CTE 1k | ≥ 10× | non-indexed baseline actually grows with N |
+| residual AND 100k / intersect 100k | ≥ 5× | intersect ≪ single-index + residual at scale |
+| residual AND 100k / residual AND 1k | ≥ 10× | residual baseline grows with posting-list size |
+| intersect 100k / intersect 1k | ≤ 150× | intersect does not collapse to full-table scan growth |
 
-Local Release ratios are typically ~1×, ~10³–10⁴×, ~10⁴×, and ~10²×. The gates are conservative so
-GHA noise does not fail a healthy run.
+Local Release CTE ratios are typically ~1×, ~10³–10⁴×, ~10⁴×, and ~10²×. Intersect posting lists grow
+with N (~N/10), so intersect growth is expected to be larger than a point lookup — the gate still
+flags a collapse toward scan-like cost. Gates are conservative so GHA noise does not fail a healthy
+run.
 
 The CTE benchmarks use the wedge query:
 
@@ -112,6 +125,18 @@ residual after CTE inlining. Without an index, the same SQL is a full scan. See
 [cte_index_wedge.md](cte_index_wedge.md) and the external Postgres comparison in
 [cte_materialize_comparison.md](cte_materialize_comparison.md).
 
+The intersect benchmarks use:
+
+```sql
+SELECT name FROM Employees WHERE dept = 1 AND city = 1;
+```
+
+With indexes on both columns (medium cardinality), `EXPLAIN` reports `multi-index intersect on
+dept, city`. With only `dept` indexed, the plan is hash equality + residual `city`. See
+[multi_index_intersect_wedge.md](multi_index_intersect_wedge.md) and
+[bitmap_and_comparison.md](bitmap_and_comparison.md). Absolute intersect timings are not in the
+dated summary below until the next `[benchmark-report]` refresh; CI still gates ratios.
+
 ## Summary — 2026-08-10
 
 Illustrative snapshot from GitHub Actions `ubuntu-latest` (not the CI shape gate). Google Benchmark
@@ -123,8 +148,8 @@ time**. Executor `Update`/`Delete` benches are omitted from this table (multi‑
 page-image WAL); they remain in the binary for local runs. Concurrent workers stop at 4 because
 `hardware_concurrency` on the runner is 4.
 
-The shape gate still uses only ratios from the CTE subset; absolute nanoseconds here are illustrative
-and will differ across runners and days.
+The shape gate uses ratios from the CTE and intersect subsets; absolute nanoseconds here are
+illustrative and will differ across runners and days.
 
 | Benchmark | Arg | CPU time |
 | --- | ---: | ---: |
@@ -175,10 +200,11 @@ Takeaways from this run:
 
 ## Remaining Follow-ups
 
-The absolute-time summary above is current as of the 2026-08-10 GHA report artifact. Re-run the
-`benchmark report` job (or a quiet local `scripts/run-benchmarks.sh`) and paste a new
-`--markdown-table` only after planner or storage changes that stale those numbers. The CTE shape
-gate already runs on every push/PR.
+The absolute-time summary above is current as of the 2026-08-10 GHA report artifact (CTE and older
+benches). Re-run the `benchmark report` job (or a quiet local `scripts/run-benchmarks.sh`) and paste
+a new `--markdown-table` after planner or storage changes that stale those numbers — and once to
+include `BM_MultiIndexIntersectSelect` / `BM_SingleIndexResidualSelect` absolute times. The CTE +
+intersect shape gate already runs on every push/PR.
 
 - Optional: Debug vs Release and sanitizer comparison tables.
 - Optional: include executor `Update`/`Delete` once those paths are cheap enough for short

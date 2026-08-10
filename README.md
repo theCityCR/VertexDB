@@ -98,17 +98,18 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 231 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
+- 232 GoogleTest cases across parser, storage, indexes, execution, nested SQL, planner behavior,
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   85.19%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
-  and MATERIALIZED baselines, page vs vector row-store, B+ range, transaction snapshot/rollback,
-  update/delete throughput, and concurrent indexed point lookups; summarized in
-  [docs/benchmarks.md](docs/benchmarks.md). CI gates CTE **cost shape** (ratios, not absolute ns)
-  via `scripts/run-benchmarks.sh --check-shape`. A full absolute-time report for doc refresh is a
+  and MATERIALIZED baselines, multi-index intersect vs single-index residual, page vs vector
+  row-store, B+ range, transaction snapshot/rollback, update/delete throughput, and concurrent
+  indexed point lookups; summarized in [docs/benchmarks.md](docs/benchmarks.md). CI gates wedge
+  **cost shape** (CTE + intersect ratios, not absolute ns) via
+  `scripts/run-benchmarks.sh --check-shape`. A full absolute-time report for doc refresh is a
   separate `benchmark report` CI job, not every push/PR.
 
 ## Current Limitations
@@ -142,12 +143,14 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 `WITH` nesting depth up to 3 and correlation through four outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
-positions, CI CTE cost-shape gating, indexed `UPDATE`/`DELETE` access paths, transactional
-`CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists, and a dated absolute-time
-benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
+transactional `CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists, and a dated
+absolute-time benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
-Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
-[materialize vs inline comparison](docs/cte_materialize_comparison.md).
+Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
+[materialize vs inline comparison](docs/cte_materialize_comparison.md), and
+[multi-index intersect wedge](docs/multi_index_intersect_wedge.md) /
+[BitmapAnd parity comparison](docs/bitmap_and_comparison.md).
 
 ## Documentation
 
@@ -159,6 +162,8 @@ Parallel product wedge: [CTE index wedge plan](docs/cte_index_wedge.md) and
 - [Deep features](docs/deep_features.md)
 - [CTE index wedge plan](docs/cte_index_wedge.md)
 - [CTE materialize vs inline comparison](docs/cte_materialize_comparison.md)
+- [Multi-index intersect wedge plan](docs/multi_index_intersect_wedge.md)
+- [BitmapAnd parity comparison](docs/bitmap_and_comparison.md)
 
 ## License
 

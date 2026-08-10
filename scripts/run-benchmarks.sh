@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 # Build (optional) and run VertexDB Google Benchmarks with median sampling, then
-# check CTE cost-shape ratios from the same process.
+# check wedge cost-shape ratios (CTE + multi-index intersect) from the same process.
 #
 # Usage:
 #   scripts/run-benchmarks.sh                 # full report suite + shape check
-#   scripts/run-benchmarks.sh --check-shape   # CTE benches only (CI gate)
+#   scripts/run-benchmarks.sh --check-shape   # CTE + intersect benches (CI gate)
 #   scripts/run-benchmarks.sh --skip-build    # use an existing binary
 #
 # Full-report JSON is the input for docs/benchmarks.md refresh:
@@ -28,9 +28,9 @@ PYTHON="${PYTHON:-python3}"
 CHECK_SHAPE_ONLY=0
 SKIP_BUILD=0
 
-REPORT_FILTER='BM_IndexedPointLookup|BM_FilteredSelect|BM_NonIndexedFilteredSelect|BM_ConcurrentPointLookups|BM_VectorRowStore|BM_PageRowStore|BM_BTreeRangeQuery|BM_Transaction|BM_Cte'
+REPORT_FILTER='BM_IndexedPointLookup|BM_FilteredSelect|BM_NonIndexedFilteredSelect|BM_ConcurrentPointLookups|BM_VectorRowStore|BM_PageRowStore|BM_BTreeRangeQuery|BM_Transaction|BM_Cte|BM_MultiIndexIntersectSelect|BM_SingleIndexResidualSelect'
 # `$` so /1000 does not also match materialized /10000.
-SHAPE_FILTER='BM_CteIndexedWinSelect|BM_CteNonIndexedSelect|BM_CteMaterializedSelect/1000$'
+SHAPE_FILTER='BM_CteIndexedWinSelect|BM_CteNonIndexedSelect|BM_CteMaterializedSelect/1000$|BM_MultiIndexIntersectSelect|BM_SingleIndexResidualSelect'
 
 usage() {
     sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
