@@ -22,6 +22,7 @@ class Parser {
     [[nodiscard]] bool match(TokenType type, std::string_view lexeme = {});
     void expect(TokenType type, std::string_view lexeme = {});
     void expectStatementEnd();
+    [[noreturn]] void error(std::string_view message) const;
 
     [[nodiscard]] CreateDatabase parseCreateDatabase();
     [[nodiscard]] CreateTable parseCreateTable();
@@ -62,8 +63,8 @@ class Parser {
     // Positional `?` parameter indices assigned while parsing prepared SQL.
     std::size_t nextParameterIndex_{0};
 
-    // Max outer FROM frames while parsing nested IN/EXISTS (two-level correlation).
-    static constexpr std::size_t kMaxOuterCorrelationDepth = 2;
+    // Max outer FROM frames while parsing nested IN/EXISTS (four-level correlation).
+    static constexpr std::size_t kMaxOuterCorrelationDepth = 4;
 };
 
 } // namespace VertexDB

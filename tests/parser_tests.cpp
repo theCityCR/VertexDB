@@ -1,6 +1,9 @@
 #include "VertexDB/parser/parser.hpp"
+#include "VertexDB/parser/parse_error.hpp"
 
 #include <gtest/gtest.h>
+
+#include <string>
 
 namespace VertexDB {
 
@@ -89,6 +92,29 @@ TEST(ParserTests, RejectsTrailingTokens) {
                  std::runtime_error);
 }
 
+TEST(ParserTests, ParseErrorsIncludeSourcePositions) {
+    Parser parser;
+    try {
+        (void)parser.parse("SELECT * FROM Employees LIMIT 1 unexpected;");
+        FAIL() << "expected ParseError";
+    } catch (const ParseError &error) {
+        EXPECT_EQ(error.line(), 1U);
+        EXPECT_GT(error.column(), 1U);
+        EXPECT_NE(std::string{error.what()}.find("line 1, column"), std::string::npos);
+        EXPECT_NE(std::string{error.what()}.find("unexpected trailing token"), std::string::npos);
+    }
+
+    try {
+        (void)parser.parse("CREATE\nFOO;");
+        FAIL() << "expected ParseError";
+    } catch (const ParseError &error) {
+        EXPECT_EQ(error.line(), 2U);
+        EXPECT_NE(std::string{error.what()}.find("line 2, column"), std::string::npos);
+        EXPECT_NE(std::string{error.what()}.find("expected DATABASE, TABLE, or INDEX"),
+                  std::string::npos);
+    }
+}
+
 TEST(ParserTests, ParsesJoinAndPreparedStatements) {
     Parser parser;
 
@@ -99,6 +125,18 @@ TEST(ParserTests, ParsesJoinAndPreparedStatements) {
     EXPECT_EQ(select.joins[0].table, "Departments");
     EXPECT_EQ(select.joins[0].leftColumn, "dept_id");
     EXPECT_EQ(select.joins[0].rightColumn, "id");
+    EXPECT_FALSE(select.joins[0].tableAlias.has_value());
+
+    auto aliasedJoin =
+        parser.parse("SELECT e.name, d.dept FROM Employees AS e JOIN Departments AS d ON "
+                     "e.dept_id = d.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(aliasedJoin));
+    const auto &aliased = std::get<Select>(aliasedJoin);
+    ASSERT_TRUE(aliased.tableAlias.has_value());
+    EXPECT_EQ(*aliased.tableAlias, "e");
+    ASSERT_EQ(aliased.joins.size(), 1U);
+    ASSERT_TRUE(aliased.joins[0].tableAlias.has_value());
+    EXPECT_EQ(*aliased.joins[0].tableAlias, "d");
 
     auto qualified =
         parser.parse("SELECT Employees.name, Departments.dept FROM Employees JOIN Departments ON "
@@ -117,6 +155,7 @@ TEST(ParserTests, ParsesJoinAndPreparedStatements) {
 
     auto aggregate = parser.parse(
         "SELECT dept_id, COUNT(*), SUM(salary) FROM Employees GROUP BY dept_id;");
+
     ASSERT_TRUE(std::holds_alternative<Select>(aggregate));
     const auto &agg = std::get<Select>(aggregate);
     ASSERT_EQ(agg.columns.size(), 3U);

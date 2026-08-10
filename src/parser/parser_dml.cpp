@@ -133,6 +133,12 @@ Select Parser::parseSelectAfterSelectKeyword() {
         if (joinedTable.type != TokenType::Identifier) {
             throw std::runtime_error("expected joined table name");
         }
+        std::optional<std::string> joinedAlias;
+        (void)match(TokenType::Identifier, "AS");
+        if (peek().type == TokenType::Identifier &&
+            !parser_detail::isSelectClauseKeyword(peek().lexeme)) {
+            joinedAlias = advance().lexeme;
+        }
         expect(TokenType::Identifier, "ON");
         const auto leftColumn = advance();
         if (leftColumn.type != TokenType::Identifier) {
@@ -143,7 +149,8 @@ Select Parser::parseSelectAfterSelectKeyword() {
         if (rightColumn.type != TokenType::Identifier) {
             throw std::runtime_error("expected right join column");
         }
-        joins.push_back(JoinClause{joinedTable.lexeme, leftColumn.lexeme, rightColumn.lexeme});
+        joins.push_back(
+            JoinClause{joinedTable.lexeme, leftColumn.lexeme, rightColumn.lexeme, std::move(joinedAlias)});
     }
 
     std::optional<Predicate> where;

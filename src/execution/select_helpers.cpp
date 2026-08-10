@@ -1,6 +1,7 @@
 #include "VertexDB/execution/select_helpers.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 
 namespace VertexDB {
@@ -57,10 +58,18 @@ std::optional<std::size_t> resolveResultColumn(std::span<const std::string> colu
 }
 
 std::optional<std::size_t> resolveTableColumn(const Table &table, std::string_view tableName,
-                                              std::string_view requested) {
-    const auto qualifier = std::string{tableName} + ".";
-    if (requested.starts_with(qualifier)) {
-        requested.remove_prefix(qualifier.size());
+                                              std::string_view requested,
+                                              std::optional<std::string_view> tableAlias) {
+    const auto stripQualifier = [&](std::string_view qualifier) {
+        const auto prefix = std::string{qualifier} + ".";
+        if (requested.starts_with(prefix)) {
+            requested.remove_prefix(prefix.size());
+            return true;
+        }
+        return false;
+    };
+    if (!stripQualifier(tableName) && tableAlias) {
+        (void)stripQualifier(*tableAlias);
     }
     return table.columnIndex(requested);
 }

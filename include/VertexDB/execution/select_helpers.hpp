@@ -27,9 +27,9 @@ void sortRowsByColumn(std::vector<Row> &rows, std::size_t columnIndex, bool asce
 [[nodiscard]] std::optional<std::size_t> resolveResultColumn(std::span<const std::string> columns,
                                                              std::string_view requested);
 
-[[nodiscard]] std::optional<std::size_t> resolveTableColumn(const Table &table,
-                                                            std::string_view tableName,
-                                                            std::string_view requested);
+[[nodiscard]] std::optional<std::size_t> resolveTableColumn(
+    const Table &table, std::string_view tableName, std::string_view requested,
+    std::optional<std::string_view> tableAlias = std::nullopt);
 
 [[nodiscard]] QueryResult messageResult(bool success, std::string message);
 

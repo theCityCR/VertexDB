@@ -230,7 +230,7 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                     node.referencesOuter = true;
                     if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
                         throw std::runtime_error(
-                            "multi-level correlated subqueries are not supported");
+                            "correlated subquery exceeds maximum outer depth");
                     }
                 }
             } else if constexpr (std::is_same_v<T, ComparisonPred>) {
@@ -242,10 +242,10 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                     }
                 }
                 if (outer) {
-                    // Allow up to two outer FROM frames (main + one mid-level subquery).
+                    // Allow up to four outer FROM frames while correlating.
                     if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
                         throw std::runtime_error(
-                            "multi-level correlated subqueries are not supported");
+                            "correlated subquery exceeds maximum outer depth");
                     }
                     node.referencesOuter = true;
                 }

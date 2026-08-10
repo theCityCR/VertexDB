@@ -26,6 +26,10 @@ enum class TokenType : std::uint8_t {
 struct Token {
     TokenType type;
     std::string lexeme;
+    // 0-based byte offset into the original SQL; line/column are 1-based.
+    std::size_t offset{0};
+    std::size_t line{1};
+    std::size_t column{1};
 };
 
 } // namespace VertexDB
