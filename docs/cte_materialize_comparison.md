@@ -31,12 +31,13 @@ residual: yes
 The equivalent flat form `WHERE salary > 100000.0 AND id = 1` chooses the same hash lookup + residual
 (without the inlining note). Runnable demo: [`examples/cte_index_win.sql`](../examples/cte_index_win.sql).
 
-Cost shape at scale (Release summary in [benchmarks.md](benchmarks.md), 2026-08-10):
+Cost shape at scale (Release summary in [benchmarks.md](benchmarks.md), GHA `ubuntu-latest`
+2026-08-10 median-of-5):
 
 | Path | 1k rows | 100k rows |
 |------|---------|-----------|
-| Indexed inlined CTE (`BM_CteIndexedWinSelect`) | ~6.1 µs | ~5.9 µs |
-| Full-scan CTE baseline (`BM_CteNonIndexedSelect`) | ~297 µs | ~38 ms |
+| Indexed inlined CTE (`BM_CteIndexedWinSelect`) | ~1.96 µs | ~1.97 µs |
+| Full-scan CTE baseline (`BM_CteNonIndexedSelect`) | ~152 µs | ~25.7 ms |
 
 Indexed cost stays near point-lookup; the non-indexed baseline grows with table size. That baseline
 is the in-tree stand-in for “materialize then filter” cost when no external DB is available.

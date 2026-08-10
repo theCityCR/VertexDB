@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -82,3 +83,26 @@ jobs:
           name: benchmark-shape-json
           path: build-benchmark/benchmark-shape.json
           if-no-files-found: ignore
+
+  # Full illustrative table (slow: median-of-5, includes rollback / MATERIALIZED).
+  # Does not run on ordinary push/PR. Trigger with workflow_dispatch once this job
+  # exists on the default branch, or push a commit whose message contains
+  # `[benchmark-report]`.
+  benchmark-report:
+    name: benchmark report
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[benchmark-report]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Full report suite + shape check
+        run: scripts/run-benchmarks.sh
+
+      - name: Upload benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-json
+          path: build-benchmark/benchmark-report.json
+          if-no-files-found: error
