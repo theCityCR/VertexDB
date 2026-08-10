@@ -116,7 +116,10 @@ Or feed an example script:
 ## Current Limitations
 
 - Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
-  transaction-atomic page-image WAL (DML deferred until `COMMIT` as one batch, dropped on `ROLLBACK`)
+  transaction-atomic page-image WAL (DML deferred until `COMMIT` as one batch, dropped on
+  `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; classic SI still allows
+  write skew (no SSI / predicate locks). One executor holds at most one open transaction; writers
+  are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
   durable prefix
@@ -145,8 +148,9 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
-transactional `CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists, and a dated
-absolute-time benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+transactional `CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists,
+`EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, and a dated absolute-time benchmark
+summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 [materialize vs inline comparison](docs/cte_materialize_comparison.md),

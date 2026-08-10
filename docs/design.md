@@ -36,9 +36,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
   still replayable), logical SQL for DDL, truncated-trailing-record tolerance, startup replay, save
   checkpoints, and crash-simulation tests
-- Concurrency: executor-level reader/writer synchronization and concurrent client tests
-- Transactions: commit-aware MVCC snapshot isolation, undo-log DML rollback, transaction-batched
-  page-image WAL flush on `COMMIT`
+- Concurrency: executor-level reader/writer synchronization (`LockManager`) and concurrent client
+  tests; SI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
+- Transactions: commit-aware MVCC snapshot isolation (dirty reads / SI watermark / mid-txn phantoms
+  prevented; write skew allowed), undo-log DML rollback, transaction-batched page-image WAL flush
+  on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
   selection (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), expression-index matching,
@@ -51,6 +53,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`) and save/load are
   rejected inside an open transaction. `CREATE INDEX` is transactional (undo + deferred logical
   WAL); there is no public `DROP INDEX` SQL yet (internal drop supports undo).
+- Snapshot isolation prevents dirty reads and hides commits after `BEGIN`; classic SI still allows
+  write skew. There are no row/page locks, predicate locks, or SSI aborts. See
+  [si_anomaly_wedge.md](si_anomaly_wedge.md).
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
   `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
 - Top-level `OR` of equality (or expression-equality) index probes uses multi-index union when the
@@ -74,26 +79,22 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-Quality polish shipped literal `IN (v1, v2, …)` parsing, indexed `UPDATE`/`DELETE` edge-path tests,
-expression same-column `OR`→`IN`, and an MVCC fix so `UPDATE` closes the prior version (UPDATE then
-`DELETE` no longer resurrects the pre-update image). Multi-index AND intersect is packaged as a second
-demo wedge (demo SQL, scaled regression, microbenchmarks, CI shape gate, BitmapAnd parity note).
-Catalog DDL and `SAVE`/`LOAD` remain rejected inside open transactions. Heterogeneous nested `OR`
-under `AND`, composite Intersect∪Union, and further recursive/set-op surface remain intentionally
-limited (see [sql.md](sql.md)). `EXPLAIN ANALYZE` for SELECT/WITH compares `est_rows` to measured
-`actual_rows` (and residual `candidates`) in one execute pass. `EXPLAIN` for mutations and public
-`DROP INDEX` SQL are still out of scope.
+Shipped recently (no longer open work): literal `IN` lists, indexed `UPDATE`/`DELETE` access paths,
+transactional `CREATE INDEX`, same-column `OR`→`IN`, MVCC `UPDATE` close-prior-version,
+`EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), multi-index AND intersect packaging,
+and the SI anomaly concurrency wedge.
 
-The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
-from the CI `benchmark report` artifact (GHA `ubuntu-latest`). Wedge **cost shape** (CTE: indexed
-stays flat, scan grows, materialize ≫ inline; intersect: residual ≫ intersect, residual grows,
-intersect growth bounded) is gated on every push/PR via `scripts/run-benchmarks.sh --check-shape`.
-Re-refresh the absolute-time summary only after planner or storage changes that make those numbers
-stale — prefer `workflow_dispatch` or a commit message containing `[benchmark-report]`, then
-`python3 scripts/check_benchmark_shape.py --markdown-table …` (include the new intersect benches
-when refreshing).
+Forward-looking options (intentional gaps, pick by teaching value):
 
-Demo wedges:
+- Planner: heterogeneous nested `OR` under `AND`; composite Intersect∪Union
+- SQL / catalog: `EXPLAIN` for mutations; public `DROP INDEX`; catalog DDL and `SAVE`/`LOAD`
+  inside open transactions
+- Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
+- Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
+  changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
+  gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
+
+Demo wedges (done):
 
 - CTE inlining so outer predicates hit base-table indexes:
   [cte_index_wedge.md](cte_index_wedge.md), [cte_materialize_comparison.md](cte_materialize_comparison.md)

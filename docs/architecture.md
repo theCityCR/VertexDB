@@ -56,7 +56,8 @@ CLI
   `JOIN` targets and minimal `WITH RECURSIVE`), correlated/`IN` prep, and cost-based access-path /
   join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
   `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
-  complementary scan), prefix `LIKE` / trigram intersect, and residual filters.   `QueryPlanner` is
+  complementary scan), prefix `LIKE` / trigram intersect, and residual filters. `EXPLAIN` /
+  `EXPLAIN ANALYZE` formatting lives in `query_planner_format.cpp`. `QueryPlanner` is
   split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`
   orchestration), `query_planner_access.cpp` (OR-union / AND-intersect / best-path finalize),
   `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
@@ -72,11 +73,11 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
 - `execution`: `QueryExecutor` is a stable façade that composes focused execution types.
   `ExecutionContext` holds non-owning refs to the database, planner, and txn session plus peer
   pointers to `SelectEngine` / `SubqueryRuntime` (no `QueryExecutor` friendship).
-  `SelectEngine` owns SELECT/join/EXPLAIN execution (`select_engine.cpp` orchestration,
-  `select_engine_scan.cpp`, `select_engine_join.cpp`). `DmlEngine` owns INSERT/UPDATE/DELETE with
-  undo and page-image WAL redo; UPDATE/DELETE reuse `QueryPlanner::planSelect` plus
-  `SelectEngine::collectVisibleEntries` so mutation `WHERE` clauses use the same index access
-  paths as SELECT. `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
+  `SelectEngine` owns SELECT/join/`EXPLAIN`/`EXPLAIN ANALYZE` execution (`select_engine.cpp`
+  orchestration, `select_engine_scan.cpp`, `select_engine_join.cpp`). `DmlEngine` owns
+  INSERT/UPDATE/DELETE with undo and page-image WAL redo; UPDATE/DELETE reuse
+  `QueryPlanner::planSelect` plus `SelectEngine::collectVisibleEntries` so mutation `WHERE`
+  clauses use the same index access paths as SELECT. `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
   evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`, `subquery_runtime_cte.cpp`),
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.
@@ -91,8 +92,12 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
 - `persistence`: `StorageManager` orchestrates snapshot paths; the slim `tcrdb_codec` orchestrates
   `.tcrdb` v1–v4 encode/decode across focused value, table, and index codec translation units.
   WAL recovery uses page-image redo plus legacy physical/logical records.
-- `concurrency`: executor-level reader/writer synchronization via `LockManager`.
+- `concurrency`: executor-level reader/writer synchronization via `LockManager` (shared readers;
+  exclusive writers). One `QueryExecutor` holds at most one open SQL transaction.
 - `transaction`: commit sequences, MVCC row versions, and per-transaction undo-log rollback.
+  Snapshot isolation prevents dirty reads and hides post-`BEGIN` commits; classic SI still allows
+  write skew (no SSI). Multi-txn interleaving tests share a `Table` + `TransactionManager`
+  directly — see [si_anomaly_wedge.md](si_anomaly_wedge.md).
 
 Public module headers carry a short ownership banner pointing at sibling TUs when useful;
 see `AGENTS.md` for the agent-oriented layout map.
@@ -124,7 +129,8 @@ page-image redo.
 `Table` exposes transaction-aware snapshots through `rowsSnapshot(ReadSnapshot, TransactionManager)`
 and `rowsById(..., ReadSnapshot, TransactionManager)`. `TxnSession` stamps DML with SQL transaction
 ids, captures a commit-seq snapshot at `BEGIN`, and supplies all SELECT visibility state for
-commit-aware MVCC (including dirty-read prevention for concurrent autocommit readers).
+commit-aware MVCC (dirty-read prevention, SI watermark for post-`BEGIN` commits, and held-snapshot
+phantom hiding). Write skew remains allowed under classic SI.
 `BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML and transactional
 `CREATE INDEX` record compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to
 the same `Database` instance, and `COMMIT` discards the log after `RecoveryService` flushes
@@ -141,23 +147,26 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
   DML and transactional `CREATE INDEX`; DML WAL records are deferred until `COMMIT` (one atomic
   batch) and dropped on `ROLLBACK`. Catalog DDL and `SAVE`/`LOAD` remain rejected in open
-  transactions.
+  transactions. SI allows write skew; there are no row/page locks, predicate locks, or SSI aborts.
 
 ## Current Data Flow
 
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
-   chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes, nesting depth up to 3, and minimal `WITH RECURSIVE`,
-   `IN`/`EXISTS`, `LIKE`/`~`, expression indexes including trigram, and `EXPLAIN`). Prepared
-   statements store that AST with `?` parameter slots for later binding.
-4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including nested
-   `WITH` up to depth 3, `WITH`/`JOIN` inside `IN`/`EXISTS`, outer `JOIN` against CTE/derived
-   aliases, and minimal `WITH RECURSIVE`); the executor materializes uncorrelated `IN` subqueries
-   and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding frames
-   (including `FROM` / `JOIN` table aliases), routing joined subqueries through `executeJoinSelect`.
-5. `QueryPlanner` chooses an access path (column or expression index, prefix `LIKE`, trigram
-   intersect, residual filters) and per-join algorithms for left-deep `INNER`/`LEFT`/`RIGHT`/
-   `FULL`/`CROSS` chains; `SelectEngine` runs filters/joins, then optional hash aggregation, then
-   `ORDER BY`/`LIMIT`.
+   chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes,
+   nesting depth up to 3, and minimal `WITH RECURSIVE`, `IN`/`EXISTS`, `LIKE`/`~`, expression
+   indexes including trigram, and `EXPLAIN` / `EXPLAIN ANALYZE`). Prepared statements store that
+   AST with `?` parameter slots for later binding.
+4. For `SELECT`/`EXPLAIN`/`EXPLAIN ANALYZE`, a rewriter inlines or materializes CTEs/derived tables
+   (including nested `WITH` up to depth 3, `WITH`/`JOIN` inside `IN`/`EXISTS`, outer `JOIN` against
+   CTE/derived aliases, and minimal `WITH RECURSIVE`); the executor materializes uncorrelated `IN`
+   subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding
+   frames (including `FROM` / `JOIN` table aliases), routing joined subqueries through
+   `executeJoinSelect`.
+5. `QueryPlanner` chooses an access path (column or expression index, multi-index AND intersect /
+   OR union, prefix `LIKE`, trigram intersect, residual filters) and per-join algorithms for
+   left-deep `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` chains; `SelectEngine` runs filters/joins, then
+   optional hash aggregation, then `ORDER BY`/`LIMIT`. `EXPLAIN ANALYZE` executes once and appends
+   `actual_rows` / optional residual `candidates` / `actual_time_ms` beside `est_rows`/`cost`.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.

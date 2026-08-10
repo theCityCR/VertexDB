@@ -44,3 +44,6 @@ session, peer pointers). They do **not** friend `QueryExecutor`.
 - [docs/design.md](docs/design.md) — status, limitations, definition of done
 - [docs/testing.md](docs/testing.md) — test file ownership and coverage floor
 - [docs/sql.md](docs/sql.md) — SQL surface
+- Portfolio wedges: [cte_index_wedge.md](docs/cte_index_wedge.md),
+  [multi_index_intersect_wedge.md](docs/multi_index_intersect_wedge.md),
+  [si_anomaly_wedge.md](docs/si_anomaly_wedge.md)
