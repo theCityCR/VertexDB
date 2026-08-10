@@ -69,6 +69,13 @@ std::vector<Row> Table::rowsById(std::span<const RowId> rowIds, const ReadSnapsh
     return versions_.visibleRowsById(rowIds, snapshot, transactions);
 }
 
+std::vector<std::pair<RowId, Row>>
+Table::visibleEntriesById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
+                          const TransactionManager &transactions) const {
+    std::shared_lock lock{mutex_};
+    return versions_.visibleEntriesById(rowIds, snapshot, transactions);
+}
+
 std::size_t Table::rowCount() const {
     std::shared_lock lock{mutex_};
     return rowStore_->size();

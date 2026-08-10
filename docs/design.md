@@ -23,7 +23,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   `EXPLAIN`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
   `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
-  delete, table management, multi-join chains (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), CTE/derived-table
+  delete (UPDATE/DELETE `WHERE` uses the same planner index access paths as SELECT), table management,
+  multi-join chains (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), CTE/derived-table
   inlining or materialization (including recursive delta iteration), correlated `IN`/`EXISTS` with
   alias scopes (including joined subqueries), expression-index maintenance (including trigram),
   prepared AST binding, save/load, recovery, and transactional read routing
@@ -69,9 +70,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-The optional educational follow-ups from the prior roadmap (`RIGHT`/`FULL`/`CROSS` joins, `JOIN`
-inside `IN`/`EXISTS`, outer `JOIN` against CTE/derived aliases, and minimal `WITH RECURSIVE`) are
-shipped. Further recursive/set-op surface remains intentionally limited (see [sql.md](sql.md)).
+Indexed `UPDATE`/`DELETE` (reuse of SELECT access paths via `collectVisibleEntries`) is shipped.
+Further recursive/set-op surface remains intentionally limited (see [sql.md](sql.md)).
+`EXPLAIN` for mutations is still out of scope.
 
 The illustrative absolute-time table in [benchmarks.md](benchmarks.md) was refreshed on 2026-08-10
 from the CI `benchmark report` artifact (GHA `ubuntu-latest`). CTE **cost shape** (indexed stays

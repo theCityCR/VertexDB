@@ -190,4 +190,9 @@ std::vector<Row> SelectEngine::rowsByIdForRead(const Table &table,
     return table.rowsById(rowIds, ctx_.readSnapshot(), ctx_.session.transactionManager());
 }
 
+std::vector<std::pair<RowId, Row>>
+SelectEngine::entriesByIdForRead(const Table &table, std::span<const RowId> rowIds) const {
+    return table.visibleEntriesById(rowIds, ctx_.readSnapshot(), ctx_.session.transactionManager());
+}
+
 } // namespace VertexDB

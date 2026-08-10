@@ -2,12 +2,26 @@
 
 #include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/transaction/undo_log.hpp"
 
+#include <optional>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace VertexDB {
+namespace {
+
+[[nodiscard]] Select mutationScanSelect(std::string table, std::optional<Predicate> where) {
+    Select scan;
+    scan.table = std::move(table);
+    scan.columns = {SelectExpr::makeStar()};
+    scan.where = std::move(where);
+    return scan;
+}
+
+} // namespace
 
 DmlEngine::DmlEngine(ExecutionContext &ctx, RecoveryService &recovery) noexcept
     : ctx_(ctx), recovery_(recovery) {}
@@ -41,14 +55,14 @@ QueryResult DmlEngine::executeUpdate(const Update &command) {
         throw std::runtime_error("unknown update column");
     }
 
+    const Select scan = mutationScanSelect(command.table, command.where);
+    const QueryPlan plan = ctx_.planner.planSelect(scan, *table);
+    // Collect all targets before mutating so index rebuilds mid-statement cannot skip hits.
+    const auto targets = ctx_.select->collectVisibleEntries(scan, *table, plan);
+
     std::size_t count = 0;
-    const auto snapshot = ctx_.readSnapshot();
     const auto writerId = ctx_.session.writeTransactionId();
-    for (const auto &[rowId, row] :
-         table->visibleEntries(snapshot, ctx_.session.transactionManager())) {
-        if (command.where && !ctx_.select->matches(row, *table, *command.where)) {
-            continue;
-        }
+    for (const auto &[rowId, row] : targets) {
         const Row beforeImage = row;
         table->clearDirtyTracking();
         if (table->update(rowId, *target, command.value, writerId)) {
@@ -65,14 +79,13 @@ QueryResult DmlEngine::executeUpdate(const Update &command) {
 
 QueryResult DmlEngine::executeDelete(const Delete &command) {
     auto table = ctx_.select->requireTable(command.table);
+    const Select scan = mutationScanSelect(command.table, command.where);
+    const QueryPlan plan = ctx_.planner.planSelect(scan, *table);
+    const auto targets = ctx_.select->collectVisibleEntries(scan, *table, plan);
+
     std::size_t count = 0;
-    const auto snapshot = ctx_.readSnapshot();
     const auto writerId = ctx_.session.writeTransactionId();
-    for (const auto &[rowId, row] :
-         table->visibleEntries(snapshot, ctx_.session.transactionManager())) {
-        if (command.where && !ctx_.select->matches(row, *table, *command.where)) {
-            continue;
-        }
+    for (const auto &[rowId, row] : targets) {
         const Row beforeImage = row;
         table->clearDirtyTracking();
         if (table->erase(rowId, writerId)) {

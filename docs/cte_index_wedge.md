@@ -141,7 +141,8 @@ inline path so nested SQL does not silently drop indexes. Details:
 - Cost-based access paths using live row counts, index distinct keys, and optional `ANALYZE`
   histograms; multi-index AND intersection when cheaper than a single index + residual.
 - This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
-- `UPDATE` / `DELETE` still bypass this index access-path planner.
+- `UPDATE` / `DELETE` reuse the same planner access paths for their `WHERE` clause (not part of
+  this wedge demo, but no longer a full-scan-only limitation).
 
 ### Evidence checklist
 

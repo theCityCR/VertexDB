@@ -74,7 +74,9 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   pointers to `SelectEngine` / `SubqueryRuntime` (no `QueryExecutor` friendship).
   `SelectEngine` owns SELECT/join/EXPLAIN execution (`select_engine.cpp` orchestration,
   `select_engine_scan.cpp`, `select_engine_join.cpp`). `DmlEngine` owns INSERT/UPDATE/DELETE with
-  undo and page-image WAL redo. `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
+  undo and page-image WAL redo; UPDATE/DELETE reuse `QueryPlanner::planSelect` plus
+  `SelectEngine::collectVisibleEntries` so mutation `WHERE` clauses use the same index access
+  paths as SELECT. `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
   evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`, `subquery_runtime_cte.cpp`),
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.

@@ -35,6 +35,9 @@ class MVCCRowStore {
                                                    const ReadSnapshot &snapshot,
                                                    const TransactionManager &transactions) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>>
+    visibleEntriesById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
+                       const TransactionManager &transactions) const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>>
     visibleEntries(const ReadSnapshot &snapshot, const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
 

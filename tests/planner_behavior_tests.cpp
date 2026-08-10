@@ -254,10 +254,34 @@ TEST(PlannerBehaviorTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
     EXPECT_NE(text.find("residual: no"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, UpdateAndDeleteUseFullScanEvenWhenPredicateColumnIndexed) {
-    // Intentional v1 limitation (docs/sql.md): UPDATE/DELETE do not use planner index paths.
+TEST(PlannerBehaviorTests, UpdateAndDeleteWherePlansHashIndexWhenPredicateColumnIndexed) {
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+    for (int i = 1; i <= 3; ++i) {
+        table.insert({Value{i}, Value{"n" + std::to_string(i)}, Value{100000.0 + i}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+
+    Select updateScan{"Employees", {}, {SelectExpr::makeStar()},
+                      makeComparison("id", ComparisonOperator::Equal, Value{1}),
+                      {},
+                      {}};
+    const auto updatePlan = QueryPlanner{}.planSelect(updateScan, table);
+    EXPECT_EQ(updatePlan.accessPath(), AccessPath::HashEq);
+    EXPECT_EQ(std::get<HashEqPlan>(updatePlan.path).indexColumn, "id");
+    EXPECT_FALSE(updatePlan.residual().has_value());
+
+    Select deleteScan{"Employees", {}, {SelectExpr::makeStar()},
+                      makeComparison("id", ComparisonOperator::Equal, Value{2}),
+                      {},
+                      {}};
+    const auto deletePlan = QueryPlanner{}.planSelect(deleteScan, table);
+    EXPECT_EQ(deletePlan.accessPath(), AccessPath::HashEq);
+}
+
+TEST(PlannerBehaviorTests, UpdateAndDeleteUseIndexAccessForEqualityPredicate) {
     Parser parser;
-    auto executor = makeExecutor("dml-scan");
+    auto executor = makeExecutor("dml-index");
     seedEmployees(executor, parser, true, false);
 
     ASSERT_TRUE(
@@ -275,6 +299,73 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseFullScanEvenWhenPredicateColumnInde
     ASSERT_EQ(remaining.rows.size(), 2U);
     EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(1)});
     EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
+}
+
+TEST(PlannerBehaviorTests, UpdateUsesIndexProbeWithResidualAndFilter) {
+    Parser parser;
+    auto executor = makeExecutor("dml-residual");
+    seedEmployees(executor, parser, true, false);
+
+    // Indexed equality + residual name filter: only Alice matches both arms.
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET salary = 1.0 WHERE id = 1 AND name = \"Alice\";"))
+                    .success);
+    auto alice = executor.execute(parser.parse("SELECT salary FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(alice.success);
+    ASSERT_EQ(alice.rows.size(), 1U);
+    EXPECT_EQ(alice.rows[0][0], Value{1.0});
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET salary = 2.0 WHERE id = 2 AND name = \"Nope\";"))
+                    .success);
+    auto bob = executor.execute(parser.parse("SELECT salary FROM Employees WHERE id = 2;"));
+    ASSERT_TRUE(bob.success);
+    ASSERT_EQ(bob.rows.size(), 1U);
+    EXPECT_EQ(bob.rows[0][0], Value{90000.0});
+}
+
+TEST(PlannerBehaviorTests, DeleteUsesOrderedRangeWhenSalaryIndexed) {
+    Parser parser;
+    auto executor = makeExecutor("dml-range");
+    seedEmployees(executor, parser, false, true);
+
+    Select scan{"Employees", {}, {SelectExpr::makeStar()},
+                makeComparison("salary", ComparisonOperator::Greater, Value{100000.0}),
+                {},
+                {}};
+    // Plan against a table that mirrors the seeded index so the desired path is Hash/Ordered.
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+    table.insert({Value{1}, Value{"Alice"}, Value{120000.0}});
+    table.insert({Value{2}, Value{"Bob"}, Value{90000.0}});
+    table.insert({Value{3}, Value{"Cara"}, Value{110000.0}});
+    ASSERT_TRUE(table.createIndex("idx_salary", "salary"));
+    const auto plan = QueryPlanner{}.planSelect(scan, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::OrderedRange);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("DELETE FROM Employees WHERE salary > 100000.0;")).success);
+    auto remaining =
+        executor.execute(parser.parse("SELECT name FROM Employees ORDER BY name ASC;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 1U);
+    EXPECT_EQ(remaining.rows[0][0], Value{"Bob"});
+}
+
+TEST(PlannerBehaviorTests, UpdateWithoutWhereStillMutatesAllVisibleRows) {
+    Parser parser;
+    auto executor = makeExecutor("dml-no-where");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("UPDATE Employees SET name = \"X\";")).success);
+    auto names = executor.execute(parser.parse("SELECT name FROM Employees;"));
+    ASSERT_TRUE(names.success);
+    ASSERT_EQ(names.rows.size(), 3U);
+    for (const auto &row : names.rows) {
+        EXPECT_EQ(row[0], Value{"X"});
+    }
 }
 
 TEST(PlannerBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality) {

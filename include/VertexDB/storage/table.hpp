@@ -47,6 +47,9 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds,
                                             const ReadSnapshot &snapshot,
                                             const TransactionManager &transactions) const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>>
+    visibleEntriesById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
+                       const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t rowCount() const override;
     [[nodiscard]] std::size_t capacity() const;
     [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;

@@ -79,6 +79,19 @@ std::vector<Row> MVCCRowStore::visibleRowsById(std::span<const RowId> rowIds,
 }
 
 std::vector<std::pair<RowId, Row>>
+MVCCRowStore::visibleEntriesById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
+                                 const TransactionManager &transactions) const {
+    std::vector<std::pair<RowId, Row>> entries;
+    entries.reserve(rowIds.size());
+    for (const auto rowId : rowIds) {
+        if (auto row = read(rowId, snapshot, transactions)) {
+            entries.emplace_back(rowId, std::move(*row));
+        }
+    }
+    return entries;
+}
+
+std::vector<std::pair<RowId, Row>>
 MVCCRowStore::visibleEntries(const ReadSnapshot &snapshot,
                              const TransactionManager &transactions) const {
     std::vector<std::pair<RowId, Row>> entries;

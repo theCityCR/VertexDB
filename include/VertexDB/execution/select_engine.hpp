@@ -42,6 +42,9 @@ class SelectEngine {
         const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {});
     [[nodiscard]] std::vector<Row> collectRows(const Select &command, const Table &table,
                                                const QueryPlan &plan) const;
+    // Same access-path visitor as collectRows, but keeps RowIds for UPDATE/DELETE.
+    [[nodiscard]] std::vector<std::pair<RowId, Row>>
+    collectVisibleEntries(const Select &command, const Table &table, const QueryPlan &plan) const;
     [[nodiscard]] QueryPlan planPreparedSelect(const Select &command, const Table &table,
                                                const RewriteResult &rewrite) const;
     [[nodiscard]] QueryResult finalizeSelectResult(const Select &command,
@@ -62,6 +65,8 @@ class SelectEngine {
     [[nodiscard]] std::vector<std::pair<RowId, Row>> visibleEntriesForRead(const Table &table) const;
     [[nodiscard]] std::vector<Row> rowsByIdForRead(const Table &table,
                                                    std::span<const RowId> rowIds) const;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>>
+    entriesByIdForRead(const Table &table, std::span<const RowId> rowIds) const;
 
     ExecutionContext &ctx_;
 };

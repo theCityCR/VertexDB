@@ -171,8 +171,10 @@ Aggregates `COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, and `MAX` run as a has
 filter/join. `GROUP BY` is required for non-aggregated selected columns; `ORDER BY`/`LIMIT` apply to
 group results. `SELECT *` is rejected with aggregates/`GROUP BY`.
 
-`UPDATE` and `DELETE` evaluate their `WHERE` clause with a full scan of live rows. They do not yet
-use the planner's index access paths (intentional v1 limitation).
+`UPDATE` and `DELETE` plan their `WHERE` clause with the same cost-based access paths as
+`SELECT` (hash equality, ordered range, `IN`, intersect/union, prefix `LIKE`, residuals). Candidate
+`RowId`s are collected first, then mutated, so mid-statement index rebuilds cannot skip hits.
+`EXPLAIN` remains SELECT-only.
 
 Prepared statements parse once into a typed `Query` AST with `?` parameter slots (`Value` parameter
 placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST and executes without

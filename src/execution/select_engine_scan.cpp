@@ -2,49 +2,48 @@
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
-#include "VertexDB/execution/select_scope.hpp"
 
 #include <algorithm>
 #include <iterator>
-#include <stdexcept>
 #include <unordered_set>
 #include <utility>
 
 namespace VertexDB {
 
-std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &table,
-                                           const QueryPlan &plan) const {
+std::vector<std::pair<RowId, Row>>
+SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
+                                    const QueryPlan &plan) const {
     const std::string_view scope = selectScopeName(command);
-    auto applyResidual = [&](std::vector<Row> rows) {
+    auto applyResidual = [&](std::vector<std::pair<RowId, Row>> entries) {
         if (!plan.residual()) {
-            return rows;
+            return entries;
         }
-        std::vector<Row> filtered;
-        filtered.reserve(rows.size());
-        for (auto &row : rows) {
-            if (matches(row, table, *plan.residual(), scope)) {
-                filtered.push_back(std::move(row));
+        std::vector<std::pair<RowId, Row>> filtered;
+        filtered.reserve(entries.size());
+        for (auto &entry : entries) {
+            if (matches(entry.second, table, *plan.residual(), scope)) {
+                filtered.push_back(std::move(entry));
             }
         }
         return filtered;
     };
 
     return std::visit(
-        [&](const auto &path) -> std::vector<Row> {
+        [&](const auto &path) -> std::vector<std::pair<RowId, Row>> {
             using T = std::decay_t<decltype(path)>;
             if constexpr (std::is_same_v<T, HashEqPlan>) {
                 auto rowIds = path.indexExpression
                                   ? table.indexedLookup(*path.indexExpression, path.indexValue)
                                   : table.indexedLookup(path.indexColumn, path.indexValue);
-                return rowIds ? applyResidual(rowsByIdForRead(table, *rowIds))
-                              : std::vector<Row>{};
+                return rowIds ? applyResidual(entriesByIdForRead(table, *rowIds))
+                              : std::vector<std::pair<RowId, Row>>{};
             } else if constexpr (std::is_same_v<T, OrderedRangePlan>) {
                 auto rowIds =
                     path.indexExpression
                         ? table.orderedLookup(*path.indexExpression, path.indexOp, path.indexValue)
                         : table.orderedLookup(path.indexColumn, path.indexOp, path.indexValue);
-                return rowIds ? applyResidual(rowsByIdForRead(table, *rowIds))
-                              : std::vector<Row>{};
+                return rowIds ? applyResidual(entriesByIdForRead(table, *rowIds))
+                              : std::vector<std::pair<RowId, Row>>{};
             } else if constexpr (std::is_same_v<T, HashInPlan>) {
                 std::vector<RowId> combined;
                 for (const auto &value : path.indexValues) {
@@ -55,7 +54,7 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                         combined.insert(combined.end(), rowIds->begin(), rowIds->end());
                     }
                 }
-                return applyResidual(rowsByIdForRead(table, combined));
+                return applyResidual(entriesByIdForRead(table, combined));
             } else if constexpr (std::is_same_v<T, PrefixLikePlan>) {
                 std::vector<RowId> combined;
                 if (auto exact = table.indexedLookup(path.indexColumn, Value{path.prefix})) {
@@ -66,7 +65,7 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                                             Value{path.prefix})) {
                     combined.insert(combined.end(), greater->begin(), greater->end());
                 }
-                return applyResidual(rowsByIdForRead(table, combined));
+                return applyResidual(entriesByIdForRead(table, combined));
             } else if constexpr (std::is_same_v<T, IntersectPlan>) {
                 if (path.intersectProbes.empty()) {
                     return {};
@@ -94,7 +93,7 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                         return {};
                     }
                 }
-                return applyResidual(rowsByIdForRead(table, *intersection));
+                return applyResidual(entriesByIdForRead(table, *intersection));
             } else if constexpr (std::is_same_v<T, UnionPlan>) {
                 if (path.unionProbes.empty()) {
                     return {};
@@ -120,32 +119,45 @@ std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &t
                 }
                 std::vector<RowId> ids = unified ? std::move(*unified) : std::vector<RowId>{};
                 if (!plan.residual()) {
-                    return ids.empty() ? std::vector<Row>{} : rowsByIdForRead(table, ids);
+                    return ids.empty() ? std::vector<std::pair<RowId, Row>>{}
+                                       : entriesByIdForRead(table, ids);
                 }
                 // Residual OR: index union covers indexable arms; complementary scan adds rows
                 // matching only the non-indexable residual (AND-style applyResidual would be wrong).
                 std::unordered_set<RowId> seen(ids.begin(), ids.end());
+                auto entries = ids.empty() ? std::vector<std::pair<RowId, Row>>{}
+                                           : entriesByIdForRead(table, ids);
                 for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
                     if (seen.contains(rowId)) {
                         continue;
                     }
                     if (matches(row, table, *plan.residual(), scope)) {
-                        ids.push_back(rowId);
+                        entries.emplace_back(rowId, row);
                     }
                 }
-                return ids.empty() ? std::vector<Row>{} : rowsByIdForRead(table, ids);
+                return entries;
             } else {
-                std::vector<Row> rows;
-                const auto snapshot = rowsSnapshotForRead(table);
-                for (const auto &row : snapshot) {
+                std::vector<std::pair<RowId, Row>> entries;
+                for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
                     if (!command.where || matches(row, table, *command.where, scope)) {
-                        rows.push_back(row);
+                        entries.emplace_back(rowId, row);
                     }
                 }
-                return rows;
+                return entries;
             }
         },
         plan.path);
+}
+
+std::vector<Row> SelectEngine::collectRows(const Select &command, const Table &table,
+                                           const QueryPlan &plan) const {
+    auto entries = collectVisibleEntries(command, table, plan);
+    std::vector<Row> rows;
+    rows.reserve(entries.size());
+    for (auto &entry : entries) {
+        rows.push_back(std::move(entry.second));
+    }
+    return rows;
 }
 
 } // namespace VertexDB
