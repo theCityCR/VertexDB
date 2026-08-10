@@ -75,11 +75,8 @@ Additional verification:
 ```sh
 scripts/run-sanitizers.sh
 scripts/run-coverage.sh
-cmake -S . -B build-benchmark \
-  -DVERTEXDB_BUILD_TESTS=OFF \
-  -DVERTEXDB_BUILD_BENCHMARKS=ON \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-benchmark
+python3 scripts/check_benchmark_shape.py --self-test
+scripts/run-benchmarks.sh --check-shape
 ```
 
 Run the CLI:
@@ -105,7 +102,8 @@ Or feed an example script:
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
   and MATERIALIZED baselines, page vs vector row-store, B+ range, transaction snapshot/rollback,
   update/delete throughput, and concurrent indexed point lookups; summarized in
-  [docs/benchmarks.md](docs/benchmarks.md)
+  [docs/benchmarks.md](docs/benchmarks.md). CI gates CTE **cost shape** (ratios, not absolute ns)
+  via `scripts/run-benchmarks.sh --check-shape`.
 
 ## Current Limitations
 

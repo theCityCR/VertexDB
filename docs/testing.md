@@ -22,6 +22,7 @@ VertexDB uses three levels of automated testing:
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY`, prepared statements, `ANALYZE` |
 | `deep_feature_tests.cpp` | Cross-cutting deep-feature coverage |
 | `regression_tests.cpp` | Bug fixes and non-obvious failure modes |
+| `benchmark_shape/*.json` | CTE cost-shape checker fixtures (`scripts/check_benchmark_shape.py --self-test`) |
 
 ## Current Coverage
 
@@ -61,9 +62,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 scripts/run-sanitizers.sh
 scripts/run-coverage.sh
-cmake -S . -B build-benchmark \
-  -DVERTEXDB_BUILD_TESTS=OFF \
-  -DVERTEXDB_BUILD_BENCHMARKS=ON \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-benchmark
+python3 scripts/check_benchmark_shape.py --self-test
+scripts/run-benchmarks.sh --check-shape
 ```
+
+`scripts/check_benchmark_shape.py --self-test` exercises JSON fixtures under `tests/benchmark_shape/`
+(desired pass/fail ratios, median vs iteration fallback, missing CTE benches). CI also runs Release
+CTE microbenchmarks and fails if the cost *shape* regresses; see [benchmarks.md](benchmarks.md).

@@ -34,7 +34,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Planner: cost-based access paths (including multi-index AND intersect and top-level OR union with
   partial residual OR), residual filters, join algorithm selection, expression-index matching, and
   `EXPLAIN`
-- Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks, CI
+- Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks with
+  a CI CTE cost-shape gate, CI
 
 ## Known Limitations
 
@@ -57,8 +58,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Next Steps
 
-1. Re-run the Release benchmark summary in [benchmarks.md](benchmarks.md) when planner or storage
-   paths change.
+1. Optional: refresh the illustrative absolute-time table in [benchmarks.md](benchmarks.md) after
+   planner or storage changes. CTE **cost shape** (indexed stays flat, scan grows, materialize ≫
+   inline) is already gated in CI via `scripts/run-benchmarks.sh --check-shape`.
 2. Optional nested-SQL polish still in educational scope: join-table aliases, clearer diagnostics
    with source positions, or correlation deeper than two frames.
 

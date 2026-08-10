@@ -96,5 +96,5 @@ variables.
 - Plan: [cte_index_wedge.md](cte_index_wedge.md)
 - Demo: [examples/cte_index_win.sql](../examples/cte_index_win.sql)
 - Benchmarks: [benchmarks.md](benchmarks.md) (`BM_CteIndexedWinSelect` /
-  `BM_CteNonIndexedSelect`)
+  `BM_CteNonIndexedSelect`; CI shape gate: `scripts/run-benchmarks.sh --check-shape`)
 - Script: [scripts/compare_cte_materialize.sh](../scripts/compare_cte_materialize.sh)

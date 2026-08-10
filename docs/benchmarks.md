@@ -23,7 +23,22 @@ broad performance regressions and compare storage and access paths under control
 - Transaction snapshot read (`BEGIN` + indexed `SELECT`) and `BEGIN`/`ROLLBACK` undo path.
 - MATERIALIZED CTE select vs inlined CTE index-win (same outer filter).
 
-Build the benchmark target with a Release config (numbers below assume `-O3`):
+Build and run via [`scripts/run-benchmarks.sh`](../scripts/run-benchmarks.sh) (Release `-O3`, median of
+5 repetitions, `--benchmark_min_time=0.5s`, random interleaving). That script writes Google Benchmark
+JSON and then checks **CTE cost-shape ratios** from the same process (CPU time, not wall time):
+
+```sh
+scripts/run-benchmarks.sh                 # full report suite + shape check
+scripts/run-benchmarks.sh --check-shape   # CTE benches only (CI gate)
+python3 scripts/check_benchmark_shape.py --self-test
+```
+
+CI runs `--check-shape` on `ubuntu-latest` and fails if the wedge shape regresses (indexed CTE at
+100k ≈ full scan, or `AS MATERIALIZED` no longer ≫ inline). Absolute nanoseconds are not gated:
+shared runners are too noisy. The JSON artifact is uploaded for optional doc refresh; do not
+auto-commit it.
+
+Equivalent flags if you invoke the binary directly:
 
 ```sh
 cmake -S . -B build-benchmark \
@@ -31,21 +46,17 @@ cmake -S . -B build-benchmark \
   -DVERTEXDB_BUILD_BENCHMARKS=ON \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build-benchmark
-```
-
-Run it with:
-
-```sh
-./build-benchmark/VertexDB_benchmarks
-# focused report suite (matches the summary table; skips multi-minute Update/Delete):
 ./build-benchmark/VertexDB_benchmarks \
   --benchmark_filter='BM_IndexedPointLookup|BM_FilteredSelect|BM_NonIndexedFilteredSelect|BM_ConcurrentPointLookups|BM_VectorRowStore|BM_PageRowStore|BM_BTreeRangeQuery|BM_Transaction|BM_Cte' \
-  --benchmark_min_time=0.05s
+  --benchmark_repetitions=5 \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_min_time=0.5s \
+  --benchmark_enable_random_interleaving=true
 ```
 
 ## Reporting
 
-Benchmark output should be checked into documentation only as summarized tables or generated graphs, not raw build artifacts.
+Benchmark output should be checked into documentation only as summarized tables or generated graphs, not raw build artifacts. Prefer **ratios from one run** over comparing absolute times across machines or days.
 
 Suggested comparisons:
 
@@ -59,6 +70,18 @@ Suggested comparisons:
 - Single-thread read vs. multi-thread read (`BM_ConcurrentPointLookups`).
 - Debug vs. release builds.
 - Sanitized vs. unsanitized builds.
+
+CI shape gates (median CPU time, same process):
+
+| Ratio | Gate | Desired story |
+| --- | --- | --- |
+| indexed CTE 100k / indexed CTE 1k | ≤ 8× | win path stays roughly flat as N grows |
+| scan CTE 100k / indexed CTE 100k | ≥ 20× | win at 100k is not a full scan |
+| materialized CTE 1k / indexed CTE 1k | ≥ 50× | `AS MATERIALIZED` is far slower than inline |
+| scan CTE 100k / scan CTE 1k | ≥ 10× | non-indexed baseline actually grows with N |
+
+Local Release ratios are typically ~1×, ~10³–10⁴×, ~10⁴×, and ~10²×. The gates are conservative so
+GHA noise does not fail a healthy run.
 
 The CTE benchmarks use the wedge query:
 
@@ -76,11 +99,15 @@ residual after CTE inlining. Without an index, the same SQL is a full scan. See
 
 ## Summary — 2026-08-10
 
-Machine: Apple Silicon host, 12 logical CPUs (Google Benchmark reported 2600 MHz). Binary:
-`build-benchmark/VertexDB_benchmarks` with `CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`). Filter as
-above with `--benchmark_min_time=0.05s`. Times are Google Benchmark **CPU time**. Executor
-`Update`/`Delete` benches are omitted from this table (multi‑minute iterations under page-image
-WAL); they remain in the binary for local runs.
+Illustrative local snapshot (not the CI gate). Machine: Apple Silicon host, 12 logical CPUs (Google
+Benchmark reported 2600 MHz). Binary: `build-benchmark/VertexDB_benchmarks` with
+`CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`). Short run with `--benchmark_min_time=0.05s` and no
+repetitions. Times are Google Benchmark **CPU time**. Executor `Update`/`Delete` benches are omitted
+from this table (multi‑minute iterations under page-image WAL); they remain in the binary for local
+runs.
+
+CI and `scripts/run-benchmarks.sh` use median-of-5 at `--benchmark_min_time=0.5s` and gate on the
+ratio table above, not these nanoseconds.
 
 | Benchmark | Arg | CPU time |
 | --- | ---: | ---: |
@@ -128,7 +155,8 @@ Takeaways from this run:
 
 ## Remaining Follow-ups
 
-- Re-run this Release summary after planner or storage changes that affect the measured paths.
+- Refresh this illustrative absolute-time table when publishing a new local or CI snapshot (optional;
+  the shape gate already runs on every push/PR).
 - Optional: Debug vs Release and sanitizer comparison tables.
 - Optional: include executor `Update`/`Delete` once those paths are cheap enough for short
   `--benchmark_min_time` report runs.

@@ -150,6 +150,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 | [`examples/cte_index_win.sql`](../examples/cte_index_win.sql) | Runnable demo |
 | `NestedSqlTests::ScaledCteWinQueryUsesHashIndexAndResidual` | Scaled plan regression |
 | `BM_CteIndexedWinSelect` / `BM_CteNonIndexedSelect` | Cost shape at 1k/100k |
+| [`scripts/run-benchmarks.sh --check-shape`](../scripts/run-benchmarks.sh) | CI gate: median CPU ratios (flat win, scan grows, materialize ≫ inline) |
 | [`scripts/compare_cte_materialize.sh`](../scripts/compare_cte_materialize.sh) | Live Postgres/VertexDB plans |
 
 ## First milestone — shipped
@@ -173,4 +174,5 @@ as roadmap step 2; the wedge demo still highlights the default-inline win.
 - [x] Demo script runs through `VertexDB_cli` and shows the index + inlined CTE plan.
 - [x] Scaled test fails if the planner regresses to a full scan for the win query.
 - [x] Benchmark exercises the CTE path at large N and is listed in `docs/benchmarks.md`.
+- [x] CI fails if CTE cost shape regresses (`scripts/run-benchmarks.sh --check-shape`).
 - [x] Docs state the wedge, the evidence, and the limitations without overclaiming.

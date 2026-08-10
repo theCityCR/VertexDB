@@ -61,3 +61,24 @@ jobs:
 
       - name: Run coverage
         run: scripts/run-coverage.sh
+
+  benchmark-shape:
+    name: benchmark shape
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fixture checks
+        run: python3 scripts/check_benchmark_shape.py --self-test
+
+      - name: CTE cost-shape gate
+        run: scripts/run-benchmarks.sh --check-shape
+
+      - name: Upload benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-shape-json
+          path: build-benchmark/benchmark-shape.json
+          if-no-files-found: ignore
