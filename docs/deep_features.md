@@ -44,11 +44,13 @@ stored AST for tests and introspection.
 
 ## Joins
 
-Joins support left-deep equi-join chains with projected or `SELECT *` output, qualified output column
-names, joined `WHERE`, `ORDER BY`, and `LIMIT`. Each join is planned independently: hash join (build
-the right side) or nested-loop index probe when a join key is indexed and cheaper. After the first
-join, the left side is an intermediate row set, so only hash join or right-side index probe apply.
-`EXPLAIN` reports each join algorithm and cost.
+Joins support left-deep `INNER JOIN` / `JOIN` and `LEFT [OUTER] JOIN` chains with projected or
+`SELECT *` output, qualified output column names, joined `WHERE`, `ORDER BY`, and `LIMIT`.
+`ON col op col` accepts `=`, `<`, or `>`. Equi-joins may use hash join (build the right side) or
+nested-loop index probe when a join key is indexed and cheaper; non-equi and `LEFT` joins use
+nested-loop compare. After the first join, the left side is an intermediate row set, so only hash
+join or right-side index probe apply for remaining equi-joins. `RIGHT` / `FULL` / `CROSS` are
+rejected. `EXPLAIN` reports each join algorithm and cost.
 
 ## Aggregates
 
@@ -89,7 +91,8 @@ The planner chooses between:
 - hash index equality lookup
 - ordered index range lookup
 - hash index `IN` multi-lookup
-- multi-index equality intersect (sorted `RowId` intersection of ≥2 equality/expression probes)
+- ordered index prefix `LIKE` (`lit%`)
+- multi-index equality or trigram intersect (sorted `RowId` intersection of ≥2 probes)
 
 Costs use live table row counts and per-index distinct-key counts (`Table::indexDistinctCount`),
 plus optional equi-height histograms from `ANALYZE` (`Table::columnHistogram`):
@@ -112,18 +115,20 @@ another conjunct uses an index. `EXPLAIN` surfaces the chosen path (including in
 unioned columns), residual status, `est_rows` / `cost`, and rewrite notes such as CTE inlining.
 
 Equi-joins are planned with the same statistics: hash join versus nested-loop index probe, including
-per-join planning for left-deep multi-join chains.
+per-join planning for left-deep multi-join chains. Non-equi and `LEFT` joins fall back to
+nested-loop compare.
 
 A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) and derived tables
 (`FROM (SELECT …) [AS] alias`, normalized to synthetic CTEs) into the outer `SELECT`. 
 `AS MATERIALIZED` fences the CTE into an ephemeral table before planning. Uncorrelated
 `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`) materialize into value
 lists when uncorrelated; correlated `IN`/`EXISTS` bind outer scopes per row for up to four FROM
-frames, including `FROM` / `JOIN` table aliases. One nested `WITH` inside a CTE body reuses the same
+frames, including `FROM` / `JOIN` table aliases. Nested `WITH` up to depth 3 reuses the same
 inliner.
-Expression indexes match `(expr) =/>/< const` predicates. CTE/derived bodies may carry equi-joins
-(including multi-join chains) through inlining. Aggregates/`GROUP BY` are planned as a post-join
-hash aggregate (`EXPLAIN` reports `aggregation`).
+Expression indexes match `(expr) =/>/< const` predicates; `trigram(column)` indexes serve substring
+`LIKE '%lit%'`. Regex `~` remains a residual full scan. CTE/derived bodies may carry `INNER`/`LEFT`
+joins (including multi-join chains) through inlining. Aggregates/`GROUP BY` are planned as a
+post-join hash aggregate (`EXPLAIN` reports `aggregation`).
 
 ### CTE index demo
 

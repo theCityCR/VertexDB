@@ -533,4 +533,99 @@ TEST(ExecutionTests, SupportsConcurrentExecutorClients) {
     std::filesystem::remove_all(root);
 }
 
+TEST(ExecutionTests, LeftOuterAndNonEquiJoins) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_left_join_test_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                      "(2, \"Bob\", 99);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
+    auto left = executor.execute(parser.parse(
+        "SELECT Employees.name, Departments.dept FROM Employees LEFT JOIN Departments "
+        "ON Employees.dept_id = Departments.id ORDER BY Employees.name;"));
+    ASSERT_TRUE(left.success);
+    ASSERT_EQ(left.rows.size(), 2U);
+    EXPECT_EQ(left.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(left.rows[0][1], Value{"Eng"});
+    EXPECT_EQ(left.rows[1][0], Value{"Bob"});
+    EXPECT_TRUE(left.rows[1][1].isNull());
+
+    auto nonEqui = executor.execute(parser.parse(
+        "SELECT Employees.name FROM Employees JOIN Departments ON Employees.id < Departments.id "
+        "ORDER BY Employees.name;"));
+    ASSERT_TRUE(nonEqui.success);
+    ASSERT_EQ(nonEqui.rows.size(), 2U);
+    EXPECT_EQ(nonEqui.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(nonEqui.rows[1][0], Value{"Bob"});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, LikePrefixAndTrigramSubstring) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_like_test_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, note STRING);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", \"hello world\"), "
+                        "(2, \"Bob\", \"goodbye\"), (3, \"Alicia\", \"say hello\");"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_note_tri ON Employees((trigram(note)));"))
+            .success);
+
+    auto prefixExplain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE name LIKE \"Al%\";"));
+    ASSERT_TRUE(prefixExplain.success);
+    EXPECT_NE(prefixExplain.rows.front().front().toString().find("prefix LIKE"),
+              std::string::npos);
+
+    auto prefix = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE name LIKE \"Al%\" ORDER BY name;"));
+    ASSERT_TRUE(prefix.success);
+    ASSERT_EQ(prefix.rows.size(), 2U);
+    EXPECT_EQ(prefix.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(prefix.rows[1][0], Value{"Alicia"});
+
+    auto containsExplain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE note LIKE \"%hello%\";"));
+    ASSERT_TRUE(containsExplain.success);
+    EXPECT_NE(containsExplain.rows.front().front().toString().find("trigram"), std::string::npos);
+
+    auto contains = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE note LIKE \"%hello%\" ORDER BY name;"));
+    ASSERT_TRUE(contains.success);
+    ASSERT_EQ(contains.rows.size(), 2U);
+    EXPECT_EQ(contains.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(contains.rows[1][0], Value{"Alicia"});
+
+    auto regex = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE name ~ \"^Bo\" ORDER BY name;"));
+    ASSERT_TRUE(regex.success);
+    ASSERT_EQ(regex.rows.size(), 1U);
+    EXPECT_EQ(regex.rows[0][0], Value{"Bob"});
+
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB

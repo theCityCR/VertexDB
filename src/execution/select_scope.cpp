@@ -65,6 +65,8 @@ void normalizePredicateScopeQualifiers(Predicate &predicate, std::string_view sc
                 }
             } else if constexpr (std::is_same_v<T, InListPred>) {
                 stripLocalQualifier(node.column, scope, table, stripTableName);
+            } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred>) {
+                stripLocalQualifier(node.column, scope, table, stripTableName);
             } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
                 stripLocalQualifier(node.column, scope, table, stripTableName);
                 if (node.subquery) {
@@ -93,6 +95,8 @@ void rewritePredicateJoinAliases(Predicate &predicate, std::string_view scope,
                     rewriteQualifierToTable(*node.rhsColumn, scope, table);
                 }
             } else if constexpr (std::is_same_v<T, InListPred>) {
+                rewriteQualifierToTable(node.column, scope, table);
+            } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred>) {
                 rewriteQualifierToTable(node.column, scope, table);
             } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
                 rewriteQualifierToTable(node.column, scope, table);

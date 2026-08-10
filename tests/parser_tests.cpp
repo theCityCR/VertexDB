@@ -178,4 +178,33 @@ TEST(ParserTests, ParsesJoinAndPreparedStatements) {
     EXPECT_EQ(std::get<Analyze>(analyzeTable).table, std::optional<std::string>{"Employees"});
 }
 
+TEST(ParserTests, ParsesLeftJoinNonEquiLikeAndRegex) {
+    Parser parser;
+
+    auto leftJoin = parser.parse(
+        "SELECT e.name, d.dept FROM Employees e LEFT JOIN Departments d ON e.dept_id = d.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(leftJoin));
+    const auto &lj = std::get<Select>(leftJoin);
+    ASSERT_EQ(lj.joins.size(), 1U);
+    EXPECT_EQ(lj.joins[0].kind, JoinKind::LeftOuter);
+    EXPECT_EQ(lj.joins[0].op, ComparisonOperator::Equal);
+
+    auto nonEqui = parser.parse(
+        "SELECT * FROM Employees JOIN Departments ON Employees.salary > Departments.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(nonEqui));
+    EXPECT_EQ(std::get<Select>(nonEqui).joins[0].op, ComparisonOperator::Greater);
+
+    auto like = parser.parse("SELECT name FROM Employees WHERE name LIKE \"Al%\";");
+    ASSERT_TRUE(std::holds_alternative<Select>(like));
+    ASSERT_TRUE(std::get<Select>(like).where.has_value());
+    EXPECT_TRUE(std::holds_alternative<LikePred>(*std::get<Select>(like).where));
+
+    auto regex = parser.parse("SELECT name FROM Employees WHERE name ~ \"^A\";");
+    ASSERT_TRUE(std::holds_alternative<Select>(regex));
+    EXPECT_TRUE(std::holds_alternative<RegexPred>(*std::get<Select>(regex).where));
+
+    EXPECT_THROW((void)parser.parse("SELECT * FROM Employees RIGHT JOIN Departments ON id = id;"),
+                 std::runtime_error);
+}
+
 } // namespace VertexDB

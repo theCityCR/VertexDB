@@ -119,6 +119,18 @@ IndexExpression Parser::parseIndexExpression() {
     if (column.type != TokenType::Identifier) {
         throw std::runtime_error("expected expression column");
     }
+    if (equalsIgnoreCase(column.lexeme, "trigram")) {
+        expect(TokenType::LeftParen);
+        const auto inner = advance();
+        if (inner.type != TokenType::Identifier) {
+            throw std::runtime_error("expected trigram column");
+        }
+        if (qualifier(inner.lexeme)) {
+            throw std::runtime_error("expression index column must be unqualified");
+        }
+        expect(TokenType::RightParen);
+        return IndexExpression{IndexExpression::Kind::Trigram, inner.lexeme, {}};
+    }
     if (qualifier(column.lexeme)) {
         throw std::runtime_error("expression index column must be unqualified");
     }
@@ -151,6 +163,20 @@ Predicate Parser::parseComparisonPredicate() {
             inSubquery.referencesOuter = true;
         }
         return predicate;
+    }
+    if (match(TokenType::Identifier, "LIKE")) {
+        const auto pattern = parseValue();
+        if (pattern.type() != ColumnType::String || pattern.isNull()) {
+            throw std::runtime_error("LIKE pattern must be a string literal");
+        }
+        return makeLike(column.lexeme, std::get<std::string>(pattern.data()));
+    }
+    if (match(TokenType::Tilde)) {
+        const auto pattern = parseValue();
+        if (pattern.type() != ColumnType::String || pattern.isNull()) {
+            throw std::runtime_error("regex pattern must be a string literal");
+        }
+        return makeRegex(column.lexeme, std::get<std::string>(pattern.data()));
     }
 
     ComparisonOperator op{};
@@ -243,6 +269,15 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                 }
                 if (outer) {
                     // Allow up to four outer FROM frames while correlating.
+                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
+                        throw std::runtime_error(
+                            "correlated subquery exceeds maximum outer depth");
+                    }
+                    node.referencesOuter = true;
+                }
+            } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred> ||
+                                 std::is_same_v<T, InListPred>) {
+                if (refersToOuterTable(node.column, innerTable, outerTableStack_)) {
                     if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
                         throw std::runtime_error(
                             "correlated subquery exceeds maximum outer depth");

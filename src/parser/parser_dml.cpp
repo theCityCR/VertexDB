@@ -128,7 +128,22 @@ Select Parser::parseSelectAfterSelectKeyword() {
     }
 
     std::vector<JoinClause> joins;
-    while (match(TokenType::Identifier, "JOIN")) {
+    while (peek().type == TokenType::Identifier &&
+           parser_detail::isJoinIntroducer(peek().lexeme)) {
+        JoinKind joinKind = JoinKind::Inner;
+        if (match(TokenType::Identifier, "LEFT")) {
+            (void)match(TokenType::Identifier, "OUTER");
+            expect(TokenType::Identifier, "JOIN");
+            joinKind = JoinKind::LeftOuter;
+        } else if (match(TokenType::Identifier, "INNER")) {
+            expect(TokenType::Identifier, "JOIN");
+        } else if (match(TokenType::Identifier, "RIGHT") || match(TokenType::Identifier, "FULL") ||
+                   match(TokenType::Identifier, "CROSS")) {
+            throw std::runtime_error("only INNER and LEFT [OUTER] JOIN are supported");
+        } else {
+            expect(TokenType::Identifier, "JOIN");
+        }
+
         const auto joinedTable = advance();
         if (joinedTable.type != TokenType::Identifier) {
             throw std::runtime_error("expected joined table name");
@@ -144,13 +159,22 @@ Select Parser::parseSelectAfterSelectKeyword() {
         if (leftColumn.type != TokenType::Identifier) {
             throw std::runtime_error("expected left join column");
         }
-        expect(TokenType::Equal);
+        ComparisonOperator joinOp = ComparisonOperator::Equal;
+        if (match(TokenType::Equal)) {
+            joinOp = ComparisonOperator::Equal;
+        } else if (match(TokenType::Greater)) {
+            joinOp = ComparisonOperator::Greater;
+        } else if (match(TokenType::Less)) {
+            joinOp = ComparisonOperator::Less;
+        } else {
+            throw std::runtime_error("expected join comparison operator");
+        }
         const auto rightColumn = advance();
         if (rightColumn.type != TokenType::Identifier) {
             throw std::runtime_error("expected right join column");
         }
-        joins.push_back(
-            JoinClause{joinedTable.lexeme, leftColumn.lexeme, rightColumn.lexeme, std::move(joinedAlias)});
+        joins.push_back(JoinClause{joinedTable.lexeme, leftColumn.lexeme, rightColumn.lexeme,
+                                   std::move(joinedAlias), joinKind, joinOp});
     }
 
     std::optional<Predicate> where;
@@ -221,8 +245,8 @@ Select Parser::parseWithSelectAtDepth(int depth) {
         expect(TokenType::LeftParen);
         Select body;
         if (match(TokenType::Identifier, "WITH")) {
-            if (depth >= 1) {
-                throw std::runtime_error("nested WITH deeper than one level is not supported");
+            if (depth >= kMaxNestedWithDepth) {
+                throw std::runtime_error("nested WITH exceeds maximum depth");
             }
             body = parseWithSelectAtDepth(depth + 1);
         } else {

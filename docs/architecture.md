@@ -43,7 +43,8 @@ CLI
 ## Module Responsibilities
 
 - `common`: shared value types, column metadata, `IndexExpression` shapes/helpers, string helpers
-  (`equalsIgnoreCase`), and binary POD I/O (`writePod` / `readPod` for streams and byte spans).
+  (`equalsIgnoreCase`), LIKE/regex/trigram pattern helpers (`string_pattern`), and binary POD I/O
+  (`writePod` / `readPod` for streams and byte spans).
 - `parser`: tokenization, AST construction, and SQL grammar validation (dispatch, DDL, DML, and
   predicate parsing live in focused translation units behind one `Parser` type). AST statements
   reference `IndexExpression` from `common/` rather than owning the type.
@@ -51,14 +52,14 @@ CLI
 - `planner`: CTE/derived-table rewrite (inline or `AS MATERIALIZED`), correlated/`IN` prep, and
   cost-based access-path / join selection through the `RelationStats` and `IndexCatalogView`
   interfaces, including optional `ANALYZE` histograms, multi-index AND intersect / OR union
-  (including partial OR with residual complementary scan), and
+  (including partial OR with residual complementary scan), prefix `LIKE` / trigram intersect, and
   residual filters. `QueryPlanner` is split across `query_planner.cpp` (SELECT paths),
   `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
-or existence node owns only the fields valid for that shape. Physical access paths are likewise a
-variant (`FullScanPlan`, equality/range/IN probes, intersection, or union), while estimates and
-residual filters live in the shared `PlanEstimates` metadata.
+existence, `LIKE`, or regex node owns only the fields valid for that shape. Physical access paths
+are likewise a variant (`FullScanPlan`, equality/range/IN/prefix-LIKE probes, intersection, or
+union), while estimates and residual filters live in the shared `PlanEstimates` metadata.
 - `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
   façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
@@ -131,13 +132,14 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 1. The CLI reads a SQL string.
 2. `Tokenizer` emits a token stream.
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
-   chains, `WITH` materialize modes, `IN`/`EXISTS`, expression indexes, and `EXPLAIN`). Prepared
+   chains with `INNER`/`LEFT` and non-equi `ON`, `WITH` materialize modes and nesting depth up to 3,
+   `IN`/`EXISTS`, `LIKE`/`~`, expression indexes including trigram, and `EXPLAIN`). Prepared
    statements store that AST with `?` parameter slots for later binding.
-4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including one
-   nested `WITH` and `WITH` inside `IN`/`EXISTS`); the executor materializes uncorrelated `IN`
-   subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding
-   frames (including `FROM` / `JOIN` table aliases).
-5. `QueryPlanner` chooses an access path (column or expression index, residual filters) and per-join
-   algorithms for left-deep equi-join chains; `SelectEngine` runs filters/joins, then optional hash
-   aggregation, then `ORDER BY`/`LIMIT`.
+4. For `SELECT`/`EXPLAIN`, a rewriter inlines or materializes CTEs/derived tables (including nested
+   `WITH` up to depth 3 and `WITH` inside `IN`/`EXISTS`); the executor materializes uncorrelated
+   `IN` subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer
+   binding frames (including `FROM` / `JOIN` table aliases).
+5. `QueryPlanner` chooses an access path (column or expression index, prefix `LIKE`, trigram
+   intersect, residual filters) and per-join algorithms for left-deep `INNER`/`LEFT` chains;
+   `SelectEngine` runs filters/joins, then optional hash aggregation, then `ORDER BY`/`LIMIT`.
 6. Results are returned as `QueryResult` with columns, rows, and a status message.

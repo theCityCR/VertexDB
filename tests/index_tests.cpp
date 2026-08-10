@@ -193,6 +193,12 @@ TEST(IndexTests, ParseIndexExpressionStringRoundTripsSupportedShapes) {
     EXPECT_FALSE(parseIndexExpressionString(""));
     EXPECT_FALSE(parseIndexExpressionString("a.b"));
     EXPECT_FALSE(parseIndexExpressionString("id*2"));
+
+    const auto trigram = parseIndexExpressionString("trigram(name)");
+    ASSERT_TRUE(trigram);
+    EXPECT_EQ(trigram->kind, IndexExpression::Kind::Trigram);
+    EXPECT_EQ(trigram->column, "name");
+    EXPECT_EQ(indexExpressionToString(*trigram), "trigram(name)");
 }
 
 } // namespace VertexDB

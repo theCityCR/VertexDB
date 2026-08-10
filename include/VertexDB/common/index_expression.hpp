@@ -14,7 +14,7 @@
 namespace VertexDB {
 
 struct IndexExpression {
-    enum class Kind { Column, Negate, Add, Subtract };
+    enum class Kind { Column, Negate, Add, Subtract, Trigram };
 
     Kind kind{Kind::Column};
     std::string column;

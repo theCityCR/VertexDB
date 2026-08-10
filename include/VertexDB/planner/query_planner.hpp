@@ -27,6 +27,7 @@ enum class AccessPath : std::uint8_t {
     HashIn,
     Intersect,
     Union,
+    PrefixLike,
 };
 
 enum class JoinAlgorithm : std::uint8_t {
@@ -77,8 +78,14 @@ struct UnionPlan {
     std::vector<IndexEqualityProbe> unionProbes;
 };
 
+struct PrefixLikePlan {
+    std::string indexColumn;
+    std::string prefix;
+};
+
 using AccessPathPlan =
-    std::variant<FullScanPlan, HashEqPlan, OrderedRangePlan, HashInPlan, IntersectPlan, UnionPlan>;
+    std::variant<FullScanPlan, HashEqPlan, OrderedRangePlan, HashInPlan, IntersectPlan, UnionPlan,
+                 PrefixLikePlan>;
 
 struct QueryPlan {
     AccessPathPlan path{FullScanPlan{}};

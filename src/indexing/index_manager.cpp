@@ -1,7 +1,10 @@
 #include "VertexDB/indexing/index_manager.hpp"
 
+#include "VertexDB/common/string_pattern.hpp"
+
 #include <algorithm>
 #include <utility>
+#include <variant>
 
 namespace VertexDB {
 namespace {
@@ -176,9 +179,27 @@ void IndexManager::addRowToIndexes(RowId rowId, const RowStore &rowStore,
         return;
     }
     for (auto &[name, index] : indexes_) {
+        if (auto exprIt = indexExpressions_.find(name);
+            exprIt != indexExpressions_.end() &&
+            exprIt->second.kind == IndexExpression::Kind::Trigram) {
+            const auto key = indexKeyForRow(name, *row, schema);
+            if (key.isNull() || key.type() != ColumnType::String) {
+                continue;
+            }
+            for (const auto &gram : extractTrigrams(std::get<std::string>(key.data()))) {
+                index.insert(Value{gram}, rowId);
+            }
+            continue;
+        }
         index.insert(indexKeyForRow(name, *row, schema), rowId);
     }
     for (auto &[name, index] : orderedIndexes_) {
+        if (auto exprIt = indexExpressions_.find(name);
+            exprIt != indexExpressions_.end() &&
+            exprIt->second.kind == IndexExpression::Kind::Trigram) {
+            // Trigram indexes are hash-only; skip ordered maintenance.
+            continue;
+        }
         index.insert(indexKeyForRow(name, *row, schema), rowId);
     }
 }

@@ -57,13 +57,26 @@ struct ExistsPred {
     bool referencesOuter{false};
 };
 
+struct LikePred {
+    std::string column;
+    std::string pattern;
+    bool referencesOuter{false};
+};
+
+struct RegexPred {
+    std::string column;
+    std::string pattern;
+    bool referencesOuter{false};
+};
+
 struct Predicate
-    : std::variant<ComparisonPred, AndPred, OrPred, InListPred, InSubqueryPred, ExistsPred> {
+    : std::variant<ComparisonPred, AndPred, OrPred, InListPred, InSubqueryPred, ExistsPred,
+                   LikePred, RegexPred> {
     using variant::variant;
     using variant::operator=;
 };
 
-enum class PredicateKind { Comparison, And, Or, InSubquery, InList, Exists };
+enum class PredicateKind { Comparison, And, Or, InSubquery, InList, Exists, Like, Regex };
 
 [[nodiscard]] inline PredicateKind predicateKind(const Predicate &predicate) {
     return std::visit(
@@ -79,8 +92,12 @@ enum class PredicateKind { Comparison, And, Or, InSubquery, InList, Exists };
                 return PredicateKind::InList;
             } else if constexpr (std::is_same_v<T, InSubqueryPred>) {
                 return PredicateKind::InSubquery;
-            } else {
+            } else if constexpr (std::is_same_v<T, ExistsPred>) {
                 return PredicateKind::Exists;
+            } else if constexpr (std::is_same_v<T, LikePred>) {
+                return PredicateKind::Like;
+            } else {
+                return PredicateKind::Regex;
             }
         },
         predicate);
@@ -142,6 +159,14 @@ enum class PredicateKind { Comparison, And, Or, InSubquery, InList, Exists };
 
 [[nodiscard]] inline Predicate makeExists(std::shared_ptr<Select> subquery) {
     return ExistsPred{std::move(subquery)};
+}
+
+[[nodiscard]] inline Predicate makeLike(std::string column, std::string pattern) {
+    return LikePred{std::move(column), std::move(pattern)};
+}
+
+[[nodiscard]] inline Predicate makeRegex(std::string column, std::string pattern) {
+    return RegexPred{std::move(column), std::move(pattern)};
 }
 
 } // namespace VertexDB

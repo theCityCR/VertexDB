@@ -3,6 +3,7 @@
 #include "planner_detail.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/common/string_pattern.hpp"
 #include "VertexDB/storage/table.hpp"
 
 #include <algorithm>
@@ -26,6 +27,8 @@ AccessPath QueryPlan::accessPath() const {
                 return AccessPath::HashIn;
             } else if constexpr (std::is_same_v<T, IntersectPlan>) {
                 return AccessPath::Intersect;
+            } else if constexpr (std::is_same_v<T, PrefixLikePlan>) {
+                return AccessPath::PrefixLike;
             } else {
                 return AccessPath::Union;
             }
@@ -151,10 +154,10 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
     std::size_t bestIndex = conjuncts.size();
     AccessPath bestPath = AccessPath::FullScan;
     double bestCost = plan.estimates.estimatedCost;
+    std::optional<IntersectPlan> bestTrigramIntersect;
 
-    auto consider = [&](std::size_t i, AccessPath path, double cost) {
-        // Prefer any index path that is no worse than a full scan; prefer lower cost, then
-        // equality over range/IN when tied (more selective by design).
+    auto consider = [&](std::size_t i, AccessPath path, double cost,
+                        std::optional<IntersectPlan> trigram = std::nullopt) {
         const bool betterCost = cost < bestCost;
         const bool firstIndexAtParity =
             cost == bestCost && bestPath == AccessPath::FullScan && path != AccessPath::FullScan;
@@ -165,6 +168,7 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
             bestIndex = i;
             bestPath = path;
             bestCost = cost;
+            bestTrigramIntersect = std::move(trigram);
         }
     };
 
@@ -179,6 +183,13 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
         if (isIndexableInList(*conjuncts[i], stats, indexes, inListCost,
                               plan.estimates.estimatedRows)) {
             consider(i, AccessPath::HashIn, inListCost);
+        }
+        AccessPath likePath = AccessPath::FullScan;
+        double likeCost = bestCost;
+        std::optional<IntersectPlan> trigramIntersect;
+        if (isIndexableLike(*conjuncts[i], indexes, likePath, likeCost,
+                            plan.estimates.estimatedRows, trigramIntersect)) {
+            consider(i, likePath, likeCost, std::move(trigramIntersect));
         }
     }
 
@@ -278,11 +289,32 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
         plan.estimates.estimatedRows = rowsFromCost(bestCost, stats.rowCount());
         plan.estimates.explanation = "hash index IN lookup on " + inList.column + " (" +
                                      std::to_string(inList.inValues.size()) + " values)";
+    } else if (bestPath == AccessPath::PrefixLike) {
+        const auto &like = std::get<LikePred>(chosen);
+        const auto prefix = likePrefixLiteral(like.pattern).value();
+        plan.path = PrefixLikePlan{like.column, prefix};
+        plan.estimates.estimatedRows = rowsFromCost(bestCost, stats.rowCount());
+        plan.estimates.explanation = "ordered index prefix LIKE on " + like.column;
+    } else if (bestPath == AccessPath::Intersect && bestTrigramIntersect) {
+        plan.path = std::move(*bestTrigramIntersect);
+        plan.estimates.estimatedRows = rowsFromCost(bestCost, stats.rowCount());
+        plan.estimates.explanation = "trigram intersect for LIKE on " +
+                                     std::get<LikePred>(chosen).column;
     }
 
     std::vector<const Predicate *> residualConjuncts;
-    residualConjuncts.reserve(conjuncts.size() - 1);
+    residualConjuncts.reserve(conjuncts.size());
     for (std::size_t i = 0; i < conjuncts.size(); ++i) {
+        // Prefix/trigram LIKE probes are approximate; always keep the LIKE as a residual.
+        if (i == bestIndex && bestPath != AccessPath::PrefixLike &&
+            !(bestPath == AccessPath::Intersect && bestTrigramIntersect)) {
+            continue;
+        }
+        if (i == bestIndex && (bestPath == AccessPath::PrefixLike ||
+                               (bestPath == AccessPath::Intersect && bestTrigramIntersect))) {
+            residualConjuncts.push_back(conjuncts[i]);
+            continue;
+        }
         if (i != bestIndex) {
             residualConjuncts.push_back(conjuncts[i]);
         }

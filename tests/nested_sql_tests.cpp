@@ -712,11 +712,30 @@ TEST(NestedSqlTests, NestedWithInlinesOneLevel) {
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
-TEST(NestedSqlTests, NestedWithDeeperThanOneLevelIsRejected) {
+TEST(NestedSqlTests, NestedWithInlinesThreeLevels) {
     Parser parser;
+    auto executor = makeExecutor("nested-with-three");
+    seedEmployees(executor, parser, true, false);
+
+    auto result = executor.execute(parser.parse(
+        "WITH a AS ("
+        "  WITH b AS ("
+        "    WITH c AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0) "
+        "    SELECT id, name FROM c WHERE id = 1"
+        "  ) SELECT id, name FROM b"
+        ") SELECT name FROM a;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+}
+
+TEST(NestedSqlTests, NestedWithDeeperThanMaxIsRejected) {
+    Parser parser;
+    // depth 0..3 allowed; four nested WITH bodies inside the outermost exceeds kMaxNestedWithDepth.
     EXPECT_THROW((void)parser.parse(
-                     "WITH a AS (WITH b AS (WITH c AS (SELECT id FROM Employees) SELECT id FROM c) "
-                     "SELECT id FROM b) SELECT id FROM a;"),
+                     "WITH a AS (WITH b AS (WITH c AS (WITH d AS (WITH e AS "
+                     "(SELECT id FROM Employees) SELECT id FROM e) SELECT id FROM d) "
+                     "SELECT id FROM c) SELECT id FROM b) SELECT id FROM a;"),
                  std::runtime_error);
 }
 
