@@ -880,4 +880,41 @@ TEST(PlannerBehaviorTests, TrigramSubstringLikeUsesIntersectAccessPath) {
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
 }
 
+TEST(PlannerBehaviorTests, PrefixLikeRequiresWildcardFreeLiteral) {
+    // Documented: only lit% with no other wildcards uses ordered prefix LIKE.
+    Parser parser;
+    auto executor = makeExecutor("prefix-like-wildcards");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\"), (2, \"Alicia\"), "
+                        "(3, \"Bob\");"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_name ON Employees(name);")).success);
+
+    auto mixed = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE name LIKE \"Al_%\";"));
+    ASSERT_TRUE(mixed.success);
+    EXPECT_EQ(mixed.rows.front().front().toString().find("prefix LIKE"), std::string::npos);
+    EXPECT_NE(mixed.rows.front().front().toString().find("full table scan"), std::string::npos);
+
+    auto interior = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE name LIKE \"A%ce\";"));
+    ASSERT_TRUE(interior.success);
+    EXPECT_EQ(interior.rows.front().front().toString().find("prefix LIKE"), std::string::npos);
+    EXPECT_NE(interior.rows.front().front().toString().find("full table scan"), std::string::npos);
+
+    Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
+    table.insert({Value{1}, Value{std::string{"Alice"}}});
+    ASSERT_TRUE(table.createIndex("idx_name", "name"));
+    Predicate where = LikePred{"name", "Al_%"};
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::FullScan);
+    ASSERT_TRUE(plan.residual().has_value());
+    EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
+}
+
 } // namespace VertexDB

@@ -11,12 +11,12 @@ VertexDB uses three levels of automated testing:
 | File | Concern |
 | --- | --- |
 | `test_support.hpp` / `test_support.cpp` | Shared `makeTempExecutor` / `makeTempRoot` / `seedEmployees` |
-| `parser_tests.cpp` | Tokenization, AST grammar (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, `LIKE`/`~`, nested `WITH` depth), `ParseError` source positions |
+| `parser_tests.cpp` | Tokenization, AST grammar (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, `LIKE`/`~`, nested `WITH` depth), `ParseError` source positions, CROSS-with-ON / bushy-join refusals |
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
 | `index_tests.cpp` | Hash / B+ tree unit behavior, expression/`trigram` index metadata |
-| `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/`RIGHT`/`FULL`/`CROSS`/non-equi joins, `LIKE`/trigram paths, concurrency |
-| `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH`/`JOIN` in `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE` (incl. iteration/row caps), correlation (≤4 frames), documented grammar refusals |
-| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan), residuals, stats/cost, multi-index intersect/union, outer/`CROSS` join plans, `EXPLAIN` |
+| `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/`RIGHT`/`FULL`/`CROSS`/non-equi joins, `LIKE`/trigram/NULL edges, concurrency |
+| `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH`/`JOIN` in `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE` (incl. iteration/row caps and documented refusals), correlation (≤4 frames), documented grammar refusals |
+| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan / non-prefix LIKE), residuals, stats/cost, multi-index intersect/union, outer/`CROSS` join plans, `EXPLAIN` |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK, MVCC visibility, deferred WAL |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY`, prepared statements, `ANALYZE` |
@@ -30,7 +30,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 197 discovered GoogleTest cases across the files above.
+The current suite contains 208 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

@@ -227,4 +227,22 @@ TEST(ParserTests, ParsesRightFullAndCrossJoins) {
     EXPECT_TRUE(cj.joins[0].rightColumn.empty());
 }
 
+TEST(ParserTests, CrossJoinWithOnClauseIsRejected) {
+    // Documented: CROSS JOIN has no ON; leftover ON is unexpected trailing syntax.
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT * FROM Employees CROSS JOIN Departments ON Employees.id = "
+                     "Departments.id;"),
+                 std::runtime_error);
+}
+
+TEST(ParserTests, ParenthesizedOrBushyJoinSyntaxIsRejected) {
+    // Documented gap: joins beyond left-deep chains / derived tables in JOIN position.
+    Parser parser;
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT * FROM Employees JOIN (Departments JOIN Offices ON "
+                     "Departments.office_id = Offices.id) ON Employees.dept_id = Departments.id;"),
+                 std::runtime_error);
+}
+
 } // namespace VertexDB

@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
+#include <string_view>
 #include <thread>
 
 namespace VertexDB {
@@ -694,6 +696,193 @@ TEST(ExecutionTests, LikePrefixAndTrigramSubstring) {
     ASSERT_TRUE(regex.success);
     ASSERT_EQ(regex.rows.size(), 1U);
     EXPECT_EQ(regex.rows[0][0], Value{"Bob"});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, LikeUnderscoreAndMixedWildcardsMatch) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_like_underscore_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, note STRING);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", \"hello\"), "
+                        "(2, \"Alicia\", \"hallo\"), (3, \"Bob\", \"help\");"))
+                    .success);
+
+    auto underscore = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE name LIKE \"A_ice\" ORDER BY name;"));
+    ASSERT_TRUE(underscore.success) << underscore.message;
+    ASSERT_EQ(underscore.rows.size(), 1U);
+    EXPECT_EQ(underscore.rows[0][0], Value{"Alice"});
+
+    auto mixed = executor.execute(
+        parser.parse("SELECT note FROM Employees WHERE note LIKE \"%he_lo\" ORDER BY note;"));
+    ASSERT_TRUE(mixed.success) << mixed.message;
+    ASSERT_EQ(mixed.rows.size(), 1U);
+    EXPECT_EQ(mixed.rows[0][0], Value{"hello"});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, LikeAndRegexOnNullColumnExcludeRow) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_like_null_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE People (id INT, nickname STRING NULL);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO People VALUES (1, \"Al\"), (2, NULL), "
+                                          "(3, \"Bob\");"))
+                    .success);
+
+    auto like = executor.execute(
+        parser.parse("SELECT id FROM People WHERE nickname LIKE \"%l%\" ORDER BY id;"));
+    ASSERT_TRUE(like.success) << like.message;
+    ASSERT_EQ(like.rows.size(), 1U);
+    EXPECT_EQ(like.rows[0][0], Value{static_cast<std::int64_t>(1)});
+
+    auto regex = executor.execute(
+        parser.parse("SELECT id FROM People WHERE nickname ~ \"^B\" ORDER BY id;"));
+    ASSERT_TRUE(regex.success) << regex.message;
+    ASSERT_EQ(regex.rows.size(), 1U);
+    EXPECT_EQ(regex.rows[0][0], Value{static_cast<std::int64_t>(3)});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, LeftJoinWhereOnRightColumnRejectsUnmatched) {
+    // Desired: LEFT null-pads unmatched, then WHERE on the right column drops those rows.
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_left_where_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Departments (id INT, dept STRING);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 10), "
+                                          "(2, \"Bob\", 99);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Departments VALUES (10, \"Eng\");")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT Employees.name, Departments.dept FROM Employees LEFT JOIN Departments "
+        "ON Employees.dept_id = Departments.id "
+        "WHERE Departments.dept > \"A\" ORDER BY Employees.name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][1], Value{"Eng"});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, EquiJoinMatchesNullKeysWhenBothNull) {
+    // Intentional VertexDB semantics: Value NULL == NULL is true (unlike SQL UNKNOWN).
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_null_join_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE LeftT (id INT, key INT NULL, label STRING);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE RightT (id INT, key INT NULL, label STRING);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO LeftT VALUES (1, NULL, \"Lnull\"), (2, 5, \"L5\");"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO RightT VALUES (10, NULL, \"Rnull\"), (20, 5, \"R5\");"))
+                    .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT LeftT.label, RightT.label FROM LeftT JOIN RightT ON LeftT.key = RightT.key "
+        "ORDER BY LeftT.label;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{"L5"});
+    EXPECT_EQ(result.rows[0][1], Value{"R5"});
+    EXPECT_EQ(result.rows[1][0], Value{"Lnull"});
+    EXPECT_EQ(result.rows[1][1], Value{"Rnull"});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, NonEquiLeftJoinNullPadsUnmatched) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_nonequi_left_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, score INT);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Thresholds (id INT, min_score INT);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 10), (2, \"Bob\", 1);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Thresholds VALUES (1, 5);")).success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT Employees.name, Thresholds.min_score FROM Employees LEFT JOIN Thresholds "
+        "ON Employees.score > Thresholds.min_score ORDER BY Employees.name;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(result.rows[0][1], Value{static_cast<std::int64_t>(5)});
+    EXPECT_EQ(result.rows[1][0], Value{"Bob"});
+    EXPECT_TRUE(result.rows[1][1].isNull());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ExecutionTests, InvalidRegexPatternIsRejected) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("VertexDB_bad_regex_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Parser parser;
+    QueryExecutor executor{root};
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Employees (id INT, name STRING);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");")).success);
+
+    try {
+        (void)executor.execute(
+            parser.parse("SELECT name FROM Employees WHERE name ~ \"[\";"));
+        FAIL() << "expected invalid regex pattern to throw";
+    } catch (const std::runtime_error &ex) {
+        EXPECT_NE(std::string_view{ex.what()}.find("invalid regex pattern"),
+                  std::string_view::npos)
+            << ex.what();
+    }
 
     std::filesystem::remove_all(root);
 }

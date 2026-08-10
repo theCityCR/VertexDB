@@ -847,6 +847,124 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
                      "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
                      "SELECT id FROM t;"),
                  std::runtime_error);
+
+    // Multiple recursive CTEs in one WITH.
+    EXPECT_THROW(
+        (void)parser.parse(
+            "WITH RECURSIVE a AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
+            "SELECT Nodes.id FROM Nodes JOIN a ON Nodes.parent_id = a.id), "
+            "b AS (SELECT id FROM Nodes WHERE id = 2 UNION ALL "
+            "SELECT Nodes.id FROM Nodes JOIN b ON Nodes.parent_id = b.id) "
+            "SELECT id FROM a;"),
+        std::runtime_error);
+
+    // Recursive arm must reference the CTE name exactly once (0 refs).
+    EXPECT_THROW((void)parser.parse(
+                     "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
+                     "SELECT id FROM Nodes WHERE id = 2) SELECT id FROM t;"),
+                 std::runtime_error);
+
+    // Recursive arm must reference the CTE name exactly once (2 refs).
+    EXPECT_THROW(
+        (void)parser.parse(
+            "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
+            "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id "
+            "JOIN t AS t2 ON Nodes.id = t2.id) SELECT id FROM t;"),
+        std::runtime_error);
+
+    // Anchor must not self-reference.
+    EXPECT_THROW(
+        (void)parser.parse(
+            "WITH RECURSIVE t AS (SELECT id FROM t UNION ALL "
+            "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) SELECT id FROM t;"),
+        std::runtime_error);
+
+    // WITH inside recursive arm is unsupported.
+    EXPECT_THROW(
+        (void)parser.parse(
+            "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
+            "WITH x AS (SELECT id FROM Nodes) SELECT Nodes.id FROM Nodes JOIN t "
+            "ON Nodes.parent_id = t.id) SELECT id FROM t;"),
+        std::runtime_error);
+
+    // General set ops outside recursive CTE bodies are unsupported.
+    EXPECT_THROW((void)parser.parse("SELECT id FROM Nodes UNION SELECT id FROM Nodes;"),
+                 std::runtime_error);
+}
+
+TEST(NestedSqlTests, EmptyUncorrelatedInSubqueryMatchesNoRows) {
+    Parser parser;
+    auto executor = makeExecutor("empty-in-subquery");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id IN (SELECT id FROM Employees WHERE salary > "
+        "999999.0);"));
+    ASSERT_TRUE(result.success) << result.message;
+    EXPECT_TRUE(result.rows.empty());
+}
+
+TEST(NestedSqlTests, WithRecursiveRowCapRejectsBeforePartialStepInsert) {
+    // Desired: oversized recursive steps throw before inserting any of that step's rows.
+    ASSERT_EQ(recursiveCteLimits().maxRows, 100000U);
+    const auto saved = recursiveCteLimits();
+    recursiveCteLimits().maxRows = 5;
+    struct Restore {
+        RecursiveCteLimits previous;
+        ~Restore() { recursiveCteLimits() = previous; }
+    } restore{saved};
+
+    Parser parser;
+    auto executor = makeExecutor("recursive-row-cap-preinsert");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Seed (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Numbers (n INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Seed VALUES (1);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Numbers VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), "
+                        "(10);"))
+                    .success);
+
+    const auto beforeNumbers =
+        executor.execute(parser.parse("SELECT COUNT(*) FROM Numbers;"));
+    ASSERT_TRUE(beforeNumbers.success);
+    ASSERT_EQ(beforeNumbers.rows.size(), 1U);
+    EXPECT_EQ(beforeNumbers.rows[0][0], Value{static_cast<std::int64_t>(10)});
+
+    const auto query = parser.parse(
+        "WITH RECURSIVE t AS ("
+        "  SELECT id FROM Seed WHERE id = 1 "
+        "  UNION ALL "
+        "  SELECT Numbers.n FROM Numbers CROSS JOIN t"
+        ") SELECT id FROM t;");
+    try {
+        (void)executor.execute(query);
+        FAIL() << "expected WITH RECURSIVE row cap to throw before absorbing the step";
+    } catch (const std::runtime_error &ex) {
+        EXPECT_NE(std::string_view{ex.what()}.find("maximum row count"), std::string_view::npos)
+            << ex.what();
+    }
+
+    // Base tables must remain intact; the failed recursive step must not leak mutations.
+    const auto afterNumbers =
+        executor.execute(parser.parse("SELECT COUNT(*) FROM Numbers;"));
+    ASSERT_TRUE(afterNumbers.success);
+    ASSERT_EQ(afterNumbers.rows.size(), 1U);
+    EXPECT_EQ(afterNumbers.rows[0][0], Value{static_cast<std::int64_t>(10)});
+    const auto seed =
+        executor.execute(parser.parse("SELECT COUNT(*) FROM Seed;"));
+    ASSERT_TRUE(seed.success);
+    EXPECT_EQ(seed.rows[0][0], Value{static_cast<std::int64_t>(1)});
 }
 
 TEST(NestedSqlTests, WithRecursiveExceedsDocumentedIterationCap) {
