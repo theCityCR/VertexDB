@@ -40,7 +40,8 @@ Do not rebuild these:
 4. Focused tests:
    - `NestedSqlTests::CteInliningUsesBaseTableIndex`
    - `NestedSqlTests::CteInliningLeavesBodyFilterAsResidualWhenOuterUsesIndex`
-   - rewriter / residual / `IN (SELECT …)` coverage in `tests/nested_sql_tests.cpp`
+   - rewriter / residual / CTE index coverage in `tests/nested_cte_tests.cpp`;
+     `IN (SELECT …)` coverage in `tests/nested_subquery_tests.cpp`
 5. Semantics documented in `docs/sql.md`, `docs/design.md`, and `docs/deep_features.md`.
 
 ## What to build

@@ -15,8 +15,16 @@ VertexDB uses three levels of automated testing:
 | `storage_tests.cpp` | Row stores, buffer pool, schema |
 | `index_tests.cpp` | Hash / B+ tree unit behavior, expression/`trigram` index metadata |
 | `execution_tests.cpp` | End-to-end DML/SELECT smoke, `LEFT`/`RIGHT`/`FULL`/`CROSS`/non-equi joins, `LIKE`/trigram/NULL edges, concurrency |
-| `nested_sql_tests.cpp` | CTE/derived inlining, `WITH` nesting depth (≤3), FROM/JOIN aliases, `WITH`/`JOIN` in `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE` (incl. iteration/row caps and documented refusals), correlation (≤4 frames, NULL outer keys), documented grammar refusals |
-| `planner_behavior_tests.cpp` | Access paths (incl. prefix `LIKE` / trigram intersect / regex residual full-scan / non-prefix LIKE), same-column OR→IN rewrite (incl. expression), residuals, stats/cost, multi-index intersect/union (incl. scaled intersect wedge), outer/`CROSS` join plans, `EXPLAIN` / `EXPLAIN ANALYZE` actuals (incl. residual `candidates`, post-aggregation / pre-`LIMIT` cardinality, `WITH`), indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
+| `nested_cte_tests.cpp` | CTE/derived inlining, materialize modes, `WITH` nesting depth (≤3), CTE join targets, scaled CTE index win |
+| `nested_correlation_tests.cpp` | Correlation (≤4 frames, NULL outer keys), FROM/JOIN table aliases for qualification/scopes |
+| `nested_subquery_tests.cpp` | `WITH`/`JOIN`/derived inside `IN`/`EXISTS`, uncorrelated `IN`, nested-SQL documented grammar refusals |
+| `nested_recursive_tests.cpp` | Minimal `WITH RECURSIVE` (walk, documented refusals, iteration/row caps) |
+| `planner_access_tests.cpp` | Access paths (prefix `LIKE` / trigram / regex residual / OR→IN), residuals, expression indexes, histograms |
+| `planner_intersect_union_tests.cpp` | Multi-index AND intersect / OR union (incl. partial OR, scaled intersect wedge) |
+| `planner_explain_tests.cpp` | `EXPLAIN` / `EXPLAIN ANALYZE` actuals (residual `candidates`, joins, aggregation, `LIMIT`, `WITH`) |
+| `planner_mutation_tests.cpp` | Indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
+| `planner_join_stats_tests.cpp` | Stats-driven cost/join choice, outer/`CROSS` join plans |
+| `planner_test_support.hpp` | Shared planner stubs (`StubRelationStats` / `StubIndexCatalog`) + temp executor helper |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), SI anomaly wedge (dirty read, watermark, mid-txn phantom, write skew, executor RW honesty), deferred WAL, transactional `CREATE INDEX`, still-forbidden catalog DDL/persistence |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY` (incl. NULL group keys), prepared statements (AST immutability, `EXPLAIN` / `EXPLAIN ANALYZE` bind), `ANALYZE` |

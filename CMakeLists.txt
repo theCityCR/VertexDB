@@ -148,8 +148,15 @@ if(VERTEXDB_BUILD_TESTS)
         tests/index_tests.cpp
         tests/execution_tests.cpp
         tests/deep_feature_tests.cpp
-        tests/nested_sql_tests.cpp
-        tests/planner_behavior_tests.cpp
+        tests/nested_cte_tests.cpp
+        tests/nested_correlation_tests.cpp
+        tests/nested_subquery_tests.cpp
+        tests/nested_recursive_tests.cpp
+        tests/planner_access_tests.cpp
+        tests/planner_intersect_union_tests.cpp
+        tests/planner_explain_tests.cpp
+        tests/planner_mutation_tests.cpp
+        tests/planner_join_stats_tests.cpp
         tests/transaction_behavior_tests.cpp
         tests/persistence_behavior_tests.cpp
         tests/aggregate_prepared_tests.cpp
