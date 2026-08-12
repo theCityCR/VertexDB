@@ -72,12 +72,12 @@ revealed prior image). Logical DML WAL records are replaced by page-image redo: 
 transaction is active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`. Legacy physical
 row-image redo remains replayable.
 
-| Anomaly | Under SI here |
+| Anomaly | Under SI + row-level SSI here |
 | --- | --- |
 | Dirty read | Prevented |
 | Non-repeatable read | Prevented (`maxCommitSeq` watermark) |
 | Mid-txn phantom (held snapshot) | Prevented |
-| Write skew | Allowed (classic SI; no SSI) |
+| Write skew / same-row WW | Aborted at commit (row read/write sets; no predicate locks) |
 
 Executor writers are exclusive (`LockManager`); multi-txn interleaving tests share
 `Table` + `TransactionManager`. Full wedge: [si_anomaly_wedge.md](si_anomaly_wedge.md).

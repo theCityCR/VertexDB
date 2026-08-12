@@ -122,6 +122,14 @@ QueryResult QueryExecutor::executeCommit() {
     if (!session_.transactionActive()) {
         return messageResult(false, "no active transaction");
     }
+    if (!session_.transactionManager().isSerializable(*session_.activeTransactionId())) {
+        while (auto record = session_.undoLog().pop()) {
+            recovery_.applyUndoRecord(*record);
+        }
+        session_.clearPendingWal();
+        (void)session_.rollback();
+        return messageResult(false, "serialization failure");
+    }
     recovery_.flushPendingWal();
     return session_.commit();
 }

@@ -46,9 +46,18 @@ std::vector<Row> Table::rowsSnapshot() const {
 }
 
 std::vector<Row> Table::rowsSnapshot(const ReadSnapshot &snapshot,
-                                     const TransactionManager &transactions) const {
+                                     TransactionManager &transactions) const {
     std::shared_lock lock{mutex_};
-    return versions_.visibleRows(snapshot, transactions);
+    auto entries = versions_.visibleEntries(snapshot, transactions);
+    for (const auto &[rowId, _] : entries) {
+        transactions.recordRead(snapshot.self, name_, rowId);
+    }
+    std::vector<Row> rows;
+    rows.reserve(entries.size());
+    for (auto &[_, row] : entries) {
+        rows.push_back(std::move(row));
+    }
+    return rows;
 }
 
 std::vector<std::pair<RowId, Row>> Table::liveEntries() const {
@@ -57,10 +66,13 @@ std::vector<std::pair<RowId, Row>> Table::liveEntries() const {
 }
 
 std::vector<std::pair<RowId, Row>>
-Table::visibleEntries(const ReadSnapshot &snapshot,
-                      const TransactionManager &transactions) const {
+Table::visibleEntries(const ReadSnapshot &snapshot, TransactionManager &transactions) const {
     std::shared_lock lock{mutex_};
-    return versions_.visibleEntries(snapshot, transactions);
+    auto entries = versions_.visibleEntries(snapshot, transactions);
+    for (const auto &[rowId, _] : entries) {
+        transactions.recordRead(snapshot.self, name_, rowId);
+    }
+    return entries;
 }
 
 std::vector<RowId> Table::freeList() const {
@@ -74,16 +86,29 @@ std::vector<Row> Table::rowsById(std::span<const RowId> rowIds) const {
 }
 
 std::vector<Row> Table::rowsById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
-                                 const TransactionManager &transactions) const {
+                                 TransactionManager &transactions) const {
     std::shared_lock lock{mutex_};
-    return versions_.visibleRowsById(rowIds, snapshot, transactions);
+    auto entries = versions_.visibleEntriesById(rowIds, snapshot, transactions);
+    for (const auto &[rowId, _] : entries) {
+        transactions.recordRead(snapshot.self, name_, rowId);
+    }
+    std::vector<Row> rows;
+    rows.reserve(entries.size());
+    for (auto &[_, row] : entries) {
+        rows.push_back(std::move(row));
+    }
+    return rows;
 }
 
 std::vector<std::pair<RowId, Row>>
 Table::visibleEntriesById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
-                          const TransactionManager &transactions) const {
+                          TransactionManager &transactions) const {
     std::shared_lock lock{mutex_};
-    return versions_.visibleEntriesById(rowIds, snapshot, transactions);
+    auto entries = versions_.visibleEntriesById(rowIds, snapshot, transactions);
+    for (const auto &[rowId, _] : entries) {
+        transactions.recordRead(snapshot.self, name_, rowId);
+    }
+    return entries;
 }
 
 std::size_t Table::rowCount() const {
@@ -101,16 +126,19 @@ std::size_t Table::versionCount(RowId rowId) const {
     return versions_.versionCount(rowId);
 }
 
-RowId Table::insert(Row row, TransactionId writerId) {
+RowId Table::insert(Row row, TransactionId writerId, TransactionManager *transactions) {
     validateRow(row);
     std::unique_lock lock{mutex_};
     const RowId rowId = rowStore_->append(std::move(row));
     versions_.write(rowId, *rowStore_->get(rowId), writerId);
     addRowToIndexes(rowId);
+    if (transactions != nullptr) {
+        transactions->recordWrite(writerId, name_, rowId);
+    }
     return rowId;
 }
 
-bool Table::erase(RowId rowId, TransactionId writerId) {
+bool Table::erase(RowId rowId, TransactionId writerId, TransactionManager *transactions) {
     std::unique_lock lock{mutex_};
     if (rowStore_->get(rowId) == nullptr) {
         return false;
@@ -121,10 +149,14 @@ bool Table::erase(RowId rowId, TransactionId writerId) {
         return false;
     }
     rebuildIndexes();
+    if (transactions != nullptr) {
+        transactions->recordWrite(writerId, name_, rowId);
+    }
     return true;
 }
 
-bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId writerId) {
+bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId writerId,
+                   TransactionManager *transactions) {
     std::unique_lock lock{mutex_};
     if (rowStore_->get(rowId) == nullptr || index >= schema_.size()) {
         return false;
@@ -144,6 +176,9 @@ bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId wr
     }
     versions_.write(rowId, *rowStore_->get(rowId), writerId);
     rebuildIndexes();
+    if (transactions != nullptr) {
+        transactions->recordWrite(writerId, name_, rowId);
+    }
     return true;
 }
 

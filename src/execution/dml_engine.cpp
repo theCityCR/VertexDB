@@ -25,9 +25,10 @@ QueryResult DmlEngine::executeInsert(const Insert &command) {
         table->validateRow(row);
     }
     const auto writerId = ctx_.session.writeTransactionId();
+    auto &txns = ctx_.session.transactionManager();
     for (const auto &row : command.rows) {
         table->clearDirtyTracking();
-        const RowId rowId = table->insert(row, writerId);
+        const RowId rowId = table->insert(row, writerId, &txns);
         if (ctx_.session.transactionActive()) {
             ctx_.session.pushUndo(
                 UndoRecord{command.table, UndoKind::Insert, rowId, std::nullopt});
@@ -51,10 +52,11 @@ QueryResult DmlEngine::executeUpdate(const Update &command) {
 
     std::size_t count = 0;
     const auto writerId = ctx_.session.writeTransactionId();
+    auto &txns = ctx_.session.transactionManager();
     for (const auto &[rowId, row] : targets) {
         const Row beforeImage = row;
         table->clearDirtyTracking();
-        if (table->update(rowId, *target, command.value, writerId)) {
+        if (table->update(rowId, *target, command.value, writerId, &txns)) {
             if (ctx_.session.transactionActive()) {
                 ctx_.session.pushUndo(
                     UndoRecord{command.table, UndoKind::Update, rowId, std::move(beforeImage)});
@@ -74,10 +76,11 @@ QueryResult DmlEngine::executeDelete(const Delete &command) {
 
     std::size_t count = 0;
     const auto writerId = ctx_.session.writeTransactionId();
+    auto &txns = ctx_.session.transactionManager();
     for (const auto &[rowId, row] : targets) {
         const Row beforeImage = row;
         table->clearDirtyTracking();
-        if (table->erase(rowId, writerId)) {
+        if (table->erase(rowId, writerId, &txns)) {
             if (ctx_.session.transactionActive()) {
                 ctx_.session.pushUndo(
                     UndoRecord{command.table, UndoKind::Delete, rowId, std::move(beforeImage)});

@@ -729,13 +729,14 @@ TEST(TransactionBehaviorTests, DirtyReadOfUncommittedUpdateIsPrevented) {
 TEST(TransactionBehaviorTests, SnapshotIsolationHidesCommittedInsertMatchingPredicate) {
     // Desired SI contract for a held snapshot: a row inserted+committed after BEGIN that
     // matches a predicate never appears in repeated reads of that snapshot (no mid-txn
-    // phantom). SI does not abort the inserter (no SSI / predicate locks) — see write skew.
+    // phantom). Row-level SSI does not add predicate locks — concurrent inserts that were
+    // never in the reader's row read-set still commit.
     TransactionManager transactions;
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
 
     table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
-                 transactions.beginCommitted());
+                 transactions.beginCommitted(), &transactions);
 
     const auto reader = transactions.begin();
     const auto snap = transactions.currentSnapshot(reader.id);
@@ -752,26 +753,27 @@ TEST(TransactionBehaviorTests, SnapshotIsolationHidesCommittedInsertMatchingPred
 
     const auto concurrent = transactions.begin();
     table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Bob"}, Value{110000.0}},
-                 concurrent.id);
+                 concurrent.id, &transactions);
     transactions.commit(concurrent.id);
 
     EXPECT_EQ(countHighSalary(snap), 1U) << "held snapshot must not see the committed insert";
     EXPECT_EQ(countHighSalary(transactions.currentSnapshot()), 2U)
         << "a fresh snapshot may see the new row";
+    transactions.commit(reader.id);
 }
 
-TEST(TransactionBehaviorTests, SnapshotIsolationAllowsWriteSkew) {
-    // Documented SI limitation (not a bug): two txns each observe "at least one on-call"
-    // then flip different rows off; both commit and the invariant is broken. SSI would abort.
+TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteSkew) {
+    // Classic on-call write skew: two txns each observe "at least one on-call", then flip
+    // different rows off. Row-level SSI aborts the later committer so the invariant holds.
     TransactionManager transactions;
     Table table{"Doctors", {{"id", ColumnType::Int}, {"on_call", ColumnType::Int}}};
 
     const auto docA =
         table.insert({Value{static_cast<std::int64_t>(1)}, Value{static_cast<std::int64_t>(1)}},
-                     transactions.beginCommitted());
+                     transactions.beginCommitted(), &transactions);
     const auto docB =
         table.insert({Value{static_cast<std::int64_t>(2)}, Value{static_cast<std::int64_t>(1)}},
-                     transactions.beginCommitted());
+                     transactions.beginCommitted(), &transactions);
 
     auto countOnCall = [&](const ReadSnapshot &s) {
         std::size_t n = 0;
@@ -790,13 +792,37 @@ TEST(TransactionBehaviorTests, SnapshotIsolationAllowsWriteSkew) {
     ASSERT_EQ(countOnCall(snap1), 2U);
     ASSERT_EQ(countOnCall(snap2), 2U);
 
-    ASSERT_TRUE(table.update(docA, 1, Value{static_cast<std::int64_t>(0)}, t1.id));
-    ASSERT_TRUE(table.update(docB, 1, Value{static_cast<std::int64_t>(0)}, t2.id));
+    ASSERT_TRUE(table.update(docA, 1, Value{static_cast<std::int64_t>(0)}, t1.id, &transactions));
+    ASSERT_TRUE(table.update(docB, 1, Value{static_cast<std::int64_t>(0)}, t2.id, &transactions));
     transactions.commit(t1.id);
-    transactions.commit(t2.id);
+    EXPECT_THROW(transactions.commit(t2.id), SerializationFailure);
 
-    EXPECT_EQ(countOnCall(transactions.currentSnapshot()), 0U)
-        << "SI allows write skew; both commits succeed with zero on-call";
+    EXPECT_EQ(countOnCall(transactions.currentSnapshot()), 1U)
+        << "SSI aborts the second committer; one doctor remains on-call";
+}
+
+TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteWriteConflict) {
+    // First-committer wins: two txns update the same row; the later commit aborts.
+    TransactionManager transactions;
+    Table table{"Accounts", {{"id", ColumnType::Int}, {"balance", ColumnType::Int}}};
+
+    const auto rowId =
+        table.insert({Value{static_cast<std::int64_t>(1)}, Value{static_cast<std::int64_t>(100)}},
+                     transactions.beginCommitted(), &transactions);
+
+    const auto t1 = transactions.begin();
+    const auto t2 = transactions.begin();
+    (void)table.rowsSnapshot(transactions.currentSnapshot(t1.id), transactions);
+    (void)table.rowsSnapshot(transactions.currentSnapshot(t2.id), transactions);
+
+    ASSERT_TRUE(table.update(rowId, 1, Value{static_cast<std::int64_t>(90)}, t1.id, &transactions));
+    ASSERT_TRUE(table.update(rowId, 1, Value{static_cast<std::int64_t>(80)}, t2.id, &transactions));
+    transactions.commit(t1.id);
+    EXPECT_THROW(transactions.commit(t2.id), SerializationFailure);
+
+    auto latest = table.rowsSnapshot(transactions.currentSnapshot(), transactions);
+    ASSERT_EQ(latest.size(), 1U);
+    EXPECT_EQ(latest.front()[1], Value{static_cast<std::int64_t>(90)});
 }
 
 TEST(TransactionBehaviorTests, ExecutorAllowsConcurrentReadersAndWriterExcludesReaders) {

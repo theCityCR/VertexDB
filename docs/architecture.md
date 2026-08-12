@@ -101,10 +101,11 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   WAL recovery uses page-image redo plus legacy physical/logical records.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager` (shared readers;
   exclusive writers). One `QueryExecutor` holds at most one open SQL transaction.
-- `transaction`: commit sequences, MVCC row versions, and per-transaction undo-log rollback.
-  Snapshot isolation prevents dirty reads and hides post-`BEGIN` commits; classic SI still allows
-  write skew (no SSI). Multi-txn interleaving tests share a `Table` + `TransactionManager`
-  directly — see [si_anomaly_wedge.md](si_anomaly_wedge.md).
+- `transaction`: commit sequences, MVCC row versions, per-transaction undo-log rollback, and
+  row-level SSI read/write-set checks at commit. Snapshot isolation prevents dirty reads and hides
+  post-`BEGIN` commits; SSI aborts write skew / write–write overlap (no predicate locks). Multi-txn
+  interleaving tests share a `Table` + `TransactionManager` directly — see
+  [si_anomaly_wedge.md](si_anomaly_wedge.md).
 
 Public module headers carry a short ownership banner pointing at sibling TUs when useful;
 see `AGENTS.md` for the agent-oriented layout map.
@@ -157,8 +158,8 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
   DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
   `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped
   on `ROLLBACK`. `SAVE DATABASE` in an open transaction implicitly commits then checkpoints;
-  `LOAD DATABASE` implicitly rolls back then loads. SI allows write skew; there are no row/page
-  locks, predicate locks, or SSI aborts.
+  `LOAD DATABASE` implicitly rolls back then loads. Row-level SSI aborts write skew / write–write
+  overlap; there are no row/page locks or predicate locks.
 
 ## Current Data Flow
 

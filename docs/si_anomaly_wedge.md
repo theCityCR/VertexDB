@@ -1,15 +1,17 @@
-# SI Anomaly Concurrency Wedge
+# SI / SSI Anomaly Concurrency Wedge
 
 ## Goal
 
-Package VertexDB’s existing commit-seq MVCC **snapshot isolation** as a systems portfolio story:
+Package VertexDB’s commit-seq MVCC **snapshot isolation** plus **row-level Serializable Snapshot
+Isolation (SSI)** as a systems portfolio story:
 
-> Under snapshot isolation, VertexDB prevents dirty reads and hides commits after `BEGIN`; classic SI
-> still allows write skew. Executor writers are serialized — true multi-txn interleaving is
+> Under SI, VertexDB prevents dirty reads and hides commits after `BEGIN`. Row-level SSI adds
+> first-committer-wins abort on overlapping read/write sets so classic write skew and write–write
+> conflicts cannot both commit. Executor writers are serialized — true multi-txn interleaving is
 > demonstrated at the `Table` + `TransactionManager` layer.
 
-This is a **demo wedge**, not a claim of production concurrency control. The engine behavior already
-exists; this plan packages evidence so the isolation story is repeatable and honest.
+This is a **demo wedge**, not a claim of production concurrency control. Predicate locks / full
+phantom SSI are intentionally out of scope.
 
 ## Sync model (honest)
 
@@ -18,19 +20,21 @@ exists; this plan packages evidence so the isolation story is repeatable and hon
 | `LockManager` (per `QueryExecutor`) | SELECTs share a read lock; any writer takes an exclusive lock |
 | `Table` / `Database` mutexes | Storage façade synchronization |
 | MVCC + `TransactionManager` | Commit-seq snapshots; version chains; dirty-read prevention |
+| Row-level SSI | Per-txn relation+row read/write sets; abort later committer on rw/ww overlap |
 
 One `QueryExecutor` holds **at most one** open SQL transaction. Tests that interleave two logical
 transactions share a `Table` and `TransactionManager` directly (same pattern as existing SI tests).
 
 ## Anomaly table
 
-| Anomaly | Under VertexDB SI | Evidence |
+| Anomaly | Under VertexDB | Evidence |
 | --- | --- | --- |
-| Dirty read | **Prevented** | Uncommitted INSERT/UPDATE invisible to other snapshots |
-| Non-repeatable read | **Prevented** | Commits after `BEGIN` stay behind `maxCommitSeq` |
-| Mid-txn phantom (same snapshot) | **Prevented** | Predicate-matching insert+commit invisible to held snapshot |
-| Write skew | **Allowed** (SI contract) | Two txns each flip a different “on-call” row; invariant breaks |
-| Predicate locks / SSI abort | **Not implemented** | Concurrent inserts are not conflict-checked |
+| Dirty read | **Prevented** (SI) | Uncommitted INSERT/UPDATE invisible to other snapshots |
+| Non-repeatable read | **Prevented** (SI) | Commits after `BEGIN` stay behind `maxCommitSeq` |
+| Mid-txn phantom (same snapshot) | **Prevented** (SI watermark) | Predicate-matching insert+commit invisible to held snapshot |
+| Write skew | **Aborted** (row-level SSI) | Two txns each flip a different “on-call” row; later `COMMIT` fails |
+| Write–write on same row | **Aborted** (row-level SSI) | First committer wins |
+| Predicate locks / insert phantoms | **Not implemented** | Inserts outside the reader’s row read-set are not conflict-checked |
 
 ## Already done
 
@@ -51,14 +55,15 @@ In `tests/transaction_behavior_tests.cpp`:
 
 - `DirtyReadOfUncommittedUpdateIsPrevented`
 - `SnapshotIsolationHidesCommittedInsertMatchingPredicate`
-- `SnapshotIsolationAllowsWriteSkew` (documented SI limitation)
+- `SerializableSnapshotIsolationAbortsWriteSkew`
+- `SerializableSnapshotIsolationAbortsWriteWriteConflict`
 - `ExecutorAllowsConcurrentReadersAndWriterExcludesReaders`
 
 ### 2. Demo SQL — done
 
 [`examples/si_isolation_demo.sql`](../examples/si_isolation_demo.sql) walks a single SQL session
 through `BEGIN` / dirty-looking DML / `COMMIT` with comments pointing at the Table-level tests for
-true interleaving.
+true interleaving (including SSI write-skew abort).
 
 ### 3. Wedge write-up — done
 
@@ -71,13 +76,13 @@ README.
 ./build/VertexDB_cli < examples/si_isolation_demo.sql
 ```
 
-For write skew and concurrent snapshots, run the GoogleTest cases above (they share
-`TransactionManager` across two logical txns).
+For write skew / write–write SSI aborts and concurrent snapshots, run the GoogleTest cases above
+(they share `TransactionManager` across two logical txns).
 
 ## Limitations (honest)
 
 - No row/page locks, deadlock detection, or buffer-pool latches.
-- No Serializable Snapshot Isolation (SSI), `FOR UPDATE`, or write–write abort.
+- No predicate locks / `FOR UPDATE`; insert phantoms outside the row read-set are not SSI-checked.
 - No multi-`QueryExecutor` shared session/`TransactionManager` redesign.
 - Concurrent SQL writers on one executor are serialized by `LockManager` — that is intentional for
   this educational engine, not an SI bug.
@@ -90,11 +95,12 @@ For write skew and concurrent snapshots, run the GoogleTest cases above (they sh
 | `DirtyReadOfUncommittedUpdateIsPrevented` | Dirty read prevented |
 | `SnapshotIsolationHidesCommitsAfterBegin` | SI watermark / non-repeatable prevented |
 | `SnapshotIsolationHidesCommittedInsertMatchingPredicate` | Mid-txn phantom prevented |
-| `SnapshotIsolationAllowsWriteSkew` | Write skew allowed under SI |
+| `SerializableSnapshotIsolationAbortsWriteSkew` | Write skew aborted under row-level SSI |
+| `SerializableSnapshotIsolationAbortsWriteWriteConflict` | Same-row WW aborted |
 | `ExecutorAllowsConcurrentReadersAndWriterExcludesReaders` | Executor RW honesty |
 
 ## Definition of done
 
 - [x] Named tests fail if dirty reads appear or SI watermark / held-snapshot phantoms regress.
-- [x] Named test documents write skew as an intentional SI allowance.
-- [x] Docs and example state prevented vs allowed anomalies without overclaiming.
+- [x] Named tests show write skew and write–write conflicts abort the later committer.
+- [x] Docs and example state prevented vs aborted anomalies without overclaiming predicate SSI.

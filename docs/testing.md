@@ -26,7 +26,7 @@ VertexDB uses three levels of automated testing:
 | `planner_mutation_tests.cpp` | Indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate); `EXPLAIN UPDATE`/`DELETE` access paths |
 | `planner_join_stats_tests.cpp` | Stats-driven cost/join choice, outer/`CROSS` join plans |
 | `planner_test_support.hpp` | Shared planner stubs (`StubRelationStats` / `StubIndexCatalog`) + temp executor helper |
-| `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), SI anomaly wedge (dirty read, watermark, mid-txn phantom, write skew, executor RW honesty), deferred WAL, transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP INDEX`), `SAVE`/`LOAD` implicit commit/rollback in open txns |
+| `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), SI/SSI anomaly wedge (dirty read, watermark, mid-txn phantom, write-skew / write–write abort, executor RW honesty), deferred WAL, transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP INDEX`), `SAVE`/`LOAD` implicit commit/rollback in open txns |
 | `persistence_behavior_tests.cpp` | Page store, snapshot v4, page-image/physical/torn WAL |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY` (incl. NULL group keys), prepared statements (AST immutability, `EXPLAIN` / `EXPLAIN ANALYZE` bind), `ANALYZE` |
 | `deep_feature_tests.cpp` | Cross-cutting deep-feature coverage (incl. legacy `.tcrdb` v1–v3 load) |
@@ -39,7 +39,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 275 discovered GoogleTest cases across the files above.
+The current suite contains 276 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented
