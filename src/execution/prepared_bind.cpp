@@ -124,6 +124,8 @@ Query bindQueryParameters(const Query &query, const std::vector<Value> &paramete
                     index.expression = bindIndexExpression(*command.expression, parameters, seen);
                 }
                 return index;
+            } else if constexpr (std::is_same_v<Command, DropIndex>) {
+                return command;
             } else {
                 return command;
             }

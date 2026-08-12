@@ -210,6 +210,11 @@ struct CreateIndex {
     std::optional<IndexExpression> expression;
 };
 
+struct DropIndex {
+    std::string name;
+    std::string table;
+};
+
 struct SaveDatabase {};
 struct LoadDatabase {
     std::optional<std::string> name;
@@ -238,8 +243,8 @@ struct Exit {};
 
 using Query =
     std::variant<CreateDatabase, CreateTable, DropTable, RenameTable, ListTables, Insert, Select,
-                 Update, Delete, CreateIndex, SaveDatabase, LoadDatabase, BeginTransaction,
-                 CommitTransaction, RollbackTransaction, PrepareStatement, ExecutePrepared,
-                 ExplainQuery, Analyze, Exit>;
+                 Update, Delete, CreateIndex, DropIndex, SaveDatabase, LoadDatabase,
+                 BeginTransaction, CommitTransaction, RollbackTransaction, PrepareStatement,
+                 ExecutePrepared, ExplainQuery, Analyze, Exit>;
 
 } // namespace VertexDB

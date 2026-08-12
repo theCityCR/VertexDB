@@ -82,8 +82,8 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   INSERT/UPDATE/DELETE with undo and page-image WAL redo; UPDATE/DELETE reuse
   `QueryPlanner::planSelect` plus `SelectEngine::collectVisibleEntries` so mutation `WHERE`
   clauses use the same index access paths as SELECT. `CatalogEngine` owns CREATE/DROP/RENAME
-  DATABASE/TABLE, `LIST TABLES`, `CREATE INDEX`, `ANALYZE`, and `SAVE`/`LOAD` (with WAL append and
-  snapshot coordination). `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
+  DATABASE/TABLE, `LIST TABLES`, `CREATE INDEX` / `DROP INDEX`, `ANALYZE`, and `SAVE`/`LOAD` (with
+  WAL append and snapshot coordination). `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
   evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`, `subquery_runtime_cte.cpp`),
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.
@@ -138,9 +138,9 @@ ids, captures a commit-seq snapshot at `BEGIN`, and supplies all SELECT visibili
 commit-aware MVCC (dirty-read prevention, SI watermark for post-`BEGIN` commits, and held-snapshot
 phantom hiding). Write skew remains allowed under classic SI.
 `BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML and transactional
-`CREATE INDEX` record compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to
-the same `Database` instance, and `COMMIT` discards the log after `RecoveryService` flushes
-deferred WAL (logical `CreateIndex` SQL plus collapsed page-image redo).
+`CREATE INDEX` / `DROP INDEX` record compensating actions, `RecoveryService` applies them LIFO on
+`ROLLBACK` to the same `Database` instance, and `COMMIT` discards the log after `RecoveryService`
+flushes deferred WAL (logical index DDL SQL plus collapsed page-image redo).
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
 pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered before rows so
@@ -151,9 +151,10 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
   logical DML remain replayable. Trailing torn WAL records are skipped.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
-  DML and transactional `CREATE INDEX`; DML WAL records are deferred until `COMMIT` (one atomic
-  batch) and dropped on `ROLLBACK`. Catalog DDL and `SAVE`/`LOAD` remain rejected in open
-  transactions. SI allows write skew; there are no row/page locks, predicate locks, or SSI aborts.
+  DML and transactional `CREATE INDEX` / `DROP INDEX`; DML WAL records are deferred until `COMMIT`
+  (one atomic batch) and dropped on `ROLLBACK`. Catalog DDL and `SAVE`/`LOAD` remain rejected in
+  open transactions. SI allows write skew; there are no row/page locks, predicate locks, or SSI
+  aborts.
 
 ## Current Data Flow
 

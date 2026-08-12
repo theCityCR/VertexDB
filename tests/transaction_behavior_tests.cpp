@@ -274,6 +274,80 @@ TEST(TransactionBehaviorTests, CreateIndexCommitFlushesWalAndRecovers) {
     std::filesystem::remove_all(root);
 }
 
+TEST(TransactionBehaviorTests, DropIndexRemovesLookup) {
+    Parser parser;
+    auto executor = makeExecutor("drop-index");
+    seedEmployees(executor, parser, true, false);
+
+    auto before =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(before.success);
+    EXPECT_NE(before.rows.front().front().toString().find("hash index"), std::string::npos);
+
+    ASSERT_TRUE(executor.execute(parser.parse("DROP INDEX idx_id ON Employees;")).success);
+    auto after =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(after.success);
+    EXPECT_NE(after.rows.front().front().toString().find("full table scan"), std::string::npos);
+
+    auto missing = executor.execute(parser.parse("DROP INDEX idx_id ON Employees;"));
+    EXPECT_FALSE(missing.success);
+    EXPECT_NE(missing.message.find("unknown index"), std::string::npos);
+}
+
+TEST(TransactionBehaviorTests, DropIndexRollbackRestoresIndex) {
+    Parser parser;
+    auto executor = makeExecutor("txn-drop-index-rb");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("DROP INDEX idx_id ON Employees;")).success);
+    auto mid =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(mid.success);
+    EXPECT_NE(mid.rows.front().front().toString().find("full table scan"), std::string::npos);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto after =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(after.success);
+    EXPECT_NE(after.rows.front().front().toString().find("hash index"), std::string::npos);
+}
+
+TEST(TransactionBehaviorTests, DropIndexCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-drop-index";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                        .success);
+
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("DROP INDEX idx_id ON Employees;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto explain =
+        recovered.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    ASSERT_FALSE(explain.rows.empty());
+    EXPECT_NE(explain.rows.front().front().toString().find("full table scan"), std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
 TEST(TransactionBehaviorTests, BeginCommitRollbackRejectInvalidTxnState) {
     Parser parser;
     auto executor = makeExecutor("txn-state");

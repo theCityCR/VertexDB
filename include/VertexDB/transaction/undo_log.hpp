@@ -3,6 +3,7 @@
 // Per-transaction compensating actions for ROLLBACK.
 // Implementation: src/transaction/undo_log.cpp.
 
+#include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/storage/row.hpp"
 
 #include <cstddef>
@@ -18,6 +19,7 @@ enum class UndoKind : std::uint8_t {
     Update,
     Delete,
     CreateIndex,
+    DropIndex,
 };
 
 struct UndoRecord {
@@ -25,8 +27,11 @@ struct UndoRecord {
     UndoKind kind{UndoKind::Insert};
     RowId rowId{};
     std::optional<Row> beforeImage;
-    // Populated for UndoKind::CreateIndex; empty for DML undo.
+    // Populated for UndoKind::CreateIndex / DropIndex; empty for DML undo.
     std::string indexName;
+    // Populated for UndoKind::DropIndex so ROLLBACK can recreate the index.
+    std::string indexColumn;
+    std::optional<IndexExpression> indexExpression;
 };
 
 class UndoLog {

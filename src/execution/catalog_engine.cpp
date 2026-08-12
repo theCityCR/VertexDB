@@ -3,8 +3,10 @@
 #include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
+#include "VertexDB/indexing/index_manager.hpp"
 #include "VertexDB/transaction/undo_log.hpp"
 
+#include <optional>
 #include <utility>
 
 namespace VertexDB {
@@ -100,6 +102,34 @@ QueryResult CatalogEngine::executeCreateIndex(const CreateIndex &command) {
     }
     return messageResult(created,
                          created ? "created index " + command.name : "index creation failed");
+}
+
+QueryResult CatalogEngine::executeDropIndex(const DropIndex &command) {
+    auto table = ctx_.select->requireTable(command.table);
+    std::optional<IndexDefinition> definition;
+    for (const auto &entry : table->indexDefinitions()) {
+        if (entry.name == command.name) {
+            definition = entry;
+            break;
+        }
+    }
+    if (!definition) {
+        return messageResult(false, "unknown index");
+    }
+    if (!table->dropIndex(command.name)) {
+        return messageResult(false, "index drop failed");
+    }
+    if (ctx_.session.transactionActive()) {
+        UndoRecord undo;
+        undo.tableName = command.table;
+        undo.kind = UndoKind::DropIndex;
+        undo.indexName = definition->name;
+        undo.indexColumn = definition->column;
+        undo.indexExpression = definition->expression;
+        ctx_.session.pushUndo(std::move(undo));
+    }
+    recovery_.appendWal(WalOperation::DropIndex, dropIndexSql(command));
+    return messageResult(true, "dropped index " + command.name);
 }
 
 QueryResult CatalogEngine::executeAnalyze(const Analyze &command) {

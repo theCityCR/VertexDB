@@ -100,6 +100,10 @@ std::string createIndexSql(const CreateIndex &command) {
     return "CREATE INDEX " + command.name + " ON " + command.table + "(" + command.column + ");";
 }
 
+std::string dropIndexSql(const DropIndex &command) {
+    return "DROP INDEX " + command.name + " ON " + command.table + ";";
+}
+
 std::string createTableSql(const CreateTable &command) {
     std::ostringstream sql;
     sql << "CREATE TABLE " << command.name << " (";

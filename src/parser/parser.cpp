@@ -35,6 +35,9 @@ Query Parser::parse(std::span<const Token> tokens) {
         error("expected DATABASE, TABLE, or INDEX after CREATE");
     }
     if (match(TokenType::Identifier, "DROP")) {
+        if (match(TokenType::Identifier, "INDEX")) {
+            return finish(parseDropIndex());
+        }
         return finish(parseDropTable());
     }
     if (match(TokenType::Identifier, "RENAME")) {

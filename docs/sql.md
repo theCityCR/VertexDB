@@ -81,6 +81,7 @@ CREATE INDEX idx_salary ON Employees(salary);
 CREATE INDEX idx_neg_salary ON Employees((-salary));
 CREATE INDEX idx_id_plus ON Employees((id+1));
 CREATE INDEX idx_note_tri ON Employees((trigram(note)));
+DROP INDEX idx_salary ON Employees;
 SELECT name FROM Employees WHERE (-salary) = -120000.0;
 WITH mid AS (
   WITH inner AS (SELECT id, name FROM Employees WHERE salary > 100000.0)
@@ -99,7 +100,8 @@ EXIT;
 ```
 
 `CREATE INDEX` builds maintained hash and ordered index structures for the target column or
-expression. Equality predicates can use hash index lookup. Less-than and greater-than predicates can
+expression. `DROP INDEX name ON table` removes a named index from that table (index names are
+per-table). Equality predicates can use hash index lookup. Less-than and greater-than predicates can
 use ordered index range lookup when the filtered column (or matching expression) is indexed.
 Prefix `LIKE 'lit%'` (no other wildcards) can use an ordered index prefix scan; substring
 `LIKE '%lit%'` can use a trigram expression index (`CREATE INDEX … ON t((trigram(col)))`) via
@@ -151,7 +153,7 @@ partially accumulate past the limit.
 keys for substring `LIKE`). Predicates of the form `(expr) = const` or `(expr) >/< const` can use
 arithmetic expression indexes; `EXPLAIN` reports expression hash/ordered access. Expression
 metadata is stored with index definitions in snapshot v4 (`expr:…` encoding) so SAVE/LOAD restores
-expression indexes without losing keys.
+expression indexes without losing keys. `DROP INDEX idx ON t` removes the named index.
 
 `ANALYZE` / `ANALYZE TABLE name` scans live rows and builds per-column equi-height histograms
 (default 32 buckets) plus distinct counts. Histograms feed range/`IN` selectivity in the planner.
@@ -229,9 +231,9 @@ snapshot; classic SI **allows** write skew (no SSI / predicate locks). One execu
 one open transaction; writers are serialized by the executor `LockManager`. See
 [si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
-`SAVE DATABASE`, and `LOAD DATABASE` are rejected. `CREATE INDEX` is allowed: it pushes a
-`CreateIndex` undo record and defers the logical WAL payload until `COMMIT` (dropped on
-`ROLLBACK`, which drops the in-memory index).
+`SAVE DATABASE`, and `LOAD DATABASE` are rejected. `CREATE INDEX` and `DROP INDEX` are allowed:
+each pushes an undo record (`CreateIndex` drops on rollback; `DropIndex` restores the prior
+definition) and defers the logical WAL payload until `COMMIT` (dropped on `ROLLBACK`).
 
 ## Types
 

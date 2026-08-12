@@ -58,6 +58,19 @@ DropTable Parser::parseDropTable() {
     return {table.lexeme};
 }
 
+DropIndex Parser::parseDropIndex() {
+    const auto index = advance();
+    if (index.type != TokenType::Identifier) {
+        throw std::runtime_error("expected index name");
+    }
+    expect(TokenType::Identifier, "ON");
+    const auto table = advance();
+    if (table.type != TokenType::Identifier) {
+        throw std::runtime_error("expected indexed table name");
+    }
+    return {index.lexeme, table.lexeme};
+}
+
 RenameTable Parser::parseRenameTable() {
     expect(TokenType::Identifier, "TABLE");
     const auto oldName = advance();

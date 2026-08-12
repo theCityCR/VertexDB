@@ -52,6 +52,19 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
             throw std::runtime_error("failed to undo create index");
         }
         break;
+    case UndoKind::DropIndex: {
+        if (record.indexName.empty()) {
+            throw std::runtime_error("failed to undo drop index");
+        }
+        const bool restored =
+            record.indexExpression
+                ? table->createIndex(record.indexName, *record.indexExpression)
+                : table->createIndex(record.indexName, record.indexColumn);
+        if (!restored) {
+            throw std::runtime_error("failed to undo drop index");
+        }
+        break;
+    }
     }
 }
 

@@ -28,6 +28,7 @@ class Parser {
     [[nodiscard]] CreateDatabase parseCreateDatabase();
     [[nodiscard]] CreateTable parseCreateTable();
     [[nodiscard]] DropTable parseDropTable();
+    [[nodiscard]] DropIndex parseDropIndex();
     [[nodiscard]] RenameTable parseRenameTable();
     [[nodiscard]] CreateIndex parseCreateIndex();
     [[nodiscard]] Insert parseInsert();

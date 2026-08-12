@@ -52,8 +52,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 ## Known Limitations
 
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`) and save/load are
-  rejected inside an open transaction. `CREATE INDEX` is transactional (undo + deferred logical
-  WAL); there is no public `DROP INDEX` SQL yet (internal drop supports undo).
+  rejected inside an open transaction. `CREATE INDEX` and `DROP INDEX` are transactional (undo +
+  deferred logical WAL).
 - Snapshot isolation prevents dirty reads and hides commits after `BEGIN`; classic SI still allows
   write skew. There are no row/page locks, predicate locks, or SSI aborts. See
   [si_anomaly_wedge.md](si_anomaly_wedge.md).
@@ -90,7 +90,7 @@ under `AND`.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- SQL / catalog: `EXPLAIN` for mutations; public `DROP INDEX`; catalog DDL and `SAVE`/`LOAD`
+- SQL / catalog: `EXPLAIN` for mutations; catalog DDL and `SAVE`/`LOAD`
   inside open transactions
 - Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage

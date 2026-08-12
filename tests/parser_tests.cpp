@@ -97,6 +97,10 @@ TEST(ParserTests, ParsesTableManagementCommands) {
     Parser parser;
 
     EXPECT_TRUE(std::holds_alternative<DropTable>(parser.parse("DROP TABLE Employees;")));
+    auto dropIndex = parser.parse("DROP INDEX idx_id ON Employees;");
+    ASSERT_TRUE(std::holds_alternative<DropIndex>(dropIndex));
+    EXPECT_EQ(std::get<DropIndex>(dropIndex).name, "idx_id");
+    EXPECT_EQ(std::get<DropIndex>(dropIndex).table, "Employees");
     EXPECT_TRUE(
         std::holds_alternative<RenameTable>(parser.parse("RENAME TABLE Employees TO Staff;")));
     EXPECT_TRUE(std::holds_alternative<ListTables>(parser.parse("LIST TABLES;")));

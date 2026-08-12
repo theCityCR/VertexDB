@@ -64,6 +64,8 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
                 return executeDelete(command);
             } else if constexpr (std::is_same_v<Command, CreateIndex>) {
                 return catalogEngine_.executeCreateIndex(command);
+            } else if constexpr (std::is_same_v<Command, DropIndex>) {
+                return catalogEngine_.executeDropIndex(command);
             } else if constexpr (std::is_same_v<Command, Analyze>) {
                 return catalogEngine_.executeAnalyze(command);
             } else if constexpr (std::is_same_v<Command, SaveDatabase>) {
