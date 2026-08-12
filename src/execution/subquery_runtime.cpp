@@ -69,9 +69,7 @@ std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquer
     RewriteResult rewrite;
     const Select prepared = prepareSelect(subquery, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-    for (const auto &cte : rewrite.materialize) {
-        temps.emplace(cte.name, materializeCteTable(cte, temps));
-    }
+    materializeCteList(rewrite.materialize, temps);
 
     if (prepared.columns.size() != 1 || isStarProjection(prepared.columns) ||
         prepared.columns.front().kind != SelectExpr::Kind::Column) {
@@ -137,9 +135,7 @@ bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
     RewriteResult rewrite;
     Select prepared = prepareSelect(subquery, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-    for (const auto &cte : rewrite.materialize) {
-        temps.emplace(cte.name, materializeCteTable(cte, temps));
-    }
+    materializeCteList(rewrite.materialize, temps);
     prepared.limit = 1;
     if (!prepared.joins.empty()) {
         auto result = ctx_.select->executeJoinSelect(prepared, temps);

@@ -66,9 +66,7 @@ QueryResult SelectEngine::execute(const Select &command) {
     RewriteResult rewrite;
     const Select prepared = ctx_.subquery->prepareSelect(command, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-    for (const auto &cte : rewrite.materialize) {
-        temps.emplace(cte.name, ctx_.subquery->materializeCteTable(cte, temps));
-    }
+    ctx_.subquery->materializeCteList(rewrite.materialize, temps);
     if (!prepared.joins.empty()) {
         return executeJoinSelect(prepared, temps);
     }
@@ -170,9 +168,7 @@ QueryResult SelectEngine::explain(const ExplainQuery &command) {
     RewriteResult rewrite;
     const Select prepared = ctx_.subquery->prepareSelect(selectQuery, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-    for (const auto &cte : rewrite.materialize) {
-        temps.emplace(cte.name, ctx_.subquery->materializeCteTable(cte, temps));
-    }
+    ctx_.subquery->materializeCteList(rewrite.materialize, temps);
 
     QueryResult result;
     result.success = true;

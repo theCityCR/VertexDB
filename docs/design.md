@@ -15,8 +15,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
   predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` `[OUTER]` and `CROSS`
   joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
-  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3, minimal
-  `WITH RECURSIVE` with `UNION` / `UNION ALL`), derived tables,
+  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED` / `AS ACCUMULATOR`, nesting depth up to 3,
+  `WITH RECURSIVE` with `UNION` / `UNION ALL`, including mutual recursion), derived tables,
   `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` / `JOIN` inside them and
   correlation through four outer frames), outer `JOIN` against CTE/derived aliases (force
   materialize), expression indexes (including `trigram(column)`),
@@ -25,8 +25,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete (UPDATE/DELETE `WHERE` uses the same planner index access paths as SELECT), table management,
   multi-join chains (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), CTE/derived-table
-  inlining or materialization (including recursive delta iteration and multiple independent
-  recursive CTEs), set operations (`UNION` /
+  inlining or materialization (including recursive delta or accumulator iteration, mutual
+  recursion, and multiple independent recursive CTEs), set operations (`UNION` /
   `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`), correlated `IN`/`EXISTS` with
   alias scopes (including joined subqueries), expression-index maintenance (including trigram),
   prepared AST binding, save/load, recovery, and transactional read routing
@@ -72,8 +72,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
   frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
   derived tables and `JOIN` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias (force
-  materialize), `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta self-ref, multiple independent
-  recursive CTEs, 1000-iteration / 100000-row caps; mutual recursion rejected), `FROM` / `JOIN`
+  materialize), `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta or `AS ACCUMULATOR` binding, multiple
+  independent or mutually recursive CTEs, 1000-iteration / 100000-row caps), `FROM` / `JOIN`
   table aliases (`AS` optional) for qualification and
   correlation scopes, and expression indexes (`column`, `-column`, `column+/-literal`,
   `trigram(column)`). CTE/derived bodies may include left-deep `INNER` / `LEFT` / `RIGHT` /
@@ -94,16 +94,15 @@ AND intersect packaging, the SI anomaly concurrency wedge, composite Intersectâˆ
 indexable nested `OR` under `AND`, transactional catalog DDL, `SAVE`/`LOAD` inside open
 transactions (implicit commit / rollback), set operations (`UNION` / `UNION ALL` / `INTERSECT` /
 `EXCEPT`, including recursive `UNION` dedup), partial nested `OR` under `AND` (indexable
-arms + complementary residual), multiple independent recursive CTEs, and `INTERSECT ALL` /
-`EXCEPT ALL`.
+arms + complementary residual), multiple independent recursive CTEs, `INTERSECT ALL` /
+`EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, and `AS ACCUMULATOR` binding
+for the recursive arm.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
-- Recursive follow-ups: mutual recursion among `WITH RECURSIVE` CTEs, or binding the recursive arm
-  to the full accumulator instead of the delta
 
 Demo wedges (done):
 

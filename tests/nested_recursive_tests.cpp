@@ -94,23 +94,13 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
                      "SELECT id FROM t;"),
                  std::runtime_error);
 
-    // Mutual recursion among recursive CTEs is rejected.
-    EXPECT_THROW(
-        (void)parser.parse(
-            "WITH RECURSIVE a AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
-            "SELECT b.id FROM b), "
-            "b AS (SELECT id FROM Nodes WHERE id = 2 UNION ALL "
-            "SELECT a.id FROM a) "
-            "SELECT id FROM a;"),
-        std::runtime_error);
-
-    // Recursive arm must reference the CTE name exactly once (0 refs).
+    // Recursive arm must reference exactly one recursive CTE name (0 refs).
     EXPECT_THROW((void)parser.parse(
                      "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
                      "SELECT id FROM Nodes WHERE id = 2) SELECT id FROM t;"),
                  std::runtime_error);
 
-    // Recursive arm must reference the CTE name exactly once (2 refs).
+    // Recursive arm must reference the recursive CTE name exactly once (2 refs).
     EXPECT_THROW(
         (void)parser.parse(
             "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
@@ -118,7 +108,7 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
             "JOIN t AS t2 ON Nodes.id = t2.id) SELECT id FROM t;"),
         std::runtime_error);
 
-    // Anchor must not self-reference.
+    // Anchor must not self-reference (or reference any recursive CTE).
     EXPECT_THROW(
         (void)parser.parse(
             "WITH RECURSIVE t AS (SELECT id FROM t UNION ALL "
@@ -132,6 +122,161 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
             "WITH x AS (SELECT id FROM Nodes) SELECT Nodes.id FROM Nodes JOIN t "
             "ON Nodes.parent_id = t.id) SELECT id FROM t;"),
         std::runtime_error);
+
+    // AS ACCUMULATOR on a non-recursive CTE is rejected.
+    EXPECT_THROW((void)parser.parse(
+                     "WITH RECURSIVE t AS ACCUMULATOR (SELECT id FROM Nodes) "
+                     "SELECT id FROM t;"),
+                 std::runtime_error);
+}
+
+TEST(NestedSqlTests, WithRecursiveMutualRecursionAlternatingHops) {
+    // Desired: mutually recursive CTEs co-evaluate in lockstep (each arm may reference
+    // the other recursive name instead of itself).
+    Parser parser;
+    auto executor = makeExecutor("mutual-recursive");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Edge (id INT, next_id INT);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Edge VALUES (1, 2), (2, 3), (3, 4), (4, 5);"))
+                    .success);
+
+    auto parsed = parser.parse(
+        "WITH RECURSIVE "
+        "a AS ("
+        "  SELECT id FROM Edge WHERE id = 1 "
+        "  UNION "
+        "  SELECT Edge.next_id FROM Edge JOIN b ON Edge.id = b.id"
+        "), "
+        "b AS ("
+        "  SELECT id FROM Edge WHERE id = 2 "
+        "  UNION "
+        "  SELECT Edge.next_id FROM Edge JOIN a ON Edge.id = a.id"
+        ") "
+        "SELECT id FROM a ORDER BY id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(parsed));
+    const auto &select = std::get<Select>(parsed);
+    ASSERT_EQ(select.ctes.size(), 2U);
+    EXPECT_TRUE(select.ctes[0].recursive);
+    EXPECT_TRUE(select.ctes[1].recursive);
+    EXPECT_FALSE(select.ctes[0].recursiveBindAccumulator);
+
+    auto result = executor.execute(parsed);
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 3U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[1][0], Value{static_cast<std::int64_t>(3)});
+    EXPECT_EQ(result.rows[2][0], Value{static_cast<std::int64_t>(5)});
+
+    auto fromB = executor.execute(parser.parse(
+        "WITH RECURSIVE "
+        "a AS ("
+        "  SELECT id FROM Edge WHERE id = 1 "
+        "  UNION "
+        "  SELECT Edge.next_id FROM Edge JOIN b ON Edge.id = b.id"
+        "), "
+        "b AS ("
+        "  SELECT id FROM Edge WHERE id = 2 "
+        "  UNION "
+        "  SELECT Edge.next_id FROM Edge JOIN a ON Edge.id = a.id"
+        ") "
+        "SELECT id FROM b ORDER BY id;"));
+    ASSERT_TRUE(fromB.success) << fromB.message;
+    ASSERT_EQ(fromB.rows.size(), 2U);
+    EXPECT_EQ(fromB.rows[0][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(fromB.rows[1][0], Value{static_cast<std::int64_t>(4)});
+}
+
+TEST(NestedSqlTests, WithRecursiveAccumulatorBindMatchesDeltaForUnionWalk) {
+    // Desired: AS ACCUMULATOR binds the recursive name to the full working table; with UNION
+    // (distinct) a hierarchy walk reaches the same fixpoint as delta binding.
+    Parser parser;
+    auto executor = makeExecutor("recursive-accumulator");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Nodes (id INT, parent_id INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Nodes VALUES (1, 0, \"root\"), (2, 1, \"child\"), "
+                        "(3, 2, \"leaf\"), (4, 1, \"other\");"))
+                    .success);
+
+    auto parsed = parser.parse(
+        "WITH RECURSIVE tree AS ACCUMULATOR ("
+        "SELECT id, parent_id, name FROM Nodes WHERE id = 1 "
+        "UNION "
+        "SELECT Nodes.id, Nodes.parent_id, Nodes.name FROM Nodes JOIN tree "
+        "ON Nodes.parent_id = tree.id"
+        ") SELECT name FROM tree ORDER BY id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(parsed));
+    EXPECT_TRUE(std::get<Select>(parsed).ctes[0].recursiveBindAccumulator);
+
+    auto result = executor.execute(parsed);
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 4U);
+    bool sawRoot = false;
+    bool sawChild = false;
+    bool sawLeaf = false;
+    bool sawOther = false;
+    for (const auto &row : result.rows) {
+        if (row[0] == Value{"root"}) {
+            sawRoot = true;
+        }
+        if (row[0] == Value{"child"}) {
+            sawChild = true;
+        }
+        if (row[0] == Value{"leaf"}) {
+            sawLeaf = true;
+        }
+        if (row[0] == Value{"other"}) {
+            sawOther = true;
+        }
+    }
+    EXPECT_TRUE(sawRoot);
+    EXPECT_TRUE(sawChild);
+    EXPECT_TRUE(sawLeaf);
+    EXPECT_TRUE(sawOther);
+}
+
+TEST(NestedSqlTests, WithRecursiveAccumulatorUnionAllTreeWalkHitsIterationCap) {
+    // Desired: accumulator + UNION ALL re-reads the full working table each step, so a naïve
+    // tree walk does not shrink the delta and hits the iteration safety cap.
+    const auto saved = recursiveCteLimits();
+    recursiveCteLimits().maxIterations = 5;
+    struct Restore {
+        RecursiveCteLimits previous;
+        ~Restore() { recursiveCteLimits() = previous; }
+    } restore{saved};
+
+    Parser parser;
+    auto executor = makeExecutor("recursive-accum-union-all-cap");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Nodes (id INT, parent_id INT);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Nodes VALUES (1, 0), (2, 1), (3, 2);"))
+                    .success);
+
+    const auto query = parser.parse(
+        "WITH RECURSIVE tree AS ACCUMULATOR ("
+        "SELECT id, parent_id FROM Nodes WHERE id = 1 "
+        "UNION ALL "
+        "SELECT Nodes.id, Nodes.parent_id FROM Nodes JOIN tree "
+        "ON Nodes.parent_id = tree.id"
+        ") SELECT id FROM tree;");
+    try {
+        (void)executor.execute(query);
+        FAIL() << "expected accumulator UNION ALL walk to hit iteration cap";
+    } catch (const std::runtime_error &ex) {
+        EXPECT_NE(std::string_view{ex.what()}.find("maximum iteration count"),
+                  std::string_view::npos)
+            << ex.what();
+    }
 }
 
 TEST(NestedSqlTests, WithRecursiveAllowsMultipleIndependentCtes) {
