@@ -35,7 +35,7 @@ Do not rebuild these:
    intersection cost beats the best single-index path (`src/planner/query_planner_access.cpp`).
 2. Executor intersects sorted `RowId` lists (`src/execution/select_engine_scan.cpp`).
 3. `EXPLAIN` surfaces `multi-index intersect on …`.
-4. Focused tests in `tests/planner_behavior_tests.cpp`:
+4. Focused tests in `tests/planner_intersect_union_tests.cpp`:
    - `MultiIndexIntersectChosenWhenCheaperThanSingleIndexResidual`
    - `MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes`
    - `MultiIndexIntersectIncludesExpressionEquality`
