@@ -287,6 +287,13 @@ ExplainQuery Parser::parseExplain() {
         explain.query = parseDelete();
         return explain;
     }
+    if (match(TokenType::Identifier, "INSERT")) {
+        if (explain.analyze) {
+            error("EXPLAIN ANALYZE does not support INSERT");
+        }
+        explain.query = parseInsert();
+        return explain;
+    }
     expect(TokenType::Identifier, "SELECT");
     explain.query = parseSelectAfterSelectKeyword();
     return explain;

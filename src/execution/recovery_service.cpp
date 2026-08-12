@@ -184,6 +184,14 @@ void RecoveryService::recoverFromWal(bool loadedSnapshot) {
                 database_ = std::make_shared<Database>(record.payload);
                 continue;
             }
+            if (record.operation == WalOperation::DropDatabase &&
+                record.payload.find(' ') == std::string::npos) {
+                if (database_ && database_->name() == record.payload) {
+                    database_.reset();
+                }
+                storage_.deleteDatabase(record.payload);
+                continue;
+            }
             // Legacy logical DML (Insert/Update/Delete) and DDL still replay as SQL.
             replayQuery_(parser.parse(record.payload));
         }

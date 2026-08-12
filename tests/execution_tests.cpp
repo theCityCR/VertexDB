@@ -81,6 +81,52 @@ TEST(ExecutionTests, OrdersLimitsAndManagesTables) {
     EXPECT_TRUE(executor.execute(parser.parse("DROP TABLE Staff;")).success);
 }
 
+TEST(ExecutionTests, DropDatabaseClearsActiveAndDeletesSnapshot) {
+    Parser parser;
+    const auto root = std::filesystem::temp_directory_path() / "vertexdb-drop-database";
+    std::filesystem::remove_all(root);
+    QueryExecutor executor{root};
+
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Employees (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Employees VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.currentDatabase());
+    ASSERT_TRUE(std::filesystem::exists(root / "company.tcrdb"));
+
+    auto dropped = executor.execute(parser.parse("DROP DATABASE company;"));
+    ASSERT_TRUE(dropped.success) << dropped.message;
+    EXPECT_FALSE(executor.currentDatabase());
+    EXPECT_FALSE(std::filesystem::exists(root / "company.tcrdb"));
+
+    EXPECT_FALSE(executor.execute(parser.parse("DROP DATABASE company;")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT id FROM Employees;")),
+                 std::runtime_error);
+
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    auto inTxn = executor.execute(parser.parse("DROP DATABASE company;"));
+    EXPECT_FALSE(inTxn.success);
+    EXPECT_NE(inTxn.message.find("transaction"), std::string::npos);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+}
+
+TEST(ExecutionTests, DropDatabaseWalRecoversWithoutActiveDatabase) {
+    Parser parser;
+    const auto root = std::filesystem::temp_directory_path() / "vertexdb-drop-database-wal";
+    std::filesystem::remove_all(root);
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Employees (id INT);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("DROP DATABASE company;")).success);
+    }
+    QueryExecutor recovered{root};
+    EXPECT_FALSE(recovered.currentDatabase());
+    EXPECT_FALSE(std::filesystem::exists(root / "company.tcrdb"));
+}
+
 TEST(ExecutionTests, RollsBackTransactions) {
     Parser parser;
     QueryExecutor executor;

@@ -34,6 +34,17 @@ void StorageManager::saveDatabase(const Database &database) const {
     }
 }
 
+void StorageManager::deleteDatabase(std::string_view databaseName) const {
+    const auto targetPath = tcrdbPathFor(root_, databaseName);
+    std::error_code error;
+    std::filesystem::remove(targetPath, error);
+    if (error && error != std::errc::no_such_file_or_directory) {
+        throw std::runtime_error("failed to delete database file");
+    }
+    const auto tempPath = tcrdbTemporaryPathFor(root_, databaseName);
+    std::filesystem::remove(tempPath, error);
+}
+
 std::shared_ptr<Database> StorageManager::loadDatabase(std::string_view databaseName) const {
     std::ifstream in{tcrdbPathFor(root_, databaseName), std::ios::binary};
     if (!in) {

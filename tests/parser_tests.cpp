@@ -302,9 +302,11 @@ TEST(ParserTests, ExplainAnalyzeRejectsMutations) {
                  std::runtime_error);
     EXPECT_THROW((void)parser.parse("EXPLAIN ANALYZE DELETE FROM Employees WHERE id = 1;"),
                  std::runtime_error);
+    EXPECT_THROW((void)parser.parse("EXPLAIN ANALYZE INSERT INTO Employees VALUES (1, \"x\");"),
+                 std::runtime_error);
 }
 
-TEST(ParserTests, ParsesExplainUpdateAndDelete) {
+TEST(ParserTests, ParsesExplainUpdateDeleteAndInsert) {
     Parser parser;
 
     auto explainUpdate =
@@ -318,6 +320,20 @@ TEST(ParserTests, ParsesExplainUpdateAndDelete) {
     ASSERT_TRUE(std::holds_alternative<ExplainQuery>(explainDelete));
     ASSERT_TRUE(std::holds_alternative<Delete>(std::get<ExplainQuery>(explainDelete).query));
     EXPECT_EQ(std::get<Delete>(std::get<ExplainQuery>(explainDelete).query).table, "Employees");
+
+    auto explainInsert =
+        parser.parse("EXPLAIN INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", 1.0);");
+    ASSERT_TRUE(std::holds_alternative<ExplainQuery>(explainInsert));
+    ASSERT_TRUE(std::holds_alternative<Insert>(std::get<ExplainQuery>(explainInsert).query));
+    EXPECT_EQ(std::get<Insert>(std::get<ExplainQuery>(explainInsert).query).table, "Employees");
+    EXPECT_EQ(std::get<Insert>(std::get<ExplainQuery>(explainInsert).query).rows.size(), 2U);
+}
+
+TEST(ParserTests, ParsesDropDatabase) {
+    Parser parser;
+    auto drop = parser.parse("DROP DATABASE company;");
+    ASSERT_TRUE(std::holds_alternative<DropDatabase>(drop));
+    EXPECT_EQ(std::get<DropDatabase>(drop).name, "company");
 }
 
 } // namespace VertexDB

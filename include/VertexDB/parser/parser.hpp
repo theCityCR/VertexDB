@@ -27,6 +27,7 @@ class Parser {
 
     [[nodiscard]] CreateDatabase parseCreateDatabase();
     [[nodiscard]] CreateTable parseCreateTable();
+    [[nodiscard]] DropDatabase parseDropDatabase();
     [[nodiscard]] DropTable parseDropTable();
     [[nodiscard]] DropIndex parseDropIndex();
     [[nodiscard]] RenameTable parseRenameTable();
@@ -67,10 +68,10 @@ class Parser {
     // Positional `?` parameter indices assigned while parsing prepared SQL.
     std::size_t nextParameterIndex_{0};
 
-    // Max outer FROM frames while parsing nested IN/EXISTS (four-level correlation).
-    static constexpr std::size_t kMaxOuterCorrelationDepth = 4;
+    // Max outer FROM frames while parsing nested IN/EXISTS.
+    static constexpr std::size_t kMaxOuterCorrelationDepth = 8;
     // Max WITH nesting depth inside a CTE body (depth 0 = top-level WITH).
-    static constexpr int kMaxNestedWithDepth = 3;
+    static constexpr int kMaxNestedWithDepth = 6;
 };
 
 } // namespace VertexDB

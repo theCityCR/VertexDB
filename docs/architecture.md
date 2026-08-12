@@ -167,14 +167,14 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 2. `Tokenizer` emits a token stream.
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
    chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes,
-   nesting depth up to 3, and `WITH RECURSIVE` (`UNION` / `UNION ALL`, independent or mutual
+   nesting depth up to 6, and `WITH RECURSIVE` (`UNION` / `UNION ALL`, independent or mutual
    recursive CTEs, optional `AS ACCUMULATOR`), `IN`/`EXISTS`, set ops (`UNION`/`INTERSECT`/`EXCEPT` including `ALL`), `LIKE`/`~`, expression
-   indexes including trigram, and `EXPLAIN` / `EXPLAIN ANALYZE`). Prepared statements store that
+   indexes including trigram, `DROP DATABASE`, and `EXPLAIN` / `EXPLAIN ANALYZE` / `EXPLAIN INSERT`). Prepared statements store that
    AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`/`EXPLAIN ANALYZE`, a rewriter inlines or materializes CTEs/derived tables
-   (including nested `WITH` up to depth 3, `WITH`/`JOIN` inside `IN`/`EXISTS`, outer `JOIN` against
+   (including nested `WITH` up to depth 6, `WITH`/`JOIN` inside `IN`/`EXISTS`, outer `JOIN` against
    CTE/derived aliases, and `WITH RECURSIVE`); the executor materializes uncorrelated `IN`
-   subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding
+   subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to eight outer binding
    frames (including `FROM` / `JOIN` table aliases), routing joined subqueries through
    `executeJoinSelect`.
 5. `QueryPlanner` chooses an access path (column or expression index, multi-index AND intersect /

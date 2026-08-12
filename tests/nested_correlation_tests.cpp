@@ -256,22 +256,21 @@ TEST(NestedSqlTests, FourLevelCorrelationBindsOutermost) {
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
-TEST(NestedSqlTests, FiveLevelCorrelationIsRejected) {
+TEST(NestedSqlTests, FiveLevelCorrelationIsAcceptedUnderRaisedCap) {
     Parser parser;
-    EXPECT_THROW(
-        (void)parser.parse(
-            "SELECT name FROM Employees WHERE EXISTS ("
-            "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
-            "    SELECT emp_id FROM Bonuses WHERE EXISTS ("
-            "      SELECT emp_id FROM Bonuses WHERE EXISTS ("
-            "        SELECT emp_id FROM Bonuses WHERE EXISTS ("
-            "          SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
-            "        )"
-            "      )"
-            "    )"
-            "  )"
-            ");"),
-        std::runtime_error);
+    // Five outer frames used to exceed the old cap of 4; allowed under the raised cap of 8.
+    EXPECT_NO_THROW((void)parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS ("
+        "  SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "    SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "      SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "        SELECT emp_id FROM Bonuses WHERE EXISTS ("
+        "          SELECT emp_id FROM Bonuses WHERE emp_id = Employees.id"
+        "        )"
+        "      )"
+        "    )"
+        "  )"
+        ");"));
 }
 
 TEST(NestedSqlTests, CorrelatedExistsReturnsEmptyWhenNoMatch) {
@@ -406,6 +405,35 @@ TEST(NestedSqlTests, JoinTableAliasesQualifySelectAndOn) {
     ASSERT_EQ(result.rows.size(), 1U);
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
     EXPECT_EQ(result.rows[0][1], Value{"Eng"});
+}
+
+TEST(NestedSqlTests, CorrelationAtNewMaxDepthIsAcceptedAndDeeperIsRejected) {
+    Parser parser;
+    // Eight outer FROM frames is the new ceiling; a ninth nested correlated IN is rejected.
+    auto atMax = parser.parse(
+        "SELECT id FROM T0 WHERE id IN ("
+        "SELECT id FROM T1 WHERE id IN ("
+        "SELECT id FROM T2 WHERE id IN ("
+        "SELECT id FROM T3 WHERE id IN ("
+        "SELECT id FROM T4 WHERE id IN ("
+        "SELECT id FROM T5 WHERE id IN ("
+        "SELECT id FROM T6 WHERE id IN ("
+        "SELECT id FROM T7 WHERE id IN ("
+        "SELECT id FROM T8 WHERE T8.id = T0.id))))))));");
+    ASSERT_TRUE(std::holds_alternative<Select>(atMax));
+
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT id FROM T0 WHERE id IN ("
+                     "SELECT id FROM T1 WHERE id IN ("
+                     "SELECT id FROM T2 WHERE id IN ("
+                     "SELECT id FROM T3 WHERE id IN ("
+                     "SELECT id FROM T4 WHERE id IN ("
+                     "SELECT id FROM T5 WHERE id IN ("
+                     "SELECT id FROM T6 WHERE id IN ("
+                     "SELECT id FROM T7 WHERE id IN ("
+                     "SELECT id FROM T8 WHERE id IN ("
+                     "SELECT id FROM T9 WHERE T9.id = T0.id)))))))));"),
+                 std::runtime_error);
 }
 
 } // namespace VertexDB

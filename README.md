@@ -42,6 +42,7 @@ likewise split by concern.
 
 ```sql
 CREATE DATABASE company;
+DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE INDEX idx_salary ON Employees(salary);
 INSERT INTO Employees VALUES (1, "Alice", 120000.0), (2, "Bob", 90000.0);
@@ -102,7 +103,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 276 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 281 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `INTERSECT` / `EXCEPT`), planner behavior (access /
   intersect-union / explain / mutation / join-stats),
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
@@ -133,8 +134,8 @@ Or feed an example script:
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
-- Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3 and correlation deeper
-  than four outer frames are rejected. Outer `JOIN` against a CTE/derived alias force-materializes
+- Nested SQL is intentionally limited: `WITH` nesting deeper than depth 6 and correlation deeper
+  than eight outer frames are rejected. Outer `JOIN` against a CTE/derived alias force-materializes
   the CTE. `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta iteration, multiple independent recursive
   CTEs, optional `AS ACCUMULATOR` binding, safety caps) and `JOIN` inside
   `IN`/`EXISTS` are supported. Expression indexes cover column / unary minus / `+/-` literal /
@@ -142,6 +143,8 @@ Or feed an example script:
   full-scan. `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
   supported. Parser failures report `line`/`column` via `ParseError`. Set operations include
   `UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`.
+  `DROP DATABASE` clears the active database and deletes its `.tcrdb` (not allowed in an open txn).
+  `EXPLAIN INSERT` reports a non-mutating insert plan summary.
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
@@ -151,7 +154,7 @@ Or feed an example script:
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
-`WITH` nesting depth up to 3 and correlation through four outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
+`WITH` nesting depth up to 6 and correlation through eight outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, `WITH RECURSIVE` (`UNION` / `UNION ALL`), parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,

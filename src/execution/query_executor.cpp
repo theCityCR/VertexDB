@@ -44,6 +44,8 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
             using Command = std::decay_t<decltype(command)>;
             if constexpr (std::is_same_v<Command, CreateDatabase>) {
                 return catalogEngine_.executeCreateDatabase(command);
+            } else if constexpr (std::is_same_v<Command, DropDatabase>) {
+                return catalogEngine_.executeDropDatabase(command);
             } else if constexpr (std::is_same_v<Command, CreateTable>) {
                 return catalogEngine_.executeCreateTable(command);
             } else if constexpr (std::is_same_v<Command, DropTable>) {

@@ -6,6 +6,7 @@ VertexDB intentionally supports a small SQL subset first.
 
 ```sql
 CREATE DATABASE company;
+DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE TABLE People (id INT, nickname STRING NULL);
 DROP TABLE Employees;
@@ -76,6 +77,7 @@ EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN ANALYZE SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN UPDATE Employees SET name = "x" WHERE id = 1;
 EXPLAIN DELETE FROM Employees WHERE id = 2;
+EXPLAIN INSERT INTO Employees VALUES (3, "Cara", 110000.0);
 EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
 ANALYZE;
@@ -137,11 +139,12 @@ inline path. `WHERE col IN (v1, v2, …)` builds an `InListPred` (HashIn when in
 `WHERE col IN (SELECT …)` materializes uncorrelated subqueries (which themselves may
 use indexes) and probes the outer column via hash index `IN` lookup when indexed. Correlated
 `IN` / `EXISTS` with outer refs (`table.column`, `alias.column`, or unambiguous unqualified names)
-bind outer values per candidate row for up to four outer FROM frames. Deeper correlation is
+bind outer values per candidate row for up to eight outer FROM frames. Deeper correlation is
 rejected. `FROM` / `JOIN` tables accept an optional `[AS] alias` used as the qualification and
 correlation scope (aliases rewrite to physical table qualifiers on join results). CTE and
 derived-table bodies may include left-deep joins (`INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS`).
-`WITH` nesting depth up to 3 is supported (nested `WITH` up to three levels inside a CTE body).
+`WITH` nesting depth up to 6 is supported (nested `WITH` up to six levels inside a CTE body;
+seven `WITH` frames in a chain).
 `WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. Outer `JOIN`
 against a CTE/derived alias force-materializes the CTE (body filters stay inside the temp).
 
@@ -183,7 +186,9 @@ the section load with empty stats until the next `ANALYZE`.
 the access path or each join algorithm in a left-deep chain, CTE inlining/materialization notes,
 residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
 present. `EXPLAIN UPDATE` / `EXPLAIN DELETE` plan the mutation `WHERE` with the same access-path
-machinery (prefix `update:` / `delete:`) and do not write rows. `EXPLAIN INSERT` is not supported.
+machinery (prefix `update:` / `delete:`) and do not write rows. `EXPLAIN INSERT` reports
+`insert: N row(s) into <table>` after validating the target table exists, and does not write rows.
+`EXPLAIN ANALYZE` remains SELECT/WITH-only (mutations including `INSERT` are rejected at parse).
 
 `EXPLAIN ANALYZE SELECT …` / `EXPLAIN ANALYZE WITH … SELECT …` uses a **single pass**: plan as usual,
 then execute the query once (without returning data rows) and append measured fields next to the
@@ -254,9 +259,12 @@ implemented. One executor holds at most one open transaction; writers are serial
 executor `LockManager`. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
 `CREATE INDEX`, and `DROP INDEX` are allowed: each applies immediately and pushes an undo record
-(with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `RENAME TABLE` remounts the same
+(with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `DROP DATABASE` is rejected
+while a transaction is active. `RENAME TABLE` remounts the same
 table object and rewrites open-txn undo/pending WAL table names. `CREATE DATABASE` swaps in a new
-empty database and restores the prior instance on rollback. `SAVE DATABASE` inside a transaction
+empty database and restores the prior instance on rollback. `DROP DATABASE name` requires `name` to
+be the active database, clears the in-memory instance, deletes the on-disk `.tcrdb` when present,
+and appends a WAL record. `SAVE DATABASE` inside a transaction
 implicitly `COMMIT`s (flush deferred WAL) then checkpoints. `LOAD DATABASE` inside a transaction
 implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
 
