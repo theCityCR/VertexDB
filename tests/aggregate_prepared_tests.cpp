@@ -540,6 +540,18 @@ TEST(AggregatePreparedTests, PreparedBindCoversExplainDeleteInsertAndCte) {
     auto explained = executor.execute(parser.parse("EXECUTE ex VALUES (1);"));
     ASSERT_TRUE(explained.success);
     EXPECT_FALSE(explained.rows.empty());
+    EXPECT_EQ(explained.rows.front().front().toString().find("actual_rows="), std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("PREPARE exa AS \"EXPLAIN ANALYZE SELECT name FROM "
+                                          "Employees WHERE id = ?;\";"))
+                    .success);
+    auto analyzed = executor.execute(parser.parse("EXECUTE exa VALUES (1);"));
+    ASSERT_TRUE(analyzed.success);
+    ASSERT_FALSE(analyzed.rows.empty());
+    const auto analyzeText = analyzed.rows.front().front().toString();
+    EXPECT_NE(analyzeText.find("actual_rows=1"), std::string::npos);
+    EXPECT_NE(analyzeText.find("actual_time_ms="), std::string::npos);
 
     ASSERT_TRUE(executor
                     .execute(parser.parse(
