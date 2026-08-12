@@ -22,7 +22,7 @@ VertexDB uses three levels of automated testing:
 | `planner_access_tests.cpp` | Access paths (prefix `LIKE` / trigram / regex residual / OR→IN), residuals, expression indexes, histograms |
 | `planner_intersect_union_tests.cpp` | Multi-index AND intersect / OR union (incl. partial OR, composite Intersect∪Union for nested OR, scaled intersect wedge) |
 | `planner_explain_tests.cpp` | `EXPLAIN` / `EXPLAIN ANALYZE` actuals (residual `candidates`, joins, aggregation, `LIMIT`, `WITH`) |
-| `planner_mutation_tests.cpp` | Indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
+| `planner_mutation_tests.cpp` | Indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate); `EXPLAIN UPDATE`/`DELETE` access paths |
 | `planner_join_stats_tests.cpp` | Stats-driven cost/join choice, outer/`CROSS` join plans |
 | `planner_test_support.hpp` | Shared planner stubs (`StubRelationStats` / `StubIndexCatalog`) + temp executor helper |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), SI anomaly wedge (dirty read, watermark, mid-txn phantom, write skew, executor RW honesty), deferred WAL, transactional `CREATE INDEX` / `DROP INDEX`, still-forbidden catalog DDL/persistence |

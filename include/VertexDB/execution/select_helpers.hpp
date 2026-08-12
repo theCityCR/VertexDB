@@ -4,6 +4,7 @@
 // Scope rewrite: select_scope.hpp. Aggregation: select_aggregate.hpp.
 
 #include "VertexDB/execution/query_result.hpp"
+#include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/table.hpp"
 
@@ -32,5 +33,8 @@ void sortRowsByColumn(std::vector<Row> &rows, std::size_t columnIndex, bool asce
     std::optional<std::string_view> tableAlias = std::nullopt);
 
 [[nodiscard]] QueryResult messageResult(bool success, std::string message);
+
+// Star-SELECT used by UPDATE/DELETE (and EXPLAIN of those) to plan the WHERE access path.
+[[nodiscard]] Select mutationScanSelect(std::string table, std::optional<Predicate> where);
 
 } // namespace VertexDB

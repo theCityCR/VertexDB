@@ -9,7 +9,9 @@
 
 #include <chrono>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <variant>
 
 namespace VertexDB {
 
@@ -38,10 +40,40 @@ QueryResult SelectEngine::execute(const Select &command) {
 }
 
 QueryResult SelectEngine::explain(const ExplainQuery &command) {
+    if (std::holds_alternative<Update>(command.query) ||
+        std::holds_alternative<Delete>(command.query)) {
+        if (command.analyze) {
+            throw std::runtime_error("EXPLAIN ANALYZE does not support UPDATE/DELETE");
+        }
+        const auto scan = std::visit(
+            [](const auto &mutation) -> Select {
+                using M = std::decay_t<decltype(mutation)>;
+                if constexpr (std::is_same_v<M, Update> || std::is_same_v<M, Delete>) {
+                    return mutationScanSelect(mutation.table, mutation.where);
+                }
+                return Select{};
+            },
+            command.query);
+        auto table = requireTable(scan.table);
+        const auto plan = ctx_.planner.planSelect(scan, *table);
+        auto text = formatPlanExplanation(plan);
+        const char *prefix =
+            std::holds_alternative<Update>(command.query) ? "update: " : "delete: ";
+        text = std::string{prefix} + text;
+
+        QueryResult result;
+        result.success = true;
+        result.message = "explain";
+        result.columns = {"plan"};
+        result.rows.push_back({Value{std::move(text)}});
+        return result;
+    }
+
+    const Select &selectQuery = std::get<Select>(command.query);
     const auto started = std::chrono::steady_clock::now();
 
     RewriteResult rewrite;
-    const Select prepared = ctx_.subquery->prepareSelect(command.query, rewrite);
+    const Select prepared = ctx_.subquery->prepareSelect(selectQuery, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
     for (const auto &cte : rewrite.materialize) {
         temps.emplace(cte.name, ctx_.subquery->materializeCteTable(cte));

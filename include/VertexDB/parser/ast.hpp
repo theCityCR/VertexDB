@@ -231,7 +231,8 @@ struct ExecutePrepared {
     std::vector<Value> parameters;
 };
 struct ExplainQuery {
-    Select query;
+    // SELECT/WITH, or plain UPDATE/DELETE (ANALYZE only for SELECT/WITH).
+    std::variant<Select, Update, Delete> query;
     // When true, execute once and append actual_rows / candidates / actual_time_ms.
     bool analyze{false};
 };

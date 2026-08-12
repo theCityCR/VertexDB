@@ -11,17 +11,6 @@
 #include <vector>
 
 namespace VertexDB {
-namespace {
-
-[[nodiscard]] Select mutationScanSelect(std::string table, std::optional<Predicate> where) {
-    Select scan;
-    scan.table = std::move(table);
-    scan.columns = {SelectExpr::makeStar()};
-    scan.where = std::move(where);
-    return scan;
-}
-
-} // namespace
 
 DmlEngine::DmlEngine(ExecutionContext &ctx, RecoveryService &recovery) noexcept
     : ctx_(ctx), recovery_(recovery) {}

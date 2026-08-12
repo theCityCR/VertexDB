@@ -84,6 +84,34 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseIndexAccessForEqualityPredicate) {
     EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
 }
 
+TEST(PlannerBehaviorTests, ExplainUpdateAndDeleteShowsHashIndexAccessPath) {
+    Parser parser;
+    auto executor = makeExecutor("explain-mutation");
+    seedEmployees(executor, parser, true, false);
+
+    auto explainUpdate = executor.execute(
+        parser.parse("EXPLAIN UPDATE Employees SET name = \"x\" WHERE id = 1;"));
+    ASSERT_TRUE(explainUpdate.success);
+    ASSERT_FALSE(explainUpdate.rows.empty());
+    const auto updateText = explainUpdate.rows.front().front().toString();
+    EXPECT_NE(updateText.find("update:"), std::string::npos);
+    EXPECT_NE(updateText.find("hash index"), std::string::npos);
+
+    auto explainDelete =
+        executor.execute(parser.parse("EXPLAIN DELETE FROM Employees WHERE id = 2;"));
+    ASSERT_TRUE(explainDelete.success);
+    ASSERT_FALSE(explainDelete.rows.empty());
+    const auto deleteText = explainDelete.rows.front().front().toString();
+    EXPECT_NE(deleteText.find("delete:"), std::string::npos);
+    EXPECT_NE(deleteText.find("hash index"), std::string::npos);
+
+    // EXPLAIN must not mutate.
+    auto stillThere =
+        executor.execute(parser.parse("SELECT id FROM Employees ORDER BY id ASC;"));
+    ASSERT_TRUE(stillThere.success);
+    EXPECT_EQ(stillThere.rows.size(), 3U);
+}
+
 TEST(PlannerBehaviorTests, UpdateUsesIndexProbeWithResidualAndFilter) {
     Parser parser;
     auto executor = makeExecutor("dml-residual");

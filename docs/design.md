@@ -83,15 +83,14 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 ## Next Steps
 
 Shipped recently (no longer open work): literal `IN` lists, indexed `UPDATE`/`DELETE` access paths,
-transactional `CREATE INDEX`, same-column `OR`→`IN`, MVCC `UPDATE` close-prior-version,
-`EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), multi-index AND intersect packaging,
-the SI anomaly concurrency wedge, and composite Intersect∪Union for fully indexable nested `OR`
-under `AND`.
+transactional `CREATE INDEX` / `DROP INDEX`, same-column `OR`→`IN`, MVCC `UPDATE` close-prior-version,
+`EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), `EXPLAIN UPDATE`/`DELETE`, multi-index
+AND intersect packaging, the SI anomaly concurrency wedge, and composite Intersect∪Union for fully
+indexable nested `OR` under `AND`.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- SQL / catalog: `EXPLAIN` for mutations; catalog DDL and `SAVE`/`LOAD`
-  inside open transactions
+- SQL / catalog: catalog DDL and `SAVE`/`LOAD` inside open transactions
 - Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already

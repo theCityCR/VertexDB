@@ -54,7 +54,8 @@ TEST(NestedSqlTests, ParsesWithAndInSubqueryAndExplain) {
 
     auto explain = parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;");
     ASSERT_TRUE(std::holds_alternative<ExplainQuery>(explain));
-    EXPECT_EQ(std::get<ExplainQuery>(explain).query.table, "Employees");
+    ASSERT_TRUE(std::holds_alternative<Select>(std::get<ExplainQuery>(explain).query));
+    EXPECT_EQ(std::get<Select>(std::get<ExplainQuery>(explain).query).table, "Employees");
     EXPECT_FALSE(std::get<ExplainQuery>(explain).analyze);
 }
 

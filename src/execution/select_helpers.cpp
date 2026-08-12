@@ -81,4 +81,12 @@ QueryResult messageResult(bool success, std::string message) {
     return result;
 }
 
+Select mutationScanSelect(std::string table, std::optional<Predicate> where) {
+    Select scan;
+    scan.table = std::move(table);
+    scan.columns = {SelectExpr::makeStar()};
+    scan.where = std::move(where);
+    return scan;
+}
+
 } // namespace VertexDB

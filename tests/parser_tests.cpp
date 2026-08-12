@@ -280,14 +280,16 @@ TEST(ParserTests, ParsesExplainAnalyzeSelectAndWith) {
     ASSERT_TRUE(std::holds_alternative<ExplainQuery>(analyze));
     const auto &analyzed = std::get<ExplainQuery>(analyze);
     EXPECT_TRUE(analyzed.analyze);
-    EXPECT_EQ(analyzed.query.table, "Employees");
+    ASSERT_TRUE(std::holds_alternative<Select>(analyzed.query));
+    EXPECT_EQ(std::get<Select>(analyzed.query).table, "Employees");
 
     auto withAnalyze = parser.parse(
         "EXPLAIN ANALYZE WITH high AS (SELECT id, name FROM Employees) "
         "SELECT name FROM high WHERE id = 1;");
     ASSERT_TRUE(std::holds_alternative<ExplainQuery>(withAnalyze));
     EXPECT_TRUE(std::get<ExplainQuery>(withAnalyze).analyze);
-    EXPECT_EQ(std::get<ExplainQuery>(withAnalyze).query.table, "high");
+    ASSERT_TRUE(std::holds_alternative<Select>(std::get<ExplainQuery>(withAnalyze).query));
+    EXPECT_EQ(std::get<Select>(std::get<ExplainQuery>(withAnalyze).query).table, "high");
 
     // Standalone ANALYZE remains histogram stats, not EXPLAIN ANALYZE.
     auto histogram = parser.parse("ANALYZE;");
@@ -300,6 +302,22 @@ TEST(ParserTests, ExplainAnalyzeRejectsMutations) {
                  std::runtime_error);
     EXPECT_THROW((void)parser.parse("EXPLAIN ANALYZE DELETE FROM Employees WHERE id = 1;"),
                  std::runtime_error);
+}
+
+TEST(ParserTests, ParsesExplainUpdateAndDelete) {
+    Parser parser;
+
+    auto explainUpdate =
+        parser.parse("EXPLAIN UPDATE Employees SET name = \"x\" WHERE id = 1;");
+    ASSERT_TRUE(std::holds_alternative<ExplainQuery>(explainUpdate));
+    EXPECT_FALSE(std::get<ExplainQuery>(explainUpdate).analyze);
+    ASSERT_TRUE(std::holds_alternative<Update>(std::get<ExplainQuery>(explainUpdate).query));
+    EXPECT_EQ(std::get<Update>(std::get<ExplainQuery>(explainUpdate).query).table, "Employees");
+
+    auto explainDelete = parser.parse("EXPLAIN DELETE FROM Employees WHERE id = 1;");
+    ASSERT_TRUE(std::holds_alternative<ExplainQuery>(explainDelete));
+    ASSERT_TRUE(std::holds_alternative<Delete>(std::get<ExplainQuery>(explainDelete).query));
+    EXPECT_EQ(std::get<Delete>(std::get<ExplainQuery>(explainDelete).query).table, "Employees");
 }
 
 } // namespace VertexDB

@@ -71,6 +71,8 @@ WITH RECURSIVE tree AS (
 SELECT name FROM tree;
 EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN ANALYZE SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
+EXPLAIN UPDATE Employees SET name = "x" WHERE id = 1;
+EXPLAIN DELETE FROM Employees WHERE id = 2;
 EXPLAIN WITH high AS (SELECT id, name, salary FROM Employees WHERE salary > 100000.0)
 SELECT name FROM high WHERE id = 1;
 ANALYZE;
@@ -163,7 +165,8 @@ the section load with empty stats until the next `ANALYZE`.
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
 the access path or each join algorithm in a left-deep chain, CTE inlining/materialization notes,
 residual status, `est_rows` / `cost`, and an `aggregation` marker when aggregates or `GROUP BY` are
-present.
+present. `EXPLAIN UPDATE` / `EXPLAIN DELETE` plan the mutation `WHERE` with the same access-path
+machinery (prefix `update:` / `delete:`) and do not write rows. `EXPLAIN INSERT` is not supported.
 
 `EXPLAIN ANALYZE SELECT …` / `EXPLAIN ANALYZE WITH … SELECT …` uses a **single pass**: plan as usual,
 then execute the query once (without returning data rows) and append measured fields next to the
@@ -175,7 +178,7 @@ estimates:
 | `candidates` | Pre-residual index candidate count when a residual filter ran (omitted otherwise) |
 | `actual_time_ms` | Wall time for the whole ANALYZE execute (on the first plan row) |
 
-Plain `EXPLAIN` does not include these fields. `EXPLAIN` / `EXPLAIN ANALYZE` remain SELECT/WITH-only
+Plain `EXPLAIN` does not include these fields. `EXPLAIN ANALYZE` remains SELECT/WITH-only
 (mutations are rejected at parse). This is distinct from standalone `ANALYZE` / `ANALYZE TABLE`,
 which builds planner histograms.
 
@@ -197,7 +200,8 @@ group results. `SELECT *` is rejected with aggregates/`GROUP BY`.
 `UPDATE` and `DELETE` plan their `WHERE` clause with the same cost-based access paths as
 `SELECT` (hash equality, ordered range, `IN`, intersect/union, prefix `LIKE`, residuals). Candidate
 `RowId`s are collected first, then mutated, so mid-statement index rebuilds cannot skip hits.
-`EXPLAIN` / `EXPLAIN ANALYZE` remain SELECT/WITH-only.
+`EXPLAIN UPDATE` / `EXPLAIN DELETE` surface that access path without writing; `EXPLAIN ANALYZE` remains
+SELECT/WITH-only.
 
 Prepared statements parse once into a typed `Query` AST with `?` parameter slots (`Value` parameter
 placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST and executes without

@@ -225,6 +225,20 @@ ExplainQuery Parser::parseExplain() {
         explain.query = parseWithSelect();
         return explain;
     }
+    if (match(TokenType::Identifier, "UPDATE")) {
+        if (explain.analyze) {
+            error("EXPLAIN ANALYZE does not support UPDATE");
+        }
+        explain.query = parseUpdate();
+        return explain;
+    }
+    if (match(TokenType::Identifier, "DELETE")) {
+        if (explain.analyze) {
+            error("EXPLAIN ANALYZE does not support DELETE");
+        }
+        explain.query = parseDelete();
+        return explain;
+    }
     expect(TokenType::Identifier, "SELECT");
     explain.query = parseSelectAfterSelectKeyword();
     return explain;
