@@ -17,7 +17,7 @@ CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence /
 | `src/common/` | Values, `IndexExpression`, string/binary helpers |
 | `src/parser/` | Tokenizer + AST; one `Parser`, DDL/DML/SELECT/WITH/outer-refs/predicate TUs |
 | `src/planner/` | Rewriter + costed access paths / joins (`query_planner_select.cpp` orchestrates `planSelect`; `query_planner_access.cpp` owns OR-union / AND-intersect / finalize) |
-| `src/execution/` | `QueryExecutor` façade; `ExecutionContext`; `SelectEngine` (+ scan/join), `DmlEngine`, subquery (+ bind/cte TUs), txn, recovery |
+| `src/execution/` | `QueryExecutor` façade; `ExecutionContext`; `SelectEngine` (+ scan/join), `DmlEngine`, `CatalogEngine`, subquery (+ bind/cte TUs), txn, recovery |
 | `src/storage/` | `Database` / `Table` / `RowStore` / buffer pool / stats |
 | `src/indexing/` | `IndexManager`, hash and B+ tree |
 | `src/persistence/` | `.tcrdb` codecs, WAL, redo |
@@ -28,8 +28,8 @@ CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence /
 **File name = owner type** when a type is split across TUs (e.g. `select_engine.cpp`
 implements `SelectEngine`; `btree_index_mutate.cpp` is still `BTreeIndex`).
 
-`SelectEngine`, `SubqueryRuntime`, and `DmlEngine` share an `ExecutionContext` (database, planner,
-session, peer pointers). They do **not** friend `QueryExecutor`.
+`SelectEngine`, `SubqueryRuntime`, `DmlEngine`, and `CatalogEngine` share an `ExecutionContext`
+(database, planner, session, peer pointers). They do **not** friend `QueryExecutor`.
 
 ## Where to put new code
 

@@ -52,6 +52,7 @@ add_library(VertexDB
     src/indexing/index_manager.cpp
     src/execution/query_executor.cpp
     src/execution/dml_engine.cpp
+    src/execution/catalog_engine.cpp
     src/execution/select_engine.cpp
     src/execution/select_engine_scan.cpp
     src/execution/select_engine_join.cpp
