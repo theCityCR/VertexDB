@@ -41,7 +41,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Concurrency: executor-level reader/writer synchronization (`LockManager`) and concurrent client
   tests; SI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
 - Transactions: commit-aware MVCC snapshot isolation (dirty reads / SI watermark / mid-txn phantoms
-  prevented; write skew allowed), undo-log DML rollback, transaction-batched page-image WAL flush
+  prevented) plus row-level SSI commit aborts for write skew and write–write conflicts (no predicate
+  locks), undo-log DML rollback, transaction-batched page-image WAL flush
   on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, composite Intersect∪Union for nested OR under AND including partial nested
@@ -53,8 +54,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Known Limitations
 
-- Snapshot isolation prevents dirty reads and hides commits after `BEGIN`; classic SI still allows
-  write skew. There are no row/page locks, predicate locks, or SSI aborts. See
+- Snapshot isolation prevents dirty reads and hides commits after `BEGIN`. Row-level SSI aborts a
+  later committer when its read or write set overlaps a concurrent committed write set (write skew
+  and same-row write–write). There are no row/page locks or predicate locks. See
   [si_anomaly_wedge.md](si_anomaly_wedge.md).
 - `SAVE DATABASE` in an open transaction implicitly commits then checkpoints; `LOAD DATABASE`
   implicitly rolls back then loads.
@@ -95,14 +97,16 @@ indexable nested `OR` under `AND`, transactional catalog DDL, `SAVE`/`LOAD` insi
 transactions (implicit commit / rollback), set operations (`UNION` / `UNION ALL` / `INTERSECT` /
 `EXCEPT`, including recursive `UNION` dedup), partial nested `OR` under `AND` (indexable
 arms + complementary residual), multiple independent recursive CTEs, `INTERSECT ALL` /
-`EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, and `AS ACCUMULATOR` binding
-for the recursive arm.
+`EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` binding
+for the recursive arm, and row-level SSI commit aborts for write skew / write–write conflicts.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
+- Predicate-lock / insert-phantom SSI (beyond row read/write sets), or general DDL beyond the
+  current table/index commands
 
 Demo wedges (done):
 

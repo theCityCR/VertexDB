@@ -29,6 +29,7 @@ class TxnSession {
     [[nodiscard]] ReadSnapshot readSnapshot() const;
     [[nodiscard]] TransactionId writeTransactionId();
     [[nodiscard]] bool transactionActive() const noexcept;
+    [[nodiscard]] std::optional<TransactionId> activeTransactionId() const noexcept;
     [[nodiscard]] QueryResult rejectIfTransactionActive(std::string_view action) const;
 
     [[nodiscard]] TransactionManager &transactionManager() noexcept;

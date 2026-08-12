@@ -89,9 +89,10 @@ scripts/compare_bitmap_and.sh
 [`si_isolation_demo.sql`](si_isolation_demo.sql) walks a single SQL session through `BEGIN` /
 DML / `COMMIT` so you can see read-your-writes and post-commit visibility in the CLI.
 
-True multi-txn interleaving (dirty-read prevention, SI watermark, mid-txn phantoms, write skew)
-lives in GoogleTest cases that share a `Table` + `TransactionManager` — one `QueryExecutor` cannot
-hold two open transactions. See [docs/si_anomaly_wedge.md](../docs/si_anomaly_wedge.md).
+True multi-txn interleaving (dirty-read prevention, SI watermark, mid-txn phantoms, SSI write-skew /
+write–write abort) lives in GoogleTest cases that share a `Table` + `TransactionManager` — one
+`QueryExecutor` cannot hold two open transactions. See
+[docs/si_anomaly_wedge.md](../docs/si_anomaly_wedge.md).
 
 ```sh
 ./build/VertexDB_cli < examples/si_isolation_demo.sql

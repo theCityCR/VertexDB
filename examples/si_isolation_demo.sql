@@ -1,3 +1,6 @@
+-- Single-session SI illustration (read-your-writes, post-COMMIT visibility).
+-- True multi-txn interleaving — including row-level SSI write-skew / write-write abort —
+-- lives in GoogleTest (Table + shared TransactionManager). See docs/si_anomaly_wedge.md.
 CREATE DATABASE si_demo;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 INSERT INTO Employees VALUES (1, "Alice", 120000.0), (2, "Bob", 90000.0);

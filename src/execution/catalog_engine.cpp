@@ -166,6 +166,15 @@ QueryResult CatalogEngine::executeSaveDatabase() {
     }
     bool implicitCommit = false;
     if (ctx_.session.transactionActive()) {
+        if (!ctx_.session.transactionManager().isSerializable(
+                *ctx_.session.activeTransactionId())) {
+            while (auto record = ctx_.session.undoLog().pop()) {
+                recovery_.applyUndoRecord(*record);
+            }
+            ctx_.session.clearPendingWal();
+            (void)ctx_.session.rollback();
+            return messageResult(false, "serialization failure");
+        }
         recovery_.flushPendingWal();
         const auto committed = ctx_.session.commit();
         if (!committed.success) {

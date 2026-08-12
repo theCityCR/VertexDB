@@ -58,11 +58,11 @@ ROLLBACK;
 Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
-depth up to 3;   `WITH RECURSIVE` with `UNION` / `UNION ALL`, including multiple independent or mutually
-  recursive CTEs and optional `AS ACCUMULATOR` binding), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, set operations
-(`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`),
-(`UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`), `EXPLAIN` /
-  `EXPLAIN ANALYZE`,
+depth up to 3; `WITH RECURSIVE` with `UNION` / `UNION ALL`, including multiple independent or mutually
+recursive CTEs and optional `AS ACCUMULATOR` binding), derived tables `FROM (SELECT …) [AS] alias`,
+`IN`/`EXISTS` subqueries, set operations
+(`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`), `EXPLAIN` /
+`EXPLAIN ANALYZE`,
 prepared statements that store a typed AST with `?` parameter slots, table rename/drop/list
 operations, and `EXIT`.
 
@@ -102,7 +102,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 275 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 276 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `INTERSECT` / `EXCEPT`), planner behavior (access /
   intersect-union / explain / mutation / join-stats),
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
@@ -122,9 +122,9 @@ Or feed an example script:
 
 - Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
   transaction-atomic page-image WAL (DML deferred until `COMMIT` as one batch, dropped on
-  `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; classic SI still allows
-  write skew (no SSI / predicate locks). One executor holds at most one open transaction; writers
-  are serialized by `LockManager`
+  `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; row-level SSI aborts later
+  committers on overlapping read/write sets (write skew / write–write; no predicate locks). One
+  executor holds at most one open transaction; writers are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
   durable prefix

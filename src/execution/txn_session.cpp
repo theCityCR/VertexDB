@@ -22,6 +22,9 @@ QueryResult TxnSession::commit() {
     if (!transactionActive()) {
         return messageResult(false, "no active transaction");
     }
+    if (!transactionManager_.isSerializable(*activeTransaction_)) {
+        return messageResult(false, "serialization failure");
+    }
     transactionManager_.commit(*activeTransaction_);
     activeTransaction_.reset();
     activeSnapshot_.reset();
@@ -63,6 +66,10 @@ TransactionId TxnSession::writeTransactionId() {
 }
 
 bool TxnSession::transactionActive() const noexcept { return activeTransaction_.has_value(); }
+
+std::optional<TransactionId> TxnSession::activeTransactionId() const noexcept {
+    return activeTransaction_;
+}
 
 QueryResult TxnSession::rejectIfTransactionActive(std::string_view action) const {
     if (!transactionActive()) {

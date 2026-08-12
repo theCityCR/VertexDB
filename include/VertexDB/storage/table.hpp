@@ -38,29 +38,34 @@ class Table : public RelationStats, public IndexCatalogView {
 
     // --- MVCC / visibility reads ---
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
+    // Snapshot reads record row-level SSI read sets for active `snapshot.self` transactions.
     [[nodiscard]] std::vector<Row> rowsSnapshot(const ReadSnapshot &snapshot,
-                                                const TransactionManager &transactions) const;
+                                                TransactionManager &transactions) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>>
-    visibleEntries(const ReadSnapshot &snapshot, const TransactionManager &transactions) const;
+    visibleEntries(const ReadSnapshot &snapshot, TransactionManager &transactions) const;
     [[nodiscard]] std::vector<RowId> freeList() const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const;
     [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds,
                                             const ReadSnapshot &snapshot,
-                                            const TransactionManager &transactions) const;
+                                            TransactionManager &transactions) const;
     [[nodiscard]] std::vector<std::pair<RowId, Row>>
     visibleEntriesById(std::span<const RowId> rowIds, const ReadSnapshot &snapshot,
-                       const TransactionManager &transactions) const;
+                       TransactionManager &transactions) const;
     [[nodiscard]] std::size_t rowCount() const override;
     [[nodiscard]] std::size_t capacity() const;
     [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
 
     // --- DML ---
-    RowId insert(Row row, TransactionId writerId = kSystemTransactionId);
-    bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId);
+    // Optional `transactions` records row-level SSI write sets for the writer.
+    RowId insert(Row row, TransactionId writerId = kSystemTransactionId,
+                 TransactionManager *transactions = nullptr);
+    bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId,
+               TransactionManager *transactions = nullptr);
     bool update(RowId rowId, std::size_t columnIndex, Value value,
-                TransactionId writerId = kSystemTransactionId);
+                TransactionId writerId = kSystemTransactionId,
+                TransactionManager *transactions = nullptr);
 
     // --- Undo / recovery helpers ---
     // Undo helpers: reverse INSERT/UPDATE/DELETE without leaving abort residue in MVCC.
