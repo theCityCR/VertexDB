@@ -3,7 +3,8 @@
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/parser/parser.hpp"
-#include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/page_row_store.hpp"
+#include "VertexDB/storage/vector_row_store.hpp"
 
 #include <benchmark/benchmark.h>
 

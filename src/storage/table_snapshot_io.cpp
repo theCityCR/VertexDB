@@ -1,6 +1,7 @@
 #include "VertexDB/storage/table_snapshot_io.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/storage/page_row_store.hpp"
 
 #include <optional>
 #include <stdexcept>

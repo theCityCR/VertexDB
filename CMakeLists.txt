@@ -39,6 +39,8 @@ add_library(VertexDB
     src/storage/row_store_shared.cpp
     src/storage/vector_row_store.cpp
     src/storage/page_row_store.cpp
+    src/storage/page_row_store_buffer.cpp
+    src/storage/page_row_store_io.cpp
     src/storage/table.cpp
     src/storage/table_indexes.cpp
     src/storage/table_persist.cpp

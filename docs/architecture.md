@@ -17,7 +17,7 @@ CLI
  |   +-- Database
  |   +-- Table
  |   +-- RowStore
- |   |   +-- PageRowStore (default)
+ |   |   +-- PageRowStore (default; CRUD / buffer / io TUs)
  |   |   +-- VectorRowStore
  |   +-- Row
  |   +-- BufferPool
@@ -68,8 +68,11 @@ are likewise a variant (`FullScanPlan`, equality/range/IN/prefix-LIKE probes, in
 union), while estimates and residual filters live in the shared `PlanEstimates` metadata.
 - `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
-  façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
-  `PageRowStore` are separate TUs sharing sparse-layout validation.
+  façade over row, index, statistics, snapshot I/O, and MVCC components. `RowStore` (interface) lives
+  in `row_store.hpp`; `VectorRowStore` and `PageRowStore` have dedicated headers. `PageRowStore` is
+  split across `page_row_store.cpp` (CRUD), `page_row_store_buffer.cpp` (pool/dirty), and
+  `page_row_store_io.cpp` (encode/decode/replace/redo), sharing sparse-layout validation with
+  `VectorRowStore`.
 - `execution`: `QueryExecutor` is a stable façade that composes focused execution types.
   `ExecutionContext` holds non-owning refs to the database, planner, and txn session plus peer
   pointers to `SelectEngine` / `SubqueryRuntime` (no `QueryExecutor` friendship).

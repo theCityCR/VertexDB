@@ -1,4 +1,4 @@
-#include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/vector_row_store.hpp"
 
 #include <algorithm>
 #include <stdexcept>
