@@ -2,6 +2,7 @@
 
 // Access-path strategy helpers used by query_planner_select.cpp (OR-union, AND-intersect,
 // best-path finalize). Implementations: query_planner_access.cpp.
+// These are planner_detail free functions — not a separate public type.
 
 #include "planner_detail.hpp"
 

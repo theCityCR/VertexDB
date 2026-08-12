@@ -1,3 +1,4 @@
+#include "VertexDB/storage/page_row_store.hpp"
 #include "VertexDB/storage/row_store.hpp"
 
 #include <algorithm>

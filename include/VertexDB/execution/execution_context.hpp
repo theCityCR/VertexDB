@@ -1,6 +1,6 @@
 #pragma once
 
-// Shared execution services for SelectEngine and SubqueryRuntime.
+// Shared execution services for SelectEngine, SubqueryRuntime, DmlEngine, and CatalogEngine.
 // QueryExecutor owns the members; engines hold this context and peer pointers
 // wired after both engines are constructed (no QueryExecutor friendship).
 

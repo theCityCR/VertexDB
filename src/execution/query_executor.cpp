@@ -2,7 +2,6 @@
 
 #include "VertexDB/execution/prepared_bind.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
-#include "VertexDB/execution/sql_literal.hpp"
 #include "VertexDB/parser/parser.hpp"
 
 #include <stdexcept>
@@ -15,7 +14,8 @@ QueryExecutor::QueryExecutor(std::filesystem::path storageRoot)
       recovery_(storageManager_, wal_, session_, database_,
                 [this](const Query &query) { (void)executeUnlocked(query); }),
       ctx_{database_, planner_, session_}, selectEngine_(ctx_), subqueryRuntime_(ctx_),
-      dmlEngine_(ctx_, recovery_) {
+      dmlEngine_(ctx_, recovery_),
+      catalogEngine_(ctx_, recovery_, storageManager_, wal_) {
     ctx_.select = &selectEngine_;
     ctx_.subquery = &subqueryRuntime_;
     recovery_.recoverFromStorage();
@@ -43,15 +43,15 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
         [this](const auto &command) -> QueryResult {
             using Command = std::decay_t<decltype(command)>;
             if constexpr (std::is_same_v<Command, CreateDatabase>) {
-                return executeCreateDatabase(command);
+                return catalogEngine_.executeCreateDatabase(command);
             } else if constexpr (std::is_same_v<Command, CreateTable>) {
-                return executeCreateTable(command);
+                return catalogEngine_.executeCreateTable(command);
             } else if constexpr (std::is_same_v<Command, DropTable>) {
-                return executeDropTable(command);
+                return catalogEngine_.executeDropTable(command);
             } else if constexpr (std::is_same_v<Command, RenameTable>) {
-                return executeRenameTable(command);
+                return catalogEngine_.executeRenameTable(command);
             } else if constexpr (std::is_same_v<Command, ListTables>) {
-                return executeListTables();
+                return catalogEngine_.executeListTables();
             } else if constexpr (std::is_same_v<Command, Insert>) {
                 return executeInsert(command);
             } else if constexpr (std::is_same_v<Command, Select>) {
@@ -63,13 +63,13 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
             } else if constexpr (std::is_same_v<Command, Delete>) {
                 return executeDelete(command);
             } else if constexpr (std::is_same_v<Command, CreateIndex>) {
-                return executeCreateIndex(command);
+                return catalogEngine_.executeCreateIndex(command);
             } else if constexpr (std::is_same_v<Command, Analyze>) {
-                return executeAnalyze(command);
+                return catalogEngine_.executeAnalyze(command);
             } else if constexpr (std::is_same_v<Command, SaveDatabase>) {
-                return executeSaveDatabase();
+                return catalogEngine_.executeSaveDatabase();
             } else if constexpr (std::is_same_v<Command, LoadDatabase>) {
-                return executeLoadDatabase(command);
+                return catalogEngine_.executeLoadDatabase(command);
             } else if constexpr (std::is_same_v<Command, BeginTransaction>) {
                 return executeBegin();
             } else if constexpr (std::is_same_v<Command, CommitTransaction>) {
@@ -107,140 +107,6 @@ QueryResult QueryExecutor::executeUpdate(const Update &command) {
 
 QueryResult QueryExecutor::executeDelete(const Delete &command) {
     return dmlEngine_.executeDelete(command);
-}
-
-QueryResult QueryExecutor::executeCreateDatabase(const CreateDatabase &command) {
-    if (const auto rejected = session_.rejectIfTransactionActive("CREATE DATABASE");
-        !rejected.success) {
-        return rejected;
-    }
-    appendWal(WalOperation::CreateDatabase, command.name);
-    database_ = std::make_shared<Database>(command.name);
-    return messageResult(true, "created database " + command.name);
-}
-
-QueryResult QueryExecutor::executeCreateTable(const CreateTable &command) {
-    if (const auto rejected = session_.rejectIfTransactionActive("CREATE TABLE");
-        !rejected.success) {
-        return rejected;
-    }
-    if (!database_) {
-        return messageResult(false, "no active database");
-    }
-    const bool created = database_->createTable(command.name, command.columns);
-    if (created) {
-        appendWal(WalOperation::CreateTable, createTableSql(command));
-    }
-    return messageResult(created,
-                         created ? "created table " + command.name : "table already exists");
-}
-
-QueryResult QueryExecutor::executeDropTable(const DropTable &command) {
-    if (const auto rejected = session_.rejectIfTransactionActive("DROP TABLE"); !rejected.success) {
-        return rejected;
-    }
-    if (!database_) {
-        return messageResult(false, "no active database");
-    }
-    const bool dropped = database_->dropTable(command.name);
-    if (dropped) {
-        appendWal(WalOperation::DropTable, "DROP TABLE " + command.name + ";");
-    }
-    return messageResult(dropped, dropped ? "dropped table " + command.name : "unknown table");
-}
-
-QueryResult QueryExecutor::executeRenameTable(const RenameTable &command) {
-    if (const auto rejected = session_.rejectIfTransactionActive("RENAME TABLE");
-        !rejected.success) {
-        return rejected;
-    }
-    if (!database_) {
-        return messageResult(false, "no active database");
-    }
-    const bool renamed = database_->renameTable(command.oldName, command.newName);
-    if (renamed) {
-        appendWal(WalOperation::RenameTable,
-                  "RENAME TABLE " + command.oldName + " TO " + command.newName + ";");
-    }
-    return messageResult(renamed, renamed ? "renamed table " + command.oldName : "rename failed");
-}
-
-QueryResult QueryExecutor::executeListTables() {
-    if (!database_) {
-        return messageResult(false, "no active database");
-    }
-    QueryResult result;
-    result.message = "listed tables";
-    result.columns = {"table"};
-    for (const auto &name : database_->listTables()) {
-        result.rows.push_back({Value{name}});
-    }
-    return result;
-}
-
-QueryResult QueryExecutor::executeCreateIndex(const CreateIndex &command) {
-    auto table = selectEngine_.requireTable(command.table);
-    const bool created =
-        command.expression ? table->createIndex(command.name, *command.expression)
-                           : table->createIndex(command.name, command.column);
-    if (created) {
-        if (session_.transactionActive()) {
-            UndoRecord undo;
-            undo.tableName = command.table;
-            undo.kind = UndoKind::CreateIndex;
-            undo.indexName = command.name;
-            session_.pushUndo(std::move(undo));
-        }
-        appendWal(WalOperation::CreateIndex, createIndexSql(command));
-    }
-    return messageResult(created,
-                         created ? "created index " + command.name : "index creation failed");
-}
-
-QueryResult QueryExecutor::executeAnalyze(const Analyze &command) {
-    if (!database_) {
-        return messageResult(false, "no active database");
-    }
-    if (command.table) {
-        auto table = selectEngine_.requireTable(*command.table);
-        table->analyze();
-        return messageResult(true, "analyzed table " + *command.table);
-    }
-    const auto tables = database_->tables();
-    for (const auto &table : tables) {
-        table->analyze();
-    }
-    return messageResult(true, "analyzed " + std::to_string(tables.size()) + " table(s)");
-}
-
-QueryResult QueryExecutor::executeSaveDatabase() {
-    if (const auto rejected = session_.rejectIfTransactionActive("SAVE DATABASE");
-        !rejected.success) {
-        return rejected;
-    }
-    if (!database_) {
-        return messageResult(false, "no active database");
-    }
-    appendWal(WalOperation::SaveDatabase, database_->name());
-    storageManager_.saveDatabase(*database_);
-    wal_.reset();
-    return messageResult(true, "saved database " + database_->name());
-}
-
-QueryResult QueryExecutor::executeLoadDatabase(const LoadDatabase &command) {
-    if (const auto rejected = session_.rejectIfTransactionActive("LOAD DATABASE");
-        !rejected.success) {
-        return rejected;
-    }
-    if (command.name) {
-        database_ = storageManager_.loadDatabase(*command.name);
-    } else if (database_) {
-        database_ = storageManager_.loadDatabase(database_->name());
-    } else {
-        database_ = storageManager_.loadFirstDatabase();
-    }
-    session_.reset();
-    return messageResult(true, "loaded database " + database_->name());
 }
 
 QueryResult QueryExecutor::executeBegin() {
@@ -292,10 +158,6 @@ QueryResult QueryExecutor::executePrepared(const ExecutePrepared &command) {
 std::optional<Query> QueryExecutor::preparedAst(std::string_view name) const {
     const auto lock = lockManager_.acquireRead();
     return prepared_.findCaseInsensitive(name);
-}
-
-void QueryExecutor::appendWal(WalOperation operation, std::string payload) {
-    recovery_.appendWal(operation, std::move(payload));
 }
 
 } // namespace VertexDB

@@ -1,0 +1,79 @@
+#pragma once
+
+// Default page-backed RowStore. Page payloads are the source of truth; BufferPool is an LRU
+// access cache. Sibling TUs: page_row_store.cpp (CRUD), page_row_store_buffer.cpp (pool/dirty),
+// page_row_store_io.cpp (encode/decode/replace/redo). See table.hpp for ownership.
+
+#include "VertexDB/storage/buffer_pool.hpp"
+#include "VertexDB/storage/row_store.hpp"
+
+#include <memory>
+#include <optional>
+#include <unordered_map>
+#include <vector>
+
+namespace VertexDB {
+
+class PageRowStore final : public RowStore {
+  public:
+    explicit PageRowStore(std::size_t rowsPerPage = 256, std::size_t bufferPageCapacity = 128);
+
+    [[nodiscard]] RowId append(Row row) override;
+    [[nodiscard]] bool erase(RowId rowId) override;
+    [[nodiscard]] bool update(RowId rowId, Row row) override;
+    [[nodiscard]] bool revive(RowId rowId, Row row) override;
+    [[nodiscard]] bool upsertAt(RowId rowId, Row row) override;
+    [[nodiscard]] const Row *get(RowId rowId) const override;
+    [[nodiscard]] std::vector<Row> snapshot() const override;
+    [[nodiscard]] std::vector<std::pair<RowId, Row>> liveEntries() const override;
+    [[nodiscard]] std::vector<RowId> freeList() const override;
+    [[nodiscard]] std::vector<Row> rowsById(std::span<const RowId> rowIds) const override;
+    [[nodiscard]] std::size_t size() const noexcept override;
+    [[nodiscard]] std::size_t capacity() const noexcept override;
+    // Observability: page-byte directory is SoT; buffer pool is the LRU access cache.
+    [[nodiscard]] bool bufferContains(PageId pageId) const;
+    [[nodiscard]] std::size_t bufferSize() const noexcept;
+    [[nodiscard]] PageId pageIdFor(RowId rowId) const;
+    [[nodiscard]] std::optional<std::vector<std::byte>> directoryBytes(PageId pageId) const;
+    [[nodiscard]] static std::vector<Row> decodePage(std::span<const std::byte> bytes);
+    [[nodiscard]] std::size_t rowsPerPage() const noexcept;
+    [[nodiscard]] PageStoreSnapshot exportPages() const;
+    void replaceFromPages(PageStoreSnapshot snapshot);
+    void clearDirtyPages() noexcept;
+    [[nodiscard]] bool hasDirtyPages() const noexcept;
+    [[nodiscard]] std::vector<std::pair<PageId, std::vector<std::byte>>> takeDirtyPages();
+    // Install dirty heap pages and optional capacity/free-list metadata during WAL redo.
+    void applyPageImages(std::optional<std::size_t> capacity, std::optional<std::vector<RowId>> freeList,
+                         std::vector<std::pair<PageId, std::vector<std::byte>>> pages);
+    void replaceRows(std::vector<Row> rows) override;
+    void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
+                       std::vector<std::pair<RowId, Row>> entries) override;
+
+  private:
+    struct Slot {
+        PageId pageId{};
+        std::size_t offset{};
+        bool live{false};
+    };
+
+    [[nodiscard]] Page serializePage(PageId pageId, const std::vector<Row> &rows) const;
+    [[nodiscard]] std::vector<Row> loadPageRows(PageId pageId) const;
+    void storePage(PageId pageId, const std::vector<Row> &rows);
+    void ensureBuffered(PageId pageId) const;
+    void invalidateDecoded(PageId pageId);
+    void markDirty(PageId pageId);
+    void rebuildSlotsFromDirectory();
+
+    std::size_t rowsPerPage_;
+    mutable BufferPool bufferPool_;
+    std::vector<Slot> slots_;
+    std::vector<RowId> freeList_;
+    std::unordered_map<PageId, std::vector<std::byte>> pageDirectory_;
+    mutable std::unordered_map<RowId, Row> decodedRows_;
+    std::size_t liveCount_{0};
+    std::unordered_map<PageId, bool> dirtyPages_;
+};
+
+[[nodiscard]] std::unique_ptr<RowStore> makePageRowStore();
+
+} // namespace VertexDB

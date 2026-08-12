@@ -1,5 +1,7 @@
 #include "VertexDB/storage/table.hpp"
 
+#include "VertexDB/storage/page_row_store.hpp"
+
 #include <mutex>
 #include <shared_mutex>
 

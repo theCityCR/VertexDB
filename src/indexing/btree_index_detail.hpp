@@ -1,5 +1,8 @@
 #pragma once
 
+// Internal B+ tree key-search helpers. Used by btree_index_{lookup,mutate,snapshot}.cpp.
+// Not part of the public include surface.
+
 #include "VertexDB/common/value.hpp"
 
 #include <cstddef>

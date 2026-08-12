@@ -1,5 +1,8 @@
 #pragma once
 
+// Internal .tcrdb layout constants and helpers. Used by tcrdb_*_codec.cpp TUs.
+// Not part of the public include surface.
+
 #include "VertexDB/common/binary_io.hpp"
 #include "VertexDB/persistence/tcrdb_codec.hpp"
 

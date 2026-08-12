@@ -1,7 +1,9 @@
 #pragma once
 
 // Internal helpers for QueryPlanner TUs (predicate trees, costing, indexability).
-// Implementations live in planner_predicate.cpp. Not part of the public include surface.
+// Implementations: query_planner_predicate.cpp (planner_detail free functions).
+// Access-path finalize (OR-union / AND-intersect) is in query_planner_access.hpp —
+// not a separate public type. Not part of the public include surface.
 
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/storage/relation_stats.hpp"

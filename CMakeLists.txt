@@ -39,6 +39,8 @@ add_library(VertexDB
     src/storage/row_store_shared.cpp
     src/storage/vector_row_store.cpp
     src/storage/page_row_store.cpp
+    src/storage/page_row_store_buffer.cpp
+    src/storage/page_row_store_io.cpp
     src/storage/table.cpp
     src/storage/table_indexes.cpp
     src/storage/table_persist.cpp
@@ -52,6 +54,7 @@ add_library(VertexDB
     src/indexing/index_manager.cpp
     src/execution/query_executor.cpp
     src/execution/dml_engine.cpp
+    src/execution/catalog_engine.cpp
     src/execution/select_engine.cpp
     src/execution/select_engine_scan.cpp
     src/execution/select_engine_join.cpp
@@ -70,7 +73,7 @@ add_library(VertexDB
     src/planner/query_planner.cpp
     src/planner/query_planner_select.cpp
     src/planner/query_planner_access.cpp
-    src/planner/planner_predicate.cpp
+    src/planner/query_planner_predicate.cpp
     src/planner/query_planner_join.cpp
     src/planner/query_planner_format.cpp
     src/planner/rewriter.cpp

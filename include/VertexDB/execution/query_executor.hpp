@@ -1,11 +1,12 @@
 #pragma once
 
 // SQL command façade: dispatch and public API only.
-// SelectEngine, SubqueryRuntime, DmlEngine, PreparedStatementCatalog, TxnSession, and
-// RecoveryService own the execution subsystems composed by this façade.
-// Shared SELECT/subquery/DML services are exposed via ExecutionContext (no friends).
+// CatalogEngine, SelectEngine, SubqueryRuntime, DmlEngine, PreparedStatementCatalog,
+// TxnSession, and RecoveryService own the execution subsystems composed by this façade.
+// Shared SELECT/subquery/DML/catalog services are exposed via ExecutionContext (no friends).
 
 #include "VertexDB/concurrency/lock_manager.hpp"
+#include "VertexDB/execution/catalog_engine.hpp"
 #include "VertexDB/execution/dml_engine.hpp"
 #include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/prepared_statement_catalog.hpp"
@@ -36,20 +37,11 @@ class QueryExecutor {
     [[nodiscard]] std::optional<Query> preparedAst(std::string_view name) const;
 
   private:
-    [[nodiscard]] QueryResult executeCreateDatabase(const CreateDatabase &command);
-    [[nodiscard]] QueryResult executeCreateTable(const CreateTable &command);
-    [[nodiscard]] QueryResult executeDropTable(const DropTable &command);
-    [[nodiscard]] QueryResult executeRenameTable(const RenameTable &command);
-    [[nodiscard]] QueryResult executeListTables();
     [[nodiscard]] QueryResult executeInsert(const Insert &command);
     [[nodiscard]] QueryResult executeSelect(const Select &command);
     [[nodiscard]] QueryResult executeExplain(const ExplainQuery &command);
     [[nodiscard]] QueryResult executeUpdate(const Update &command);
     [[nodiscard]] QueryResult executeDelete(const Delete &command);
-    [[nodiscard]] QueryResult executeCreateIndex(const CreateIndex &command);
-    [[nodiscard]] QueryResult executeAnalyze(const Analyze &command);
-    [[nodiscard]] QueryResult executeSaveDatabase();
-    [[nodiscard]] QueryResult executeLoadDatabase(const LoadDatabase &command);
     [[nodiscard]] QueryResult executeBegin();
     [[nodiscard]] QueryResult executeCommit();
     [[nodiscard]] QueryResult executeRollback();
@@ -57,7 +49,6 @@ class QueryExecutor {
     [[nodiscard]] QueryResult executePrepared(const ExecutePrepared &command);
 
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
-    void appendWal(WalOperation operation, std::string payload);
 
     std::shared_ptr<Database> database_;
     StorageManager storageManager_;
@@ -69,6 +60,7 @@ class QueryExecutor {
     SelectEngine selectEngine_;
     SubqueryRuntime subqueryRuntime_;
     DmlEngine dmlEngine_;
+    CatalogEngine catalogEngine_;
     PreparedStatementCatalog prepared_;
     LockManager lockManager_;
 };

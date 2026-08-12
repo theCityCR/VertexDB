@@ -7,7 +7,7 @@ CLI
  |
  Query Executor
  |   +-- ExecutionContext (DB / planner / session + Select/Subquery peers)
- |   +-- SelectEngine / SubqueryRuntime / DmlEngine
+ |   +-- SelectEngine / SubqueryRuntime / DmlEngine / CatalogEngine
  |
  +-- Query Planner
  |   +-- Rewriter (CTE inline/materialize, IN subquery prep)
@@ -17,7 +17,7 @@ CLI
  |   +-- Database
  |   +-- Table
  |   +-- RowStore
- |   |   +-- PageRowStore (default)
+ |   |   +-- PageRowStore (default; CRUD / buffer / io TUs)
  |   |   +-- VectorRowStore
  |   +-- Row
  |   +-- BufferPool
@@ -60,7 +60,7 @@ CLI
   `EXPLAIN ANALYZE` formatting lives in `query_planner_format.cpp`. `QueryPlanner` is
   split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`
   orchestration), `query_planner_access.cpp` (OR-union / AND-intersect / best-path finalize),
-  `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
+  `query_planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
 existence, `LIKE`, or regex node owns only the fields valid for that shape. Physical access paths
@@ -68,8 +68,11 @@ are likewise a variant (`FullScanPlan`, equality/range/IN/prefix-LIKE probes, in
 union), while estimates and residual filters live in the shared `PlanEstimates` metadata.
 - `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
-  façade over row, index, statistics, snapshot I/O, and MVCC components. `VectorRowStore` and
-  `PageRowStore` are separate TUs sharing sparse-layout validation.
+  façade over row, index, statistics, snapshot I/O, and MVCC components. `RowStore` (interface) lives
+  in `row_store.hpp`; `VectorRowStore` and `PageRowStore` have dedicated headers. `PageRowStore` is
+  split across `page_row_store.cpp` (CRUD), `page_row_store_buffer.cpp` (pool/dirty), and
+  `page_row_store_io.cpp` (encode/decode/replace/redo), sharing sparse-layout validation with
+  `VectorRowStore`.
 - `execution`: `QueryExecutor` is a stable façade that composes focused execution types.
   `ExecutionContext` holds non-owning refs to the database, planner, and txn session plus peer
   pointers to `SelectEngine` / `SubqueryRuntime` (no `QueryExecutor` friendship).
@@ -77,7 +80,9 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   orchestration, `select_engine_scan.cpp`, `select_engine_join.cpp`). `DmlEngine` owns
   INSERT/UPDATE/DELETE with undo and page-image WAL redo; UPDATE/DELETE reuse
   `QueryPlanner::planSelect` plus `SelectEngine::collectVisibleEntries` so mutation `WHERE`
-  clauses use the same index access paths as SELECT. `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
+  clauses use the same index access paths as SELECT. `CatalogEngine` owns CREATE/DROP/RENAME
+  DATABASE/TABLE, `LIST TABLES`, `CREATE INDEX`, `ANALYZE`, and `SAVE`/`LOAD` (with WAL append and
+  snapshot coordination). `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
   evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`, `subquery_runtime_cte.cpp`),
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.

@@ -1,5 +1,6 @@
 #include "VertexDB/storage/database.hpp"
-#include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/page_row_store.hpp"
+#include "VertexDB/storage/vector_row_store.hpp"
 #include "VertexDB/persistence/storage_manager.hpp"
 
 #include <gtest/gtest.h>

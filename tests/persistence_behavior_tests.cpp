@@ -10,7 +10,7 @@
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/database.hpp"
-#include "VertexDB/storage/row_store.hpp"
+#include "VertexDB/storage/page_row_store.hpp"
 #include "VertexDB/storage/table.hpp"
 
 #include <gtest/gtest.h>
