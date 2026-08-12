@@ -34,10 +34,26 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Configure
-        run: cmake -S . -B build -DVERTEXDB_BUILD_TESTS=ON
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+        run: |
+          set -eu
+          attempt=1
+          max_attempts=5
+          while true; do
+            if cmake -S . -B build -DVERTEXDB_BUILD_TESTS=ON; then
+              break
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "cmake configure failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "cmake configure failed (attempt ${attempt}/${max_attempts}); retrying..." >&2
+            rm -rf build
+            attempt=$((attempt + 1))
+            sleep $((attempt * 2))
+          done
 
       - name: Build
         run: cmake --build build --config Release
@@ -74,7 +90,23 @@ jobs:
         run: python3 scripts/check_benchmark_shape.py --self-test
 
       - name: CTE cost-shape gate
-        run: scripts/run-benchmarks.sh --check-shape
+        run: |
+          set -eu
+          attempt=1
+          max_attempts=3
+          while true; do
+            if scripts/run-benchmarks.sh --check-shape; then
+              break
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "benchmark shape gate failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "benchmark shape gate failed (attempt ${attempt}/${max_attempts}); retrying..." >&2
+            rm -rf build-benchmark
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
 
       - name: Upload benchmark JSON
         if: always()

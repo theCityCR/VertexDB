@@ -136,7 +136,9 @@ enable_testing()
 if(VERTEXDB_BUILD_TESTS)
     FetchContent_Declare(
         googletest
-        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+        GIT_SHALLOW TRUE
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
@@ -170,7 +172,9 @@ endif()
 if(VERTEXDB_BUILD_BENCHMARKS)
     FetchContent_Declare(
         benchmark
-        URL https://github.com/google/benchmark/archive/refs/tags/v1.8.3.zip
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.8.3
+        GIT_SHALLOW TRUE
     )
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(benchmark)
