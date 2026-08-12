@@ -22,6 +22,7 @@ struct BestConjunctChoice {
     AccessPath bestPath{AccessPath::FullScan};
     double bestCost{0.0};
     std::optional<IntersectPlan> bestTrigramIntersect;
+    std::optional<UnionPlan> bestUnion;
 };
 
 [[nodiscard]] BestConjunctChoice chooseBestConjunctPath(

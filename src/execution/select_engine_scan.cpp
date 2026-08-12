@@ -8,8 +8,74 @@
 #include <optional>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace VertexDB {
+namespace {
+
+std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table) {
+    if (node.kind == IndexBitmapNode::Kind::Probe) {
+        auto rowIds = node.probe.expression
+                          ? table.indexedLookup(*node.probe.expression, node.probe.value)
+                          : table.indexedLookup(node.probe.column, node.probe.value);
+        if (!rowIds) {
+            return {};
+        }
+        std::sort(rowIds->begin(), rowIds->end());
+        return std::move(*rowIds);
+    }
+
+    if (node.children.empty()) {
+        return {};
+    }
+
+    std::optional<std::vector<RowId>> combined;
+    for (const auto &child : node.children) {
+        auto childIds = evalBitmapNode(child, table);
+        if (node.kind == IndexBitmapNode::Kind::Intersect) {
+            if (childIds.empty()) {
+                return {};
+            }
+            if (!combined) {
+                combined = std::move(childIds);
+                continue;
+            }
+            std::vector<RowId> next;
+            next.reserve(std::min(combined->size(), childIds.size()));
+            std::set_intersection(combined->begin(), combined->end(), childIds.begin(),
+                                  childIds.end(), std::back_inserter(next));
+            combined = std::move(next);
+            if (combined->empty()) {
+                return {};
+            }
+        } else {
+            // Union
+            if (childIds.empty()) {
+                continue;
+            }
+            if (!combined) {
+                combined = std::move(childIds);
+                continue;
+            }
+            std::vector<RowId> next;
+            next.reserve(combined->size() + childIds.size());
+            std::set_union(combined->begin(), combined->end(), childIds.begin(), childIds.end(),
+                           std::back_inserter(next));
+            combined = std::move(next);
+        }
+    }
+    return combined ? std::move(*combined) : std::vector<RowId>{};
+}
+
+std::vector<RowId> evalIntersectPlan(const IntersectPlan &path, const Table &table) {
+    return evalBitmapNode(IndexBitmapNode::makeIntersect(path.children), table);
+}
+
+std::vector<RowId> evalUnionPlan(const UnionPlan &path, const Table &table) {
+    return evalBitmapNode(IndexBitmapNode::makeUnion(path.children), table);
+}
+
+} // namespace
 
 std::vector<std::pair<RowId, Row>>
 SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
@@ -71,57 +137,13 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                 }
                 return applyResidual(entriesByIdForRead(table, combined));
             } else if constexpr (std::is_same_v<T, IntersectPlan>) {
-                if (path.intersectProbes.empty()) {
+                auto intersection = evalIntersectPlan(path, table);
+                if (intersection.empty()) {
                     return {};
                 }
-                std::optional<std::vector<RowId>> intersection;
-                for (const auto &probe : path.intersectProbes) {
-                    auto rowIds = probe.expression
-                                      ? table.indexedLookup(*probe.expression, probe.value)
-                                      : table.indexedLookup(probe.column, probe.value);
-                    if (!rowIds) {
-                        return {};
-                    }
-                    std::sort(rowIds->begin(), rowIds->end());
-                    if (!intersection) {
-                        intersection = std::move(*rowIds);
-                        continue;
-                    }
-                    std::vector<RowId> next;
-                    next.reserve(std::min(intersection->size(), rowIds->size()));
-                    std::set_intersection(intersection->begin(), intersection->end(),
-                                          rowIds->begin(), rowIds->end(),
-                                          std::back_inserter(next));
-                    intersection = std::move(next);
-                    if (intersection->empty()) {
-                        return {};
-                    }
-                }
-                return applyResidual(entriesByIdForRead(table, *intersection));
+                return applyResidual(entriesByIdForRead(table, intersection));
             } else if constexpr (std::is_same_v<T, UnionPlan>) {
-                if (path.unionProbes.empty()) {
-                    return {};
-                }
-                std::optional<std::vector<RowId>> unified;
-                for (const auto &probe : path.unionProbes) {
-                    auto rowIds = probe.expression
-                                      ? table.indexedLookup(*probe.expression, probe.value)
-                                      : table.indexedLookup(probe.column, probe.value);
-                    if (!rowIds) {
-                        continue;
-                    }
-                    std::sort(rowIds->begin(), rowIds->end());
-                    if (!unified) {
-                        unified = std::move(*rowIds);
-                        continue;
-                    }
-                    std::vector<RowId> next;
-                    next.reserve(unified->size() + rowIds->size());
-                    std::set_union(unified->begin(), unified->end(), rowIds->begin(), rowIds->end(),
-                                   std::back_inserter(next));
-                    unified = std::move(next);
-                }
-                std::vector<RowId> ids = unified ? std::move(*unified) : std::vector<RowId>{};
+                auto ids = evalUnionPlan(path, table);
                 if (!plan.residual()) {
                     return ids.empty() ? std::vector<std::pair<RowId, Row>>{}
                                        : entriesByIdForRead(table, ids);

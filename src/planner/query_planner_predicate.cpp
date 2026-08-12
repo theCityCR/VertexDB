@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <sstream>
 #include <utility>
 
 namespace VertexDB {
@@ -238,6 +240,43 @@ std::string probeLabel(const IndexEqualityProbe &probe) {
     return probe.column;
 }
 
+std::string bitmapNodeLabel(const IndexBitmapNode &node) {
+    if (node.kind == IndexBitmapNode::Kind::Probe) {
+        return probeLabel(node.probe);
+    }
+    std::ostringstream out;
+    out << (node.kind == IndexBitmapNode::Kind::Union ? "union(" : "intersect(");
+    for (std::size_t i = 0; i < node.children.size(); ++i) {
+        if (i > 0) {
+            out << ", ";
+        }
+        out << bitmapNodeLabel(node.children[i]);
+    }
+    out << ")";
+    return out.str();
+}
+
+std::optional<IndexBitmapNode> tryMakeFullyIndexableOrUnion(const Predicate &predicate,
+                                                            const IndexCatalogView &indexes) {
+    if (!std::holds_alternative<OrPred>(predicate)) {
+        return std::nullopt;
+    }
+    std::vector<const Predicate *> disjuncts;
+    collectOrDisjuncts(predicate, disjuncts);
+    if (disjuncts.empty()) {
+        return std::nullopt;
+    }
+    std::vector<IndexBitmapNode> probes;
+    probes.reserve(disjuncts.size());
+    for (const Predicate *pred : disjuncts) {
+        if (!isEqualityIndexProbe(*pred, indexes)) {
+            return std::nullopt;
+        }
+        probes.push_back(IndexBitmapNode::makeProbe(makeEqualityProbe(*pred)));
+    }
+    return IndexBitmapNode::makeUnion(std::move(probes));
+}
+
 bool isIndexableLike(const Predicate &predicate, const IndexCatalogView &indexes, AccessPath &path,
                      double &cost, std::size_t rowCount,
                      std::optional<IntersectPlan> &trigramIntersect) {
@@ -269,13 +308,13 @@ bool isIndexableLike(const Predicate &predicate, const IndexCatalogView &indexes
             return false;
         }
         IntersectPlan intersect;
-        intersect.intersectProbes.reserve(grams.size());
+        intersect.children.reserve(grams.size());
         for (const auto &gram : grams) {
             IndexEqualityProbe probe;
             probe.column = like->column;
             probe.expression = trigram;
             probe.value = Value{gram};
-            intersect.intersectProbes.push_back(std::move(probe));
+            intersect.children.push_back(IndexBitmapNode::makeProbe(std::move(probe)));
         }
         path = AccessPath::Intersect;
         cost = std::max(static_cast<double>(rowCount) / 20.0, 1.0);

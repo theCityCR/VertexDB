@@ -89,7 +89,9 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath(), AccessPath::Intersect);
-    ASSERT_EQ(std::get<IntersectPlan>(plan.path).intersectProbes.size(), 2U);
+    ASSERT_EQ(std::get<IntersectPlan>(plan.path).children.size(), 2U);
+    EXPECT_EQ(std::get<IntersectPlan>(plan.path).children[0].kind, IndexBitmapNode::Kind::Probe);
+    EXPECT_EQ(std::get<IntersectPlan>(plan.path).children[1].kind, IndexBitmapNode::Kind::Probe);
     EXPECT_NE(plan.estimates.explanation.find("multi-index intersect on"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("a"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("b"), std::string::npos);
@@ -109,7 +111,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionAcrossColumns) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath(), AccessPath::Union);
-    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).children.size(), 2U);
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("id"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("dept"), std::string::npos);
@@ -163,8 +165,9 @@ TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctUsesPartialUnion) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath(), AccessPath::Union);
-    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 1U);
-    EXPECT_EQ(std::get<UnionPlan>(plan.path).unionProbes.front().column, "id");
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).children.size(), 1U);
+    EXPECT_EQ(std::get<UnionPlan>(plan.path).children.front().kind, IndexBitmapNode::Kind::Probe);
+    EXPECT_EQ(std::get<UnionPlan>(plan.path).children.front().probe.column, "id");
     ASSERT_TRUE(plan.residual().has_value());
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
     EXPECT_NE(plan.estimates.explanation.find("id"), std::string::npos);
@@ -243,7 +246,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionIncludesExpressionEquality) {
     Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
     const auto plan = QueryPlanner{}.planSelect(query, table);
     EXPECT_EQ(plan.accessPath(), AccessPath::Union);
-    ASSERT_EQ(std::get<UnionPlan>(plan.path).unionProbes.size(), 2U);
+    ASSERT_EQ(std::get<UnionPlan>(plan.path).children.size(), 2U);
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
 }
 
@@ -329,6 +332,104 @@ TEST(PlannerBehaviorTests, ScaledMultiIndexIntersectUsesBothIndexes) {
         EXPECT_EQ((id / 10) % 10, 1);
     }
     EXPECT_EQ(result.rows.size(), static_cast<std::size_t>(kRowCount / 100));
+}
+
+TEST(PlannerBehaviorTests, NestedOrUnderAndUsesCompositeIntersectUnion) {
+    // Medium-cardinality equality on the AND side so Intersect∪Union beats HashEq + residual.
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"city", ColumnType::Int}}};
+    for (int i = 1; i <= 100; ++i) {
+        table.insert({Value{i % 10}, Value{i % 10}, Value{i % 10}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+    ASSERT_TRUE(table.createIndex("idx_city", "city"));
+
+    Predicate nestedOr =
+        makeOr(makeComparison("dept", ComparisonOperator::Equal, Value{1}),
+               makeComparison("city", ComparisonOperator::Equal, Value{2}));
+    Predicate where =
+        makeAnd(makeComparison("id", ComparisonOperator::Equal, Value{1}), nestedOr);
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+
+    EXPECT_EQ(plan.accessPath(), AccessPath::Intersect);
+    const auto &intersect = std::get<IntersectPlan>(plan.path);
+    ASSERT_EQ(intersect.children.size(), 2U);
+    EXPECT_EQ(intersect.children[0].kind, IndexBitmapNode::Kind::Probe);
+    EXPECT_EQ(intersect.children[0].probe.column, "id");
+    EXPECT_EQ(intersect.children[1].kind, IndexBitmapNode::Kind::Union);
+    ASSERT_EQ(intersect.children[1].children.size(), 2U);
+    EXPECT_FALSE(plan.residual().has_value());
+    EXPECT_NE(plan.estimates.explanation.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("union("), std::string::npos);
+    ASSERT_FALSE(plan.estimates.notes.empty());
+    EXPECT_NE(plan.estimates.notes.front().find("composite Intersect"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, NestedOrUnderAndCompositeReturnsCorrectRows) {
+    auto executor = makeExecutor("nested-or-intersect-union");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, 0, \"id-dept\"), (2, 0, 2, \"id-miss\"), "
+                        "(1, 0, 2, \"id-city\"), (3, 1, 2, \"no-id\");"))
+                    .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM Employees WHERE id = 1 AND (dept = 1 OR city = 2);"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(text.find("union("), std::string::npos);
+    EXPECT_NE(text.find("residual: no"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id = 1 AND (dept = 1 OR city = 2) ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"id-city"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"id-dept"}});
+}
+
+TEST(PlannerBehaviorTests, TwoOrsUnderAndUsesIntersectOfUnions) {
+    Table table{"T",
+                {{"a", ColumnType::Int},
+                 {"b", ColumnType::Int},
+                 {"c", ColumnType::Int},
+                 {"d", ColumnType::Int}}};
+    for (int i = 1; i <= 80; ++i) {
+        table.insert({Value{i % 4}, Value{i % 4}, Value{i % 4}, Value{i % 4}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_a", "a"));
+    ASSERT_TRUE(table.createIndex("idx_b", "b"));
+    ASSERT_TRUE(table.createIndex("idx_c", "c"));
+    ASSERT_TRUE(table.createIndex("idx_d", "d"));
+
+    Predicate leftOr = makeOr(makeComparison("a", ComparisonOperator::Equal, Value{1}),
+                              makeComparison("b", ComparisonOperator::Equal, Value{2}));
+    Predicate rightOr = makeOr(makeComparison("c", ComparisonOperator::Equal, Value{1}),
+                               makeComparison("d", ComparisonOperator::Equal, Value{2}));
+    Predicate where = makeAnd(leftOr, rightOr);
+    Select query{"T", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+
+    EXPECT_EQ(plan.accessPath(), AccessPath::Intersect);
+    const auto &intersect = std::get<IntersectPlan>(plan.path);
+    ASSERT_EQ(intersect.children.size(), 2U);
+    EXPECT_EQ(intersect.children[0].kind, IndexBitmapNode::Kind::Union);
+    EXPECT_EQ(intersect.children[1].kind, IndexBitmapNode::Kind::Union);
+    EXPECT_FALSE(plan.residual().has_value());
+    EXPECT_NE(plan.estimates.explanation.find("union("), std::string::npos);
 }
 
 } // namespace VertexDB

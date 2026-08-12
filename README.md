@@ -99,7 +99,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 244 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 247 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), planner behavior (access / intersect-union / explain / mutation / join-stats),
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
@@ -150,7 +150,8 @@ non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-
 inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
 transactional `CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists,
-`EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, and a dated absolute-time benchmark
+`EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, composite Intersect∪Union for
+fully indexable nested `OR` under `AND`, and a dated absolute-time benchmark
 summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /

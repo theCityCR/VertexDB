@@ -42,7 +42,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   prevented; write skew allowed), undo-log DML rollback, transaction-batched page-image WAL flush
   on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
-  partial residual OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
+  partial residual OR, composite Intersect∪Union for fully indexable nested OR under AND, prefix
+  `LIKE`, and trigram intersect), residual filters, join algorithm
   selection (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), expression-index matching,
   `EXPLAIN`, and `EXPLAIN ANALYZE` (actual vs estimated rows)
 - Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks with
@@ -62,8 +63,10 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   indexable subset is cheaper than a full scan. Non-indexable disjuncts become a residual OR
   complementary scan (partial OR). When no disjunct is indexable, or the indexable union is not
   cheaper than a scan, the planner keeps a full scan. Same-column equality `OR` (top-level or under
-  `AND`) is rewritten to `IN` for HashIn. Heterogeneous nested `OR` under `AND` may remain as a
-  residual while another conjunct uses an index.
+  `AND`) is rewritten to `IN` for HashIn. A heterogeneous `OR` nested under `AND` whose every
+  disjunct is an equality index probe becomes a Union child of a multi-index Intersect
+  (composite Intersect∪Union) when that plan beats the best single conjunct. If any nested-OR arm
+  is not equality-indexable, the whole `OrPred` stays an AND residual.
 - Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
   frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
   derived tables and `JOIN` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias (force
@@ -82,17 +85,19 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 Shipped recently (no longer open work): literal `IN` lists, indexed `UPDATE`/`DELETE` access paths,
 transactional `CREATE INDEX`, same-column `OR`→`IN`, MVCC `UPDATE` close-prior-version,
 `EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), multi-index AND intersect packaging,
-and the SI anomaly concurrency wedge.
+the SI anomaly concurrency wedge, and composite Intersect∪Union for fully indexable nested `OR`
+under `AND`.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- Planner: heterogeneous nested `OR` under `AND`; composite Intersect∪Union
 - SQL / catalog: `EXPLAIN` for mutations; public `DROP INDEX`; catalog DDL and `SAVE`/`LOAD`
   inside open transactions
 - Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
+- Planner follow-ups: partial nested `OR` under `AND` (indexable arms + complementary residual
+  under the outer AND) without expanding to full SSI-style boolean algebra
 
 Demo wedges (done):
 

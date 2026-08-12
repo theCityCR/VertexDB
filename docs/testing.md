@@ -20,7 +20,7 @@ VertexDB uses three levels of automated testing:
 | `nested_subquery_tests.cpp` | `WITH`/`JOIN`/derived inside `IN`/`EXISTS`, uncorrelated `IN`, nested-SQL documented grammar refusals |
 | `nested_recursive_tests.cpp` | Minimal `WITH RECURSIVE` (walk, documented refusals, iteration/row caps) |
 | `planner_access_tests.cpp` | Access paths (prefix `LIKE` / trigram / regex residual / OR→IN), residuals, expression indexes, histograms |
-| `planner_intersect_union_tests.cpp` | Multi-index AND intersect / OR union (incl. partial OR, scaled intersect wedge) |
+| `planner_intersect_union_tests.cpp` | Multi-index AND intersect / OR union (incl. partial OR, composite Intersect∪Union for nested OR, scaled intersect wedge) |
 | `planner_explain_tests.cpp` | `EXPLAIN` / `EXPLAIN ANALYZE` actuals (residual `candidates`, joins, aggregation, `LIMIT`, `WITH`) |
 | `planner_mutation_tests.cpp` | Indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate) |
 | `planner_join_stats_tests.cpp` | Stats-driven cost/join choice, outer/`CROSS` join plans |
@@ -38,7 +38,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 244 discovered GoogleTest cases across the files above.
+The current suite contains 247 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

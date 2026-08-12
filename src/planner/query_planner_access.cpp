@@ -10,6 +10,53 @@
 
 namespace VertexDB {
 namespace planner_detail {
+namespace {
+
+double unionSelectivity(const IndexBitmapNode &unionNode, const RelationStats &stats,
+                        const IndexCatalogView &indexes, std::size_t estimatedRows) {
+    const double N = static_cast<double>(std::max<std::size_t>(estimatedRows, 1));
+    double missProduct = 1.0;
+    for (const auto &child : unionNode.children) {
+        if (child.kind != IndexBitmapNode::Kind::Probe) {
+            continue;
+        }
+        const auto &probe = child.probe;
+        double fanout = averageRowsPerKey(estimatedRows, 1);
+        if (probe.expression) {
+            fanout = averageRowsPerKey(estimatedRows, distinctOrOne(indexes, *probe.expression));
+        } else {
+            fanout = averageRowsPerKey(estimatedRows, distinctOrOne(stats, indexes, probe.column));
+        }
+        missProduct *= 1.0 - std::clamp(fanout / N, 0.0, 1.0);
+    }
+    return 1.0 - missProduct;
+}
+
+double nodeSelectivity(const IndexBitmapNode &node, const RelationStats &stats,
+                       const IndexCatalogView &indexes, std::size_t estimatedRows) {
+    const double N = static_cast<double>(std::max<std::size_t>(estimatedRows, 1));
+    if (node.kind == IndexBitmapNode::Kind::Probe) {
+        const auto &probe = node.probe;
+        double fanout = averageRowsPerKey(estimatedRows, 1);
+        if (probe.expression) {
+            fanout = averageRowsPerKey(estimatedRows, distinctOrOne(indexes, *probe.expression));
+        } else {
+            fanout = averageRowsPerKey(estimatedRows, distinctOrOne(stats, indexes, probe.column));
+        }
+        return std::clamp(fanout / N, 0.0, 1.0);
+    }
+    if (node.kind == IndexBitmapNode::Kind::Union) {
+        return unionSelectivity(node, stats, indexes, estimatedRows);
+    }
+    // Nested intersect under union (rare): product of child selectivities.
+    double product = 1.0;
+    for (const auto &child : node.children) {
+        product *= nodeSelectivity(child, stats, indexes, estimatedRows);
+    }
+    return std::clamp(product, 0.0, 1.0);
+}
+
+} // namespace
 
 bool tryPlanTopLevelOrUnion(const Predicate &where, const RelationStats &stats,
                             const IndexCatalogView &indexes, QueryPlan &plan) {
@@ -90,7 +137,7 @@ bool tryPlanTopLevelOrUnion(const Predicate &where, const RelationStats &stats,
     const double unionCost = std::max(N * (1.0 - missProduct), 1.0);
 
     UnionPlan unionPlan;
-    unionPlan.unionProbes.reserve(indexable.size());
+    unionPlan.children.reserve(indexable.size());
     std::ostringstream labels;
     for (const Predicate *pred : indexable) {
         auto probe = makeEqualityProbe(*pred);
@@ -98,7 +145,7 @@ bool tryPlanTopLevelOrUnion(const Predicate &where, const RelationStats &stats,
             labels << ", ";
         }
         labels << probeLabel(probe);
-        unionPlan.unionProbes.push_back(std::move(probe));
+        unionPlan.children.push_back(IndexBitmapNode::makeProbe(std::move(probe)));
     }
     plan.path = std::move(unionPlan);
     plan.estimates.estimatedCost = unionCost;
@@ -122,7 +169,8 @@ BestConjunctChoice chooseBestConjunctPath(const std::vector<const Predicate *> &
     choice.bestCost = fullScanCost;
 
     auto consider = [&](std::size_t i, AccessPath path, double cost,
-                        std::optional<IntersectPlan> trigram = std::nullopt) {
+                        std::optional<IntersectPlan> trigram = std::nullopt,
+                        std::optional<UnionPlan> unionPlan = std::nullopt) {
         const bool betterCost = cost < choice.bestCost;
         const bool firstIndexAtParity = cost == choice.bestCost &&
                                         choice.bestPath == AccessPath::FullScan &&
@@ -135,9 +183,11 @@ BestConjunctChoice chooseBestConjunctPath(const std::vector<const Predicate *> &
             choice.bestPath = path;
             choice.bestCost = cost;
             choice.bestTrigramIntersect = std::move(trigram);
+            choice.bestUnion = std::move(unionPlan);
         }
     };
 
+    const double N = static_cast<double>(std::max<std::size_t>(estimatedRows, 1));
     for (std::size_t i = 0; i < conjuncts.size(); ++i) {
         AccessPath path = AccessPath::FullScan;
         double comparisonCost = choice.bestCost;
@@ -156,6 +206,13 @@ BestConjunctChoice chooseBestConjunctPath(const std::vector<const Predicate *> &
                             trigramIntersect)) {
             consider(i, likePath, likeCost, std::move(trigramIntersect));
         }
+        if (auto unionNode = tryMakeFullyIndexableOrUnion(*conjuncts[i], indexes)) {
+            const double sel = unionSelectivity(*unionNode, stats, indexes, estimatedRows);
+            const double unionCost = std::max(N * sel, 1.0);
+            UnionPlan unionPlan;
+            unionPlan.children = std::move(unionNode->children);
+            consider(i, AccessPath::Union, unionCost, std::nullopt, std::move(unionPlan));
+        }
     }
     return choice;
 }
@@ -163,27 +220,36 @@ BestConjunctChoice chooseBestConjunctPath(const std::vector<const Predicate *> &
 bool tryPlanAndIntersect(const std::vector<const Predicate *> &conjuncts,
                          const RelationStats &stats, const IndexCatalogView &indexes,
                          double bestCost, QueryPlan &plan) {
-    std::vector<std::size_t> equalityIndexes;
-    for (std::size_t i = 0; i < conjuncts.size(); ++i) {
-        if (isEqualityIndexProbe(*conjuncts[i], indexes)) {
-            equalityIndexes.push_back(i);
+    // Collect equality probes and fully indexable nested OR unions as Intersect children.
+    // Partial nested OR (any non-indexable arm) stays as an AND residual so filter semantics
+    // remain correct (AND residual must not treat OR as complementary scan).
+    std::vector<IndexBitmapNode> children;
+    std::vector<const Predicate *> residualConjuncts;
+    children.reserve(conjuncts.size());
+    residualConjuncts.reserve(conjuncts.size());
+
+    for (const Predicate *pred : conjuncts) {
+        if (isEqualityIndexProbe(*pred, indexes)) {
+            children.push_back(IndexBitmapNode::makeProbe(makeEqualityProbe(*pred)));
+            continue;
         }
+        if (auto unionNode = tryMakeFullyIndexableOrUnion(*pred, indexes)) {
+            children.push_back(std::move(*unionNode));
+            continue;
+        }
+        residualConjuncts.push_back(pred);
     }
 
-    if (equalityIndexes.size() < 2) {
+    if (children.size() < 2) {
         return false;
     }
 
-    // Independence: N * Π(1/D_i). Cheaper than the best single index when combination is more
-    // selective than any one conjunct alone.
+    // Independence: N * Π(sel_child). Union children use 1 - Π(1 - s_i).
     double intersectRows =
         static_cast<double>(std::max<std::size_t>(plan.estimates.estimatedRows, 1));
-    for (const auto index : equalityIndexes) {
-        const double fanout =
-            equalityFanout(*conjuncts[index], stats, indexes, plan.estimates.estimatedRows);
-        const double selectivity =
-            fanout / static_cast<double>(std::max<std::size_t>(plan.estimates.estimatedRows, 1));
-        intersectRows *= std::clamp(selectivity, 0.0, 1.0);
+    for (const auto &child : children) {
+        intersectRows *=
+            nodeSelectivity(child, stats, indexes, plan.estimates.estimatedRows);
     }
     const double intersectCost = std::max(intersectRows, 1.0);
     if (!(intersectCost < bestCost)) {
@@ -191,28 +257,43 @@ bool tryPlanAndIntersect(const std::vector<const Predicate *> &conjuncts,
     }
 
     IntersectPlan intersect;
-    intersect.intersectProbes.reserve(equalityIndexes.size());
+    intersect.children = std::move(children);
     plan.estimates.estimatedCost = intersectCost;
     plan.estimates.estimatedRows = rowsFromCost(intersectCost, stats.rowCount());
-    std::ostringstream labels;
-    std::vector<const Predicate *> residualConjuncts;
-    residualConjuncts.reserve(conjuncts.size());
-    for (std::size_t i = 0; i < conjuncts.size(); ++i) {
-        const bool used =
-            std::find(equalityIndexes.begin(), equalityIndexes.end(), i) != equalityIndexes.end();
-        if (used) {
-            auto probe = makeEqualityProbe(*conjuncts[i]);
-            if (!labels.str().empty()) {
-                labels << ", ";
+
+    std::ostringstream probeLabels;
+    std::ostringstream unionLabels;
+    bool hasProbe = false;
+    bool hasNestedUnion = false;
+    for (const auto &child : intersect.children) {
+        if (child.kind == IndexBitmapNode::Kind::Union) {
+            if (hasNestedUnion) {
+                unionLabels << ", ";
             }
-            labels << probeLabel(probe);
-            intersect.intersectProbes.push_back(std::move(probe));
+            hasNestedUnion = true;
+            unionLabels << bitmapNodeLabel(child);
         } else {
-            residualConjuncts.push_back(conjuncts[i]);
+            if (hasProbe) {
+                probeLabels << ", ";
+            }
+            hasProbe = true;
+            probeLabels << bitmapNodeLabel(child);
         }
     }
+    std::ostringstream explanation;
+    explanation << "multi-index intersect on ";
+    if (hasProbe && hasNestedUnion) {
+        explanation << probeLabels.str() << " with " << unionLabels.str();
+    } else if (hasProbe) {
+        explanation << probeLabels.str();
+    } else {
+        explanation << unionLabels.str();
+    }
     plan.path = std::move(intersect);
-    plan.estimates.explanation = "multi-index intersect on " + labels.str();
+    plan.estimates.explanation = explanation.str();
+    if (hasNestedUnion) {
+        plan.estimates.notes.push_back("composite Intersect∪Union for nested OR under AND");
+    }
     plan.estimates.residual = buildAndTree(residualConjuncts);
     if (plan.estimates.residual) {
         plan.estimates.notes.push_back("residual filter applied after index lookup");
@@ -271,6 +352,17 @@ void finalizeBestAccessPath(const std::vector<const Predicate *> &conjuncts,
         plan.estimates.estimatedRows = rowsFromCost(choice.bestCost, stats.rowCount());
         plan.estimates.explanation =
             "trigram intersect for LIKE on " + std::get<LikePred>(chosen).column;
+    } else if (choice.bestPath == AccessPath::Union && choice.bestUnion) {
+        plan.path = *choice.bestUnion;
+        plan.estimates.estimatedRows = rowsFromCost(choice.bestCost, stats.rowCount());
+        std::ostringstream labels;
+        for (std::size_t i = 0; i < choice.bestUnion->children.size(); ++i) {
+            if (i > 0) {
+                labels << ", ";
+            }
+            labels << bitmapNodeLabel(choice.bestUnion->children[i]);
+        }
+        plan.estimates.explanation = "multi-index union on " + labels.str();
     }
 
     std::vector<const Predicate *> residualConjuncts;

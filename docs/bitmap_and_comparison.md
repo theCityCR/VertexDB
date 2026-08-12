@@ -68,8 +68,9 @@ variables.
   analogue; this wedge is **parity + readable educational EXPLAIN**.
 - The win is a **deliberate cost choice**: when two medium-cardinality equality indexes beat one
   index + residual, intersect.
-- Limitations: near-unique equalities prefer HashEq + residual; nested heterogeneous `OR` under
-  `AND` may stay residual; no Intersect∪Union composites.
+- Limitations: near-unique equalities prefer HashEq + residual; nested `OR` under `AND` that is
+  not fully equality-indexable stays residual; fully indexable nested OR uses composite
+  Intersect∪Union.
 
 ## Related
 

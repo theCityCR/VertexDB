@@ -4,9 +4,11 @@
 // fields valid for that physical operation. CTE/derived rewrite is in rewriter.hpp.
 // AccessPath names match *Plan structs (HashEq ↔ HashEqPlan, …). Older docs may
 // say HashIndexLookup / OrderedIndexRange / HashIndexInLookup / MultiIndex*.
-// Sibling TUs: query_planner_select.cpp, query_planner_access.cpp (OR-union /
-// AND-intersect / finalize), query_planner_predicate.cpp, query_planner_join.cpp,
-// query_planner_format.cpp; shared helpers in src/planner/planner_detail.hpp.
+// IntersectPlan / UnionPlan hold recursive IndexBitmapNode trees (composite
+// Intersect∪Union). Sibling TUs: query_planner_select.cpp, query_planner_access.cpp
+// (OR-union / AND-intersect / finalize), query_planner_predicate.cpp,
+// query_planner_join.cpp, query_planner_format.cpp; shared helpers in
+// src/planner/planner_detail.hpp.
 
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/storage/relation_stats.hpp"
@@ -42,6 +44,38 @@ struct IndexEqualityProbe {
     Value value;
 };
 
+// Recursive multi-index boolean tree: leaf probes, or nested Intersect/Union nodes.
+// Top-level IntersectPlan / UnionPlan are the AccessPathPlan roots; children may nest
+// the opposite connective (composite Intersect∪Union).
+struct IndexBitmapNode {
+    enum class Kind : std::uint8_t { Probe, Intersect, Union };
+
+    Kind kind{Kind::Probe};
+    IndexEqualityProbe probe{};
+    std::vector<IndexBitmapNode> children{};
+
+    [[nodiscard]] static IndexBitmapNode makeProbe(IndexEqualityProbe p) {
+        IndexBitmapNode node;
+        node.kind = Kind::Probe;
+        node.probe = std::move(p);
+        return node;
+    }
+
+    [[nodiscard]] static IndexBitmapNode makeIntersect(std::vector<IndexBitmapNode> kids) {
+        IndexBitmapNode node;
+        node.kind = Kind::Intersect;
+        node.children = std::move(kids);
+        return node;
+    }
+
+    [[nodiscard]] static IndexBitmapNode makeUnion(std::vector<IndexBitmapNode> kids) {
+        IndexBitmapNode node;
+        node.kind = Kind::Union;
+        node.children = std::move(kids);
+        return node;
+    }
+};
+
 struct PlanEstimates {
     std::size_t estimatedRows{};
     double estimatedCost{};
@@ -72,11 +106,11 @@ struct HashInPlan {
 };
 
 struct IntersectPlan {
-    std::vector<IndexEqualityProbe> intersectProbes;
+    std::vector<IndexBitmapNode> children;
 };
 
 struct UnionPlan {
-    std::vector<IndexEqualityProbe> unionProbes;
+    std::vector<IndexBitmapNode> children;
 };
 
 struct PrefixLikePlan {

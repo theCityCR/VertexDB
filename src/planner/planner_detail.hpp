@@ -59,6 +59,11 @@ tryRewriteSameColumnEqualityOrToIn(const Predicate &predicate);
                                     const IndexCatalogView &indexes, std::size_t rowCount);
 [[nodiscard]] std::size_t rowsFromCost(double cost, std::size_t rowCount);
 [[nodiscard]] std::string probeLabel(const IndexEqualityProbe &probe);
+[[nodiscard]] std::string bitmapNodeLabel(const IndexBitmapNode &node);
+
+// When every OR disjunct is an equality index probe, build a Union node (no residual arms).
+[[nodiscard]] std::optional<IndexBitmapNode>
+tryMakeFullyIndexableOrUnion(const Predicate &predicate, const IndexCatalogView &indexes);
 
 } // namespace planner_detail
 } // namespace VertexDB

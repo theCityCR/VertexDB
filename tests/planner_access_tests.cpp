@@ -305,8 +305,9 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
 }
 
 TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
-    // Documented: heterogeneous OR nested under AND stays residual while another conjunct uses
-    // an index. Same-column equality OR is rewritten to IN (see SameColumnNestedOrUnderAnd…).
+    // Desired: nested OR under AND that is not fully equality-indexable stays an AND residual
+    // while another conjunct uses an index. Fully indexable nested OR uses composite
+    // Intersect∪Union (see NestedOrUnderAndUsesCompositeIntersectUnion).
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"dept", ColumnType::Int}}};
     table.insert({Value{1}, Value{std::string{"Alice"}}, Value{10}});
