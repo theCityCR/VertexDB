@@ -91,7 +91,7 @@ QueryResult SubqueryRuntime::evaluateSelectResult(
     const Select prepared = prepareSelect(body, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps = extraTemps;
     for (const auto &nested : rewrite.materialize) {
-        temps.emplace(nested.name, materializeCteTable(nested));
+        temps.emplace(nested.name, materializeCteTable(nested, temps));
     }
     if (!prepared.joins.empty()) {
         return ctx_.select->executeJoinSelect(prepared, temps);
@@ -106,7 +106,9 @@ QueryResult SubqueryRuntime::evaluateSelectResult(
     return ctx_.select->finalizeSelectResult(prepared, std::move(sourceColumns), std::move(rows));
 }
 
-std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte) const {
+std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(
+    const CteEntry &cte,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps) const {
     if (!cte.body) {
         throw std::runtime_error("materialized CTE is missing a body");
     }
@@ -115,7 +117,7 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
         if (!cte.recursiveArm) {
             throw std::runtime_error("recursive CTE is missing a recursive arm");
         }
-        auto anchorResult = evaluateSelectResult(*cte.body);
+        auto anchorResult = evaluateSelectResult(*cte.body, extraTemps);
         if (cte.recursiveDistinct) {
             anchorResult.rows = deduplicateRows(std::move(anchorResult.rows));
         }
@@ -134,8 +136,10 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
             if (delta->rowCount() == 0) {
                 break;
             }
-            std::unordered_map<std::string, std::shared_ptr<Table>> temps;
-            temps.emplace(cte.name, delta);
+            // Bind the recursive name to the prior delta (Postgres-style linear recursion).
+            // Sibling CTEs already materialized in this WITH remain visible via extraTemps.
+            std::unordered_map<std::string, std::shared_ptr<Table>> temps = extraTemps;
+            temps[cte.name] = delta;
             auto stepResult = evaluateSelectResult(*cte.recursiveArm, temps);
             if (cte.recursiveDistinct) {
                 QueryResult filtered = stepResult;
@@ -162,7 +166,7 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
         return result;
     }
 
-    return tableFromQueryResult(cte.name, evaluateSelectResult(*cte.body));
+    return tableFromQueryResult(cte.name, evaluateSelectResult(*cte.body, extraTemps));
 }
 
 } // namespace VertexDB

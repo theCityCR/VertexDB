@@ -58,7 +58,9 @@ ROLLBACK;
 Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
-depth up to 3; `WITH RECURSIVE` with `UNION` / `UNION ALL`), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, set operations
+depth up to 3; `WITH RECURSIVE` with `UNION` / `UNION ALL`, including multiple independent recursive
+CTEs), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, set operations
+(`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`),
 (`UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`), `EXPLAIN` /
   `EXPLAIN ANALYZE`,
 prepared statements that store a typed AST with `?` parameter slots, table rename/drop/list
@@ -133,11 +135,13 @@ Or feed an example script:
   partial union of indexable arms with a residual OR complementary scan) are supported
 - Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3 and correlation deeper
   than four outer frames are rejected. Outer `JOIN` against a CTE/derived alias force-materializes
-  the CTE. `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta iteration, safety caps) and `JOIN` inside
+  the CTE. `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta iteration, multiple independent recursive
+  CTEs, safety caps; mutual recursion rejected) and `JOIN` inside
   `IN`/`EXISTS` are supported. Expression indexes cover column / unary minus / `+/-` literal /
   `trigram(column)` (substring `LIKE`); prefix `LIKE` uses ordered indexes; regex `~` is residual
   full-scan. `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
-  supported. Parser failures report `line`/`column` via `ParseError`.
+  supported. Parser failures report `line`/`column` via `ParseError`. Set operations include
+  `UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`.
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
@@ -157,7 +161,7 @@ same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for UPDA
 fully indexable nested `OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit
 commit/rollback), top-level and CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` /
 `EXCEPT`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
-complementary residual), and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
+complementary residual), multiple independent recursive CTEs, `INTERSECT ALL` / `EXCEPT ALL`, and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
 CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /

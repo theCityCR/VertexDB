@@ -5,26 +5,98 @@
 
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace VertexDB {
 namespace {
 
-[[nodiscard]] std::size_t countSelfRefs(const Select &select, std::string_view cteName) {
+[[nodiscard]] std::size_t countTableRefs(const Select &select, std::string_view tableName) {
     std::size_t count = 0;
-    if (equalsIgnoreCase(select.table, cteName)) {
+    if (equalsIgnoreCase(select.table, tableName)) {
         ++count;
     }
     for (const auto &join : select.joins) {
-        if (equalsIgnoreCase(join.table, cteName)) {
+        if (equalsIgnoreCase(join.table, tableName)) {
             ++count;
         }
     }
     for (const auto &arm : select.setOps) {
         if (arm.select) {
-            count += countSelfRefs(*arm.select, cteName);
+            count += countTableRefs(*arm.select, tableName);
         }
     }
     return count;
+}
+
+[[nodiscard]] bool selectReferencesTable(const Select &select, std::string_view tableName) {
+    return countTableRefs(select, tableName) > 0;
+}
+
+[[nodiscard]] bool cteReferencesName(const CteEntry &cte, std::string_view tableName) {
+    if (cte.body && selectReferencesTable(*cte.body, tableName)) {
+        return true;
+    }
+    if (cte.recursiveArm && selectReferencesTable(*cte.recursiveArm, tableName)) {
+        return true;
+    }
+    return false;
+}
+
+// Reject mutual recursion: a cycle among recursive CTE names via FROM/JOIN refs.
+void rejectMutualRecursiveCtes(const std::vector<CteEntry> &ctes) {
+    std::vector<std::size_t> recursiveIndexes;
+    for (std::size_t i = 0; i < ctes.size(); ++i) {
+        if (ctes[i].recursive) {
+            recursiveIndexes.push_back(i);
+        }
+    }
+    if (recursiveIndexes.size() < 2) {
+        return;
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> edges;
+    for (const std::size_t i : recursiveIndexes) {
+        const auto &from = ctes[i];
+        for (const std::size_t j : recursiveIndexes) {
+            if (i == j) {
+                continue;
+            }
+            const auto &to = ctes[j];
+            if (cteReferencesName(from, to.name)) {
+                edges[from.name].push_back(to.name);
+            }
+        }
+    }
+
+    std::unordered_set<std::string> visiting;
+    std::unordered_set<std::string> visited;
+    const auto &dfs = [&](auto &&self, const std::string &node) -> bool {
+        if (visiting.contains(node)) {
+            return true;
+        }
+        if (visited.contains(node)) {
+            return false;
+        }
+        visiting.insert(node);
+        for (const auto &next : edges[node]) {
+            if (self(self, next)) {
+                return true;
+            }
+        }
+        visiting.erase(node);
+        visited.insert(node);
+        return false;
+    };
+
+    for (const std::size_t i : recursiveIndexes) {
+        if (dfs(dfs, ctes[i].name)) {
+            throw std::runtime_error("mutual recursion among WITH RECURSIVE CTEs is not supported");
+        }
+    }
 }
 
 } // namespace
@@ -78,23 +150,20 @@ Select Parser::parseWithSelectAtDepth(int depth) {
             body.setOps.clear();
             recursive = true;
             ++recursiveCount;
-            if (recursiveCount > 1) {
-                throw std::runtime_error("only one recursive CTE is supported");
-            }
             if (!recursiveArm->setOps.empty()) {
                 throw std::runtime_error("recursive CTE arm must be a single SELECT");
             }
-            if (countSelfRefs(body, name.lexeme) != 0) {
+            if (countTableRefs(body, name.lexeme) != 0) {
                 throw std::runtime_error("recursive CTE anchor must not reference itself");
             }
-            if (countSelfRefs(*recursiveArm, name.lexeme) != 1) {
+            if (countTableRefs(*recursiveArm, name.lexeme) != 1) {
                 throw std::runtime_error(
                     "recursive CTE arm must reference the CTE name exactly once");
             }
         } else if (recursiveWith && !body.setOps.empty()) {
             throw std::runtime_error(
                 "WITH RECURSIVE requires a single UNION [ALL] between anchor and recursive arm");
-        } else if (!recursive && countSelfRefs(body, name.lexeme) != 0) {
+        } else if (!recursive && countTableRefs(body, name.lexeme) != 0) {
             throw std::runtime_error("CTE self-reference requires WITH RECURSIVE");
         }
 
@@ -106,6 +175,7 @@ Select Parser::parseWithSelectAtDepth(int depth) {
     if (recursiveWith && recursiveCount == 0) {
         throw std::runtime_error("WITH RECURSIVE requires a UNION [ALL] recursive CTE");
     }
+    rejectMutualRecursiveCtes(ctes);
 
     expect(TokenType::Identifier, "SELECT");
     auto query = parseSelectAfterSelectKeyword();

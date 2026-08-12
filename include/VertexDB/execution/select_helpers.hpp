@@ -37,7 +37,7 @@ void sortRowsByColumn(std::vector<Row> &rows, std::size_t columnIndex, bool asce
 // Star-SELECT used by UPDATE/DELETE (and EXPLAIN of those) to plan the WHERE access path.
 [[nodiscard]] Select mutationScanSelect(std::string table, std::optional<Predicate> where);
 
-// Row-set helpers for UNION / INTERSECT / EXCEPT (and recursive UNION dedup).
+// Row-set helpers for UNION / INTERSECT / EXCEPT (distinct and ALL) and recursive UNION dedup.
 struct RowHash {
     [[nodiscard]] std::size_t operator()(const Row &row) const;
 };

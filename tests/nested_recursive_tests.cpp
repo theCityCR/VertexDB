@@ -94,13 +94,13 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
                      "SELECT id FROM t;"),
                  std::runtime_error);
 
-    // Multiple recursive CTEs in one WITH.
+    // Mutual recursion among recursive CTEs is rejected.
     EXPECT_THROW(
         (void)parser.parse(
             "WITH RECURSIVE a AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
-            "SELECT Nodes.id FROM Nodes JOIN a ON Nodes.parent_id = a.id), "
+            "SELECT b.id FROM b), "
             "b AS (SELECT id FROM Nodes WHERE id = 2 UNION ALL "
-            "SELECT Nodes.id FROM Nodes JOIN b ON Nodes.parent_id = b.id) "
+            "SELECT a.id FROM a) "
             "SELECT id FROM a;"),
         std::runtime_error);
 
@@ -132,10 +132,51 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
             "WITH x AS (SELECT id FROM Nodes) SELECT Nodes.id FROM Nodes JOIN t "
             "ON Nodes.parent_id = t.id) SELECT id FROM t;"),
         std::runtime_error);
+}
 
-    EXPECT_THROW((void)parser.parse(
-                     "SELECT id FROM Nodes INTERSECT ALL SELECT id FROM Nodes;"),
-                 std::runtime_error);
+TEST(NestedSqlTests, WithRecursiveAllowsMultipleIndependentCtes) {
+    Parser parser;
+    auto executor = makeExecutor("multi-recursive");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Nodes (id INT, parent_id INT);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Nodes VALUES (1, 0), (2, 1), (3, 1), (4, 2), (5, 3);"))
+                    .success);
+
+    auto parsed = parser.parse(
+        "WITH RECURSIVE "
+        "down1 AS ("
+        "  SELECT id FROM Nodes WHERE id = 1 "
+        "  UNION ALL "
+        "  SELECT Nodes.id FROM Nodes JOIN down1 ON Nodes.parent_id = down1.id"
+        "), "
+        "down3 AS ("
+        "  SELECT id FROM Nodes WHERE id = 3 "
+        "  UNION ALL "
+        "  SELECT Nodes.id FROM Nodes JOIN down3 ON Nodes.parent_id = down3.id"
+        ") "
+        "SELECT id FROM down1 "
+        "UNION "
+        "SELECT id FROM down3 "
+        "ORDER BY id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(parsed));
+    const auto &select = std::get<Select>(parsed);
+    ASSERT_EQ(select.ctes.size(), 2U);
+    EXPECT_TRUE(select.ctes[0].recursive);
+    EXPECT_TRUE(select.ctes[1].recursive);
+
+    auto result = executor.execute(parsed);
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 5U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[1][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(result.rows[2][0], Value{static_cast<std::int64_t>(3)});
+    EXPECT_EQ(result.rows[3][0], Value{static_cast<std::int64_t>(4)});
+    EXPECT_EQ(result.rows[4][0], Value{static_cast<std::int64_t>(5)});
 }
 
 TEST(NestedSqlTests, WithRecursiveRowCapRejectsBeforePartialStepInsert) {

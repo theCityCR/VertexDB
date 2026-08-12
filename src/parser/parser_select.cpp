@@ -59,12 +59,20 @@ Select Parser::parseSelectAfterSelectKeyword() {
         }
         (void)advance();
         SetOpKind op = *kind;
-        if (op == SetOpKind::Union) {
-            if (match(TokenType::Identifier, "ALL")) {
+        if (match(TokenType::Identifier, "ALL")) {
+            switch (op) {
+            case SetOpKind::Union:
                 op = SetOpKind::UnionAll;
+                break;
+            case SetOpKind::Intersect:
+                op = SetOpKind::IntersectAll;
+                break;
+            case SetOpKind::Except:
+                op = SetOpKind::ExceptAll;
+                break;
+            default:
+                break;
             }
-        } else if (match(TokenType::Identifier, "ALL")) {
-            throw std::runtime_error("INTERSECT ALL and EXCEPT ALL are not supported");
         }
         expect(TokenType::Identifier, "SELECT");
         auto right = parseSelectCoreAfterSelectKeyword();

@@ -85,6 +85,44 @@ TEST(SetOpsTests, IntersectAndExceptDistinct) {
     EXPECT_EQ(except.rows[0][0], Value{static_cast<std::int64_t>(1)});
 }
 
+TEST(SetOpsTests, IntersectAllAndExceptAllPreserveMultisets) {
+    // Desired: INTERSECT ALL / EXCEPT ALL use bag semantics (min / leftover counts).
+    Parser parser;
+    auto executor = makeExecutor("intersect-except-all");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE A (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE B (id INT);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO A VALUES (1), (2), (2), (2), (3);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO B VALUES (2), (2), (4);")).success);
+
+    auto intersectAll = executor.execute(
+        parser.parse("SELECT id FROM A INTERSECT ALL SELECT id FROM B ORDER BY id;"));
+    ASSERT_TRUE(intersectAll.success) << intersectAll.message;
+    ASSERT_EQ(intersectAll.rows.size(), 2U);
+    EXPECT_EQ(intersectAll.rows[0][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(intersectAll.rows[1][0], Value{static_cast<std::int64_t>(2)});
+
+    auto exceptAll = executor.execute(
+        parser.parse("SELECT id FROM A EXCEPT ALL SELECT id FROM B ORDER BY id;"));
+    ASSERT_TRUE(exceptAll.success) << exceptAll.message;
+    ASSERT_EQ(exceptAll.rows.size(), 3U);
+    EXPECT_EQ(exceptAll.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(exceptAll.rows[1][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(exceptAll.rows[2][0], Value{static_cast<std::int64_t>(3)});
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT id FROM A INTERSECT ALL SELECT id FROM B;"));
+    ASSERT_TRUE(explain.success) << explain.message;
+    bool sawIntersectAll = false;
+    for (const auto &row : explain.rows) {
+        if (row[0].toString() == "intersect all") {
+            sawIntersectAll = true;
+        }
+    }
+    EXPECT_TRUE(sawIntersectAll);
+}
+
 TEST(SetOpsTests, SetOpsInsideNonRecursiveCte) {
     Parser parser;
     auto executor = makeExecutor("cte-union");
