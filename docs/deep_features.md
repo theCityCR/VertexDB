@@ -123,10 +123,11 @@ union under independence (\(N \cdot (1 - \prod(1 - 1/D_i))\)) over the indexable
 evaluated as a complementary scan after the index union (partial OR); `EXPLAIN` reports
 `residual: yes` and a residual-OR note. When no arm is indexable (or the indexable union is not
 cheaper), the planner keeps a full scan. Same-column equality `OR` is rewritten to `IN` (HashIn)
-whether top-level or nested under `AND`. A heterogeneous `OR` nested under `AND` whose every
-disjunct is an equality index probe is planned as a Union child of Intersect (composite
-Intersect∪Union) when that cost beats the best single conjunct; otherwise a non-fully-indexable
-nested `OR` stays as an AND residual. `EXPLAIN` surfaces the chosen path (including
+whether top-level or nested under `AND`. A heterogeneous `OR` nested under `AND` whose
+equality-indexable arms are non-empty is planned as a Union child of Intersect (composite
+Intersect∪Union) when that cost beats the best single conjunct; non-indexable arms become a
+complementary residual under the outer AND (partial nested OR). If no nested-OR arm is
+equality-indexable, the whole `OrPred` stays as an AND residual. `EXPLAIN` surfaces the chosen path (including
 intersected or unioned columns and nested `union(...)` labels), residual status, `est_rows` / `cost`, and rewrite notes such as
 `inlined CTE`. `EXPLAIN ANALYZE` executes once and appends `actual_rows` (post-filter / post-join,
 pre-`LIMIT`; post-aggregation when grouping), optional residual `candidates`, and statement

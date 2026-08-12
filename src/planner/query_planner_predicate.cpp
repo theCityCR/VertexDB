@@ -256,8 +256,8 @@ std::string bitmapNodeLabel(const IndexBitmapNode &node) {
     return out.str();
 }
 
-std::optional<IndexBitmapNode> tryMakeFullyIndexableOrUnion(const Predicate &predicate,
-                                                            const IndexCatalogView &indexes) {
+std::optional<OrUnionSplit> tryMakeOrUnionSplit(const Predicate &predicate,
+                                                const IndexCatalogView &indexes) {
     if (!std::holds_alternative<OrPred>(predicate)) {
         return std::nullopt;
     }
@@ -266,15 +266,63 @@ std::optional<IndexBitmapNode> tryMakeFullyIndexableOrUnion(const Predicate &pre
     if (disjuncts.empty()) {
         return std::nullopt;
     }
+
     std::vector<IndexBitmapNode> probes;
+    std::vector<const Predicate *> residualDisjuncts;
     probes.reserve(disjuncts.size());
+    residualDisjuncts.reserve(disjuncts.size());
     for (const Predicate *pred : disjuncts) {
-        if (!isEqualityIndexProbe(*pred, indexes)) {
-            return std::nullopt;
+        if (isEqualityIndexProbe(*pred, indexes)) {
+            probes.push_back(IndexBitmapNode::makeProbe(makeEqualityProbe(*pred)));
+        } else {
+            residualDisjuncts.push_back(pred);
         }
-        probes.push_back(IndexBitmapNode::makeProbe(makeEqualityProbe(*pred)));
     }
-    return IndexBitmapNode::makeUnion(std::move(probes));
+    if (probes.empty()) {
+        return std::nullopt;
+    }
+    return OrUnionSplit{IndexBitmapNode::makeUnion(std::move(probes)),
+                        std::move(residualDisjuncts)};
+}
+
+std::optional<IndexBitmapNode> tryMakeFullyIndexableOrUnion(const Predicate &predicate,
+                                                            const IndexCatalogView &indexes) {
+    auto split = tryMakeOrUnionSplit(predicate, indexes);
+    if (!split || !split->residualDisjuncts.empty()) {
+        return std::nullopt;
+    }
+    return std::move(split->unionNode);
+}
+
+double residualDisjunctSelectivity(const Predicate &predicate, const RelationStats &stats,
+                                   const IndexCatalogView &indexes, std::size_t estimatedRows) {
+    const double N = static_cast<double>(std::max<std::size_t>(estimatedRows, 1));
+    double selectivity = 0.5;
+    if (const auto *comparison = std::get_if<ComparisonPred>(&predicate);
+        comparison != nullptr && !comparison->rhsColumn &&
+        comparison->op == ComparisonOperator::Equal) {
+        const bool haveDistinct =
+            comparison->expression
+                ? indexes.indexDistinctCount(*comparison->expression).has_value()
+                : (indexes.indexDistinctCount(comparison->column).has_value() ||
+                   stats.columnHistogram(comparison->column).has_value());
+        if (haveDistinct) {
+            selectivity = std::clamp(
+                equalityFanout(predicate, stats, indexes, estimatedRows) / N, 0.0, 1.0);
+        } else {
+            selectivity = 0.1;
+        }
+    } else if (const auto *comparison = std::get_if<ComparisonPred>(&predicate);
+               comparison != nullptr && !comparison->rhsColumn && !comparison->expression &&
+               (comparison->op == ComparisonOperator::Less ||
+                comparison->op == ComparisonOperator::Greater) &&
+               stats.columnHistogram(comparison->column)) {
+        selectivity = std::clamp(rangeCost(stats, comparison->column, comparison->op,
+                                           comparison->value, estimatedRows) /
+                                     N,
+                                 0.0, 1.0);
+    }
+    return selectivity;
 }
 
 bool isIndexableLike(const Predicate &predicate, const IndexCatalogView &indexes, AccessPath &path,

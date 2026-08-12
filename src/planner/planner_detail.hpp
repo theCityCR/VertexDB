@@ -61,9 +61,24 @@ tryRewriteSameColumnEqualityOrToIn(const Predicate &predicate);
 [[nodiscard]] std::string probeLabel(const IndexEqualityProbe &probe);
 [[nodiscard]] std::string bitmapNodeLabel(const IndexBitmapNode &node);
 
+// Split an OrPred into equality-index probes (Union) plus non-indexable residual arms.
+// Returns nullopt when no disjunct is an equality index probe.
+struct OrUnionSplit {
+    IndexBitmapNode unionNode;
+    std::vector<const Predicate *> residualDisjuncts;
+};
+[[nodiscard]] std::optional<OrUnionSplit>
+tryMakeOrUnionSplit(const Predicate &predicate, const IndexCatalogView &indexes);
+
 // When every OR disjunct is an equality index probe, build a Union node (no residual arms).
 [[nodiscard]] std::optional<IndexBitmapNode>
 tryMakeFullyIndexableOrUnion(const Predicate &predicate, const IndexCatalogView &indexes);
+
+// Independence selectivity for a residual OR arm (mirrors top-level partial OR).
+[[nodiscard]] double residualDisjunctSelectivity(const Predicate &predicate,
+                                                 const RelationStats &stats,
+                                                 const IndexCatalogView &indexes,
+                                                 std::size_t estimatedRows);
 
 } // namespace planner_detail
 } // namespace VertexDB

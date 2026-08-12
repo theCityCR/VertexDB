@@ -56,7 +56,8 @@ CLI
   `JOIN` targets and `WITH RECURSIVE`), correlated/`IN` prep, set operations, and cost-based access-path /
   join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
   `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
-  complementary scan and composite Intersect∪Union for fully indexable nested OR under AND),
+  complementary scan and composite Intersect∪Union for nested OR under AND, including partial
+  nested OR),
   prefix `LIKE` / trigram intersect, and residual filters. `EXPLAIN` /
   `EXPLAIN ANALYZE` formatting lives in `query_planner_format.cpp`. `QueryPlanner` is
   split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`
@@ -175,7 +176,8 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
    frames (including `FROM` / `JOIN` table aliases), routing joined subqueries through
    `executeJoinSelect`.
 5. `QueryPlanner` chooses an access path (column or expression index, multi-index AND intersect /
-   OR union / composite Intersect∪Union, prefix `LIKE`, trigram intersect, residual filters) and
+   OR union / composite Intersect∪Union (incl. partial nested OR under AND), prefix `LIKE`,
+   trigram intersect, residual filters) and
    per-join algorithms for
    left-deep `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` chains; `SelectEngine` runs filters/joins, then
    optional hash aggregation, then `ORDER BY`/`LIMIT`. `EXPLAIN ANALYZE` executes once and appends

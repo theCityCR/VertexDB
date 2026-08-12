@@ -122,10 +122,12 @@ sorted `RowId` lists when the indexable subset is cheaper than a full scan; `EXP
 unioned columns. Non-indexable disjuncts become a residual OR complementary scan (partial OR,
 `residual: yes`). When no disjunct is indexable, the planner keeps a full scan. Same-column
 equality `OR` (top-level or nested under `AND`) is rewritten to an `IN` list so `HashIn` can win.
-A heterogeneous `OR` nested under `AND` whose every disjunct is an equality index probe becomes a
+A heterogeneous `OR` nested under `AND` whose equality-indexable arms are non-empty becomes a
 Union child of a multi-index Intersect (composite Intersect∪Union) when cheaper than the best
 single conjunct; `EXPLAIN` reports e.g. `multi-index intersect on id with union(dept, city)`.
-If any nested-OR arm is not equality-indexable, the whole `OrPred` stays an AND residual.
+Non-indexable nested-OR arms become a complementary residual under the outer AND (partial nested
+OR, `residual: yes`). If no nested-OR arm is equality-indexable, the whole `OrPred` stays an AND
+residual.
 
 `WITH` CTEs default to always-inline (same as `AS NOT MATERIALIZED`) so outer filters can use
 base-table indexes. `AS MATERIALIZED` fences the CTE: the body is executed into an ephemeral table

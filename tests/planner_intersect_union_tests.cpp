@@ -432,4 +432,138 @@ TEST(PlannerBehaviorTests, TwoOrsUnderAndUsesIntersectOfUnions) {
     EXPECT_NE(plan.estimates.explanation.find("union("), std::string::npos);
 }
 
+TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrUsesComplementaryScan) {
+    // Medium-cardinality AND equality so Intersect∪Union beats HashEq + whole-OR residual.
+    Table table{"Employees",
+                {{"id", ColumnType::Int},
+                 {"dept", ColumnType::Int},
+                 {"flag", ColumnType::Int},
+                 {"name", ColumnType::String}}};
+    for (int i = 1; i <= 100; ++i) {
+        table.insert({Value{i % 10}, Value{i % 10}, Value{i % 5}, Value{"n" + std::to_string(i)}});
+    }
+    ASSERT_TRUE(table.createIndex("idx_id", "id"));
+    ASSERT_TRUE(table.createIndex("idx_dept", "dept"));
+
+    Predicate nestedOr =
+        makeOr(makeComparison("dept", ComparisonOperator::Equal, Value{1}),
+               makeComparison("flag", ComparisonOperator::Equal, Value{1}));
+    Predicate where =
+        makeAnd(makeComparison("id", ComparisonOperator::Equal, Value{1}), nestedOr);
+    Select query{"Employees", {}, {SelectExpr::makeStar()}, where, {}, {}};
+    const auto plan = QueryPlanner{}.planSelect(query, table);
+
+    EXPECT_EQ(plan.accessPath(), AccessPath::Intersect);
+    const auto &intersect = std::get<IntersectPlan>(plan.path);
+    ASSERT_EQ(intersect.children.size(), 2U);
+    EXPECT_EQ(intersect.children[0].kind, IndexBitmapNode::Kind::Probe);
+    EXPECT_EQ(intersect.children[0].probe.column, "id");
+    EXPECT_EQ(intersect.children[1].kind, IndexBitmapNode::Kind::Union);
+    ASSERT_EQ(intersect.children[1].children.size(), 1U);
+    EXPECT_EQ(intersect.children[1].children.front().probe.column, "dept");
+    EXPECT_FALSE(plan.residual().has_value());
+    ASSERT_TRUE(plan.complementaryResidual().has_value());
+    EXPECT_EQ(predicateKind(*plan.complementaryResidual()), PredicateKind::And);
+    EXPECT_NE(plan.estimates.explanation.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(plan.estimates.explanation.find("union("), std::string::npos);
+    ASSERT_GE(plan.estimates.notes.size(), 2U);
+    EXPECT_NE(plan.estimates.notes[0].find("composite Intersect"), std::string::npos);
+    EXPECT_NE(plan.estimates.notes[1].find("partial nested OR"), std::string::npos);
+}
+
+TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrReturnsIndexableAndResidualRows) {
+    auto executor = makeExecutor("partial-nested-or-result");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, flag INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, 0, \"id-dept\"), (1, 0, 1, \"id-flag\"), "
+                        "(2, 1, 1, \"no-id\"), (1, 0, 0, \"id-neither\");"))
+                    .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM Employees WHERE id = 1 AND (dept = 1 OR flag = 1);"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(text.find("union("), std::string::npos);
+    EXPECT_NE(text.find("partial nested OR"), std::string::npos);
+    EXPECT_NE(text.find("residual: yes"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE id = 1 AND (dept = 1 OR flag = 1) ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"id-dept"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"id-flag"}});
+}
+
+TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrDoesNotDropIndexOnlyMatches) {
+    // Complementary must add residual-OR rows under the outer AND without filtering
+    // index Intersect∪Union hits as if the residual were an AND conjunct.
+    auto executor = makeExecutor("partial-nested-or-complementary");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE T (id INT, dept INT, flag INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON T(id);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON T(dept);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO T VALUES "
+                        "(1, 1, 0, \"indexed\"), (1, 0, 1, \"residual\"), (1, 0, 0, \"neither\"), "
+                        "(2, 1, 1, \"wrong-id\");"))
+                    .success);
+
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM T WHERE id = 1 AND (dept = 1 OR flag = 1) ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"indexed"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"residual"}});
+}
+
+TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrWithAndResidualFilter) {
+    auto executor = makeExecutor("partial-nested-or-and-residual");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE T (id INT, dept INT, flag INT, active INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON T(id);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON T(dept);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO T VALUES "
+                        "(1, 1, 0, 1, \"dept-active\"), (1, 0, 1, 1, \"flag-active\"), "
+                        "(1, 1, 0, 0, \"dept-inactive\"), (1, 0, 1, 0, \"flag-inactive\");"))
+                    .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT name FROM T WHERE id = 1 AND active = 1 AND (dept = 1 OR flag = 1);"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(text.find("partial nested OR"), std::string::npos);
+    EXPECT_NE(text.find("residual filter"), std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM T WHERE id = 1 AND active = 1 AND (dept = 1 OR flag = 1) "
+        "ORDER BY name;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 2U);
+    EXPECT_EQ(result.rows[0][0], Value{std::string{"dept-active"}});
+    EXPECT_EQ(result.rows[1][0], Value{std::string{"flag-active"}});
+}
+
 } // namespace VertexDB

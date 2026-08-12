@@ -21,7 +21,7 @@ VertexDB uses three levels of automated testing:
 | `nested_recursive_tests.cpp` | `WITH RECURSIVE` (walk, documented refusals, iteration/row caps) |
 | `set_ops_tests.cpp` | `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`, recursive `UNION` cycle dedup, set-op CTEs / `IN` / `EXPLAIN` |
 | `planner_access_tests.cpp` | Access paths (prefix `LIKE` / trigram / regex residual / OR→IN), residuals, expression indexes, histograms |
-| `planner_intersect_union_tests.cpp` | Multi-index AND intersect / OR union (incl. partial OR, composite Intersect∪Union for nested OR, scaled intersect wedge) |
+| `planner_intersect_union_tests.cpp` | Multi-index AND intersect / OR union (incl. partial OR, composite Intersect∪Union for nested OR including partial nested OR under AND, scaled intersect wedge) |
 | `planner_explain_tests.cpp` | `EXPLAIN` / `EXPLAIN ANALYZE` actuals (residual `candidates`, joins, aggregation, `LIMIT`, `WITH`) |
 | `planner_mutation_tests.cpp` | Indexed UPDATE/DELETE `WHERE` (HashEq/HashIn/range/intersect/prefix LIKE/collect-then-mutate); `EXPLAIN UPDATE`/`DELETE` access paths |
 | `planner_join_stats_tests.cpp` | Stats-driven cost/join choice, outer/`CROSS` join plans |
@@ -39,7 +39,7 @@ Aim for at least 85% line coverage on the core library. For code that touches pe
 transactions, indexing, recovery, or concurrency, prefer branch-oriented tests over only increasing
 line coverage.
 
-The current suite contains 266 discovered GoogleTest cases across the files above.
+The current suite contains 270 discovered GoogleTest cases across the files above.
 The latest local coverage run reported 85.19% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented

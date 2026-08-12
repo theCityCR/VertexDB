@@ -123,8 +123,9 @@ Postgres expresses the same idea with `BitmapAnd` + Bitmap Heap Scan. VertexDB�
 
 - Intersect is **cost-gated**: a near-unique equality (e.g. `id = 1 AND dept = 1` with `id` indexed)
   prefers HashEq + residual, not intersect.
-- Fully indexable nested `OR` under `AND` uses composite Intersect∪Union; a nested `OR` with any
-  non-equality-indexable arm stays an AND residual (no partial nested-OR complementary scan yet).
+- Fully or partially indexable nested `OR` under `AND` uses composite Intersect∪Union; non-indexable
+  arms become a complementary residual under the outer AND (partial nested OR). A nested `OR` with
+  no equality-indexable arm stays an AND residual.
 - This is one deliberate query-class win, not a claim that VertexDB beats Postgres in general.
 
 ### Evidence checklist
