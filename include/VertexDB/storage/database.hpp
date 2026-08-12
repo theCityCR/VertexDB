@@ -20,6 +20,8 @@ class Database {
     [[nodiscard]] const std::string &name() const noexcept;
     [[nodiscard]] bool createTable(std::string name, std::vector<Column> schema);
     [[nodiscard]] bool dropTable(std::string_view name);
+    [[nodiscard]] std::shared_ptr<Table> detachTable(std::string_view name);
+    [[nodiscard]] bool attachTable(std::shared_ptr<Table> table);
     [[nodiscard]] bool renameTable(std::string_view oldName, std::string newName);
     [[nodiscard]] std::shared_ptr<Table> table(std::string_view name) const;
     [[nodiscard]] std::vector<std::string> listTables() const;

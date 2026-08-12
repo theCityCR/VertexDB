@@ -136,9 +136,9 @@ TEST(TransactionBehaviorTests, RollbackReversesMixedDmlAndIndexedLookups) {
     EXPECT_EQ(bob.rows.front().front(), Value{std::string{"Bob"}});
 }
 
-TEST(TransactionBehaviorTests, CatalogAndPersistenceOpsRejectedWhileTransactionActive) {
-    // Documented: CREATE DATABASE/TABLE, DROP/RENAME TABLE, SAVE/LOAD rejected in a txn.
-    // CREATE INDEX is allowed (see CreateIndexAllowedWhileTransactionActive).
+TEST(TransactionBehaviorTests, CatalogDdlAllowedWhileTransactionActive) {
+    // CREATE/DROP/RENAME TABLE and CREATE DATABASE are transactional (undo + deferred WAL).
+    // SAVE/LOAD remain rejected until the implicit commit/rollback semantics land.
     Parser parser;
     auto executor = makeExecutor("txn-ddl-all");
     seedEmployees(executor, parser, true, false);
@@ -146,15 +146,12 @@ TEST(TransactionBehaviorTests, CatalogAndPersistenceOpsRejectedWhileTransactionA
 
     ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
 
-    const char *forbidden[] = {
-        "CREATE DATABASE other;",
-        "CREATE TABLE Other (id INT);",
-        "DROP TABLE Employees;",
-        "RENAME TABLE Employees TO Staff;",
-        "SAVE DATABASE;",
-        "LOAD DATABASE company;",
-    };
-    for (const char *sql : forbidden) {
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Other (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("DROP TABLE Other;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("RENAME TABLE Employees TO Staff;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE other;")).success);
+
+    for (const char *sql : {"SAVE DATABASE;", "LOAD DATABASE company;"}) {
         auto result = executor.execute(parser.parse(sql));
         EXPECT_FALSE(result.success) << sql << " -> " << result.message;
         EXPECT_NE(result.message.find("not allowed while a transaction is active"),
@@ -163,22 +160,112 @@ TEST(TransactionBehaviorTests, CatalogAndPersistenceOpsRejectedWhileTransactionA
     }
 
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
-    EXPECT_TRUE(executor.execute(parser.parse("LIST TABLES;")).success);
+    auto tables = executor.execute(parser.parse("LIST TABLES;"));
+    ASSERT_TRUE(tables.success);
+    ASSERT_EQ(tables.rows.size(), 1U);
+    EXPECT_EQ(tables.rows[0][0], Value{"Employees"});
 }
 
-TEST(TransactionBehaviorTests, SchemaChangesRejectedWhileTransactionActive) {
+TEST(TransactionBehaviorTests, CreateTableRollbackRemovesTable) {
     Parser parser;
-    auto executor = makeExecutor("undo-ddl");
+    auto executor = makeExecutor("txn-create-table-rb");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Other (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Other VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto listed = executor.execute(parser.parse("LIST TABLES;"));
+    ASSERT_TRUE(listed.success);
+    ASSERT_EQ(listed.rows.size(), 1U);
+    EXPECT_EQ(listed.rows[0][0], Value{"Employees"});
+}
+
+TEST(TransactionBehaviorTests, DropTableRollbackRestoresTableAndRows) {
+    Parser parser;
+    auto executor = makeExecutor("txn-drop-table-rb");
     seedEmployees(executor, parser, true, false);
 
     ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
-    auto create = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
-    EXPECT_FALSE(create.success);
-    EXPECT_NE(create.message.find("not allowed while a transaction is active"), std::string::npos);
-
+    ASSERT_TRUE(executor.execute(parser.parse("DROP TABLE Employees;")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT id FROM Employees;")),
+                 std::runtime_error);
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
-    auto after = executor.execute(parser.parse("CREATE TABLE Other (id INT);"));
-    EXPECT_TRUE(after.success);
+
+    auto rows = executor.execute(parser.parse("SELECT id FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_EQ(rows.rows.size(), 3U);
+    auto explain =
+        executor.execute(parser.parse("EXPLAIN SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(explain.success);
+    EXPECT_NE(explain.rows.front().front().toString().find("hash index"), std::string::npos);
+}
+
+TEST(TransactionBehaviorTests, RenameTableRollbackRestoresNameAndPendingDml) {
+    Parser parser;
+    auto executor = makeExecutor("txn-rename-rb");
+    seedEmployees(executor, parser, true, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Employees SET name = \"Alicia\" WHERE id = 1;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("RENAME TABLE Employees TO Staff;")).success);
+    auto renamed = executor.execute(parser.parse("SELECT name FROM Staff WHERE id = 1;"));
+    ASSERT_TRUE(renamed.success);
+    ASSERT_EQ(renamed.rows.size(), 1U);
+    EXPECT_EQ(renamed.rows[0][0], Value{"Alicia"});
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto restored = executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(restored.success);
+    ASSERT_EQ(restored.rows.size(), 1U);
+    EXPECT_EQ(restored.rows[0][0], Value{"Alice"});
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT name FROM Staff;")),
+                 std::runtime_error);
+}
+
+TEST(TransactionBehaviorTests, CreateDatabaseRollbackRestoresPriorDatabase) {
+    Parser parser;
+    auto executor = makeExecutor("txn-create-db-rb");
+    seedEmployees(executor, parser, false, false);
+    const auto prior = executor.currentDatabase();
+    ASSERT_NE(prior, nullptr);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE other;")).success);
+    EXPECT_NE(executor.currentDatabase(), prior);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    EXPECT_EQ(executor.currentDatabase(), prior);
+    auto rows = executor.execute(parser.parse("SELECT id FROM Employees;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_EQ(rows.rows.size(), 3U);
+}
+
+TEST(TransactionBehaviorTests, CreateTableCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-create-table";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto listed = recovered.execute(parser.parse("LIST TABLES;"));
+    ASSERT_TRUE(listed.success);
+    ASSERT_EQ(listed.rows.size(), 1U);
+    EXPECT_EQ(listed.rows[0][0], Value{"Employees"});
+    std::filesystem::remove_all(root);
 }
 
 TEST(TransactionBehaviorTests, CreateIndexAllowedWhileTransactionActive) {

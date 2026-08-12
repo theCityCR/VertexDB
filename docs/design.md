@@ -51,12 +51,10 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Known Limitations
 
-- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`) and save/load are
-  rejected inside an open transaction. `CREATE INDEX` and `DROP INDEX` are transactional (undo +
-  deferred logical WAL).
 - Snapshot isolation prevents dirty reads and hides commits after `BEGIN`; classic SI still allows
   write skew. There are no row/page locks, predicate locks, or SSI aborts. See
   [si_anomaly_wedge.md](si_anomaly_wedge.md).
+- `SAVE DATABASE` and `LOAD DATABASE` are still rejected inside an open transaction.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
   `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
 - Top-level `OR` of equality (or expression-equality) index probes uses multi-index union when the
@@ -90,7 +88,7 @@ indexable nested `OR` under `AND`.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- SQL / catalog: catalog DDL and `SAVE`/`LOAD` inside open transactions
+- SQL / catalog: `SAVE`/`LOAD` inside open transactions
 - Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already

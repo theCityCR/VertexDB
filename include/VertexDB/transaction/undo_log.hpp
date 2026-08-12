@@ -8,11 +8,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace VertexDB {
+
+class Database;
+class Table;
 
 enum class UndoKind : std::uint8_t {
     Insert,
@@ -20,6 +25,10 @@ enum class UndoKind : std::uint8_t {
     Delete,
     CreateIndex,
     DropIndex,
+    CreateTable,
+    DropTable,
+    RenameTable,
+    SwapDatabase,
 };
 
 struct UndoRecord {
@@ -32,6 +41,12 @@ struct UndoRecord {
     // Populated for UndoKind::DropIndex so ROLLBACK can recreate the index.
     std::string indexColumn;
     std::optional<IndexExpression> indexExpression;
+    // Populated for UndoKind::DropTable so ROLLBACK can reattach the table.
+    std::shared_ptr<Table> retainedTable;
+    // Populated for UndoKind::SwapDatabase so ROLLBACK can restore the prior DB.
+    std::shared_ptr<Database> previousDatabase;
+    // Populated for UndoKind::RenameTable: tableName is the pre-rename name, renameTo the new name.
+    std::string renameTo;
 };
 
 class UndoLog {
@@ -41,6 +56,7 @@ class UndoLog {
     [[nodiscard]] bool empty() const noexcept;
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] const std::vector<UndoRecord> &entries() const noexcept;
+    void rewriteTableName(std::string_view oldName, std::string_view newName);
 
     // Pop the most recently pushed record, or nullopt if empty.
     [[nodiscard]] std::optional<UndoRecord> pop();

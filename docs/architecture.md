@@ -151,10 +151,10 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
   logical DML remain replayable. Trailing torn WAL records are skipped.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
-  DML and transactional `CREATE INDEX` / `DROP INDEX`; DML WAL records are deferred until `COMMIT`
-  (one atomic batch) and dropped on `ROLLBACK`. Catalog DDL and `SAVE`/`LOAD` remain rejected in
-  open transactions. SI allows write skew; there are no row/page locks, predicate locks, or SSI
-  aborts.
+  DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
+  `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped
+  on `ROLLBACK`. `SAVE`/`LOAD` remain rejected in open transactions. SI allows write skew; there are
+  no row/page locks, predicate locks, or SSI aborts.
 
 ## Current Data Flow
 

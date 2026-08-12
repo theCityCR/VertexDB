@@ -41,6 +41,7 @@ class TxnSession {
     [[nodiscard]] std::vector<PendingWalRecord> &pendingWal() noexcept;
     [[nodiscard]] const std::vector<PendingWalRecord> &pendingWal() const noexcept;
     void clearPendingWal() noexcept;
+    void rewriteTableName(std::string_view oldName, std::string_view newName);
 
   private:
     TransactionManager transactionManager_;

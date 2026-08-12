@@ -27,7 +27,39 @@ std::shared_ptr<Table> RecoveryService::requireTable(std::string_view tableName)
 }
 
 void RecoveryService::applyUndoRecord(const UndoRecord &record) {
-    auto table = database_->table(record.tableName);
+    switch (record.kind) {
+    case UndoKind::CreateTable:
+        if (!database_ || !database_->dropTable(record.tableName)) {
+            throw std::runtime_error("failed to undo create table");
+        }
+        return;
+    case UndoKind::DropTable:
+        if (!database_ || !record.retainedTable || !database_->attachTable(record.retainedTable)) {
+            throw std::runtime_error("failed to undo drop table");
+        }
+        return;
+    case UndoKind::RenameTable:
+        if (!database_ || record.renameTo.empty() ||
+            !database_->renameTable(record.renameTo, record.tableName)) {
+            throw std::runtime_error("failed to undo rename table");
+        }
+        session_.rewriteTableName(record.renameTo, record.tableName);
+        return;
+    case UndoKind::SwapDatabase:
+        if (!record.previousDatabase) {
+            throw std::runtime_error("failed to undo create database");
+        }
+        database_ = record.previousDatabase;
+        return;
+    case UndoKind::Insert:
+    case UndoKind::Update:
+    case UndoKind::Delete:
+    case UndoKind::CreateIndex:
+    case UndoKind::DropIndex:
+        break;
+    }
+
+    auto table = database_ ? database_->table(record.tableName) : std::shared_ptr<Table>{};
     if (!table) {
         throw std::runtime_error("undo references unknown table " + record.tableName);
     }
@@ -65,6 +97,11 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
         }
         break;
     }
+    case UndoKind::CreateTable:
+    case UndoKind::DropTable:
+    case UndoKind::RenameTable:
+    case UndoKind::SwapDatabase:
+        break;
     }
 }
 

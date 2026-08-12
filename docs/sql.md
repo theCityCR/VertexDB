@@ -235,9 +235,11 @@ snapshot; classic SI **allows** write skew (no SSI / predicate locks). One execu
 one open transaction; writers are serialized by the executor `LockManager`. See
 [si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
-`SAVE DATABASE`, and `LOAD DATABASE` are rejected. `CREATE INDEX` and `DROP INDEX` are allowed:
-each pushes an undo record (`CreateIndex` drops on rollback; `DropIndex` restores the prior
-definition) and defers the logical WAL payload until `COMMIT` (dropped on `ROLLBACK`).
+`CREATE INDEX`, and `DROP INDEX` are allowed: each applies immediately and pushes an undo record
+(with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `RENAME TABLE` remounts the same
+table object and rewrites open-txn undo/pending WAL table names. `CREATE DATABASE` swaps in a new
+empty database and restores the prior instance on rollback. `SAVE DATABASE` and `LOAD DATABASE`
+remain rejected while a transaction is active.
 
 ## Types
 

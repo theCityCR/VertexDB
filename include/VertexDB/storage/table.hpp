@@ -31,6 +31,7 @@ class Table : public RelationStats, public IndexCatalogView {
 
     // --- Identity / schema ---
     [[nodiscard]] const std::string &name() const noexcept;
+    void setName(std::string name);
     [[nodiscard]] std::span<const Column> schema() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     void validateRow(const Row &row) const;

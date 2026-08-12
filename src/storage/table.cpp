@@ -21,6 +21,14 @@ Table::Table(std::string name, std::vector<Column> schema)
 
 const std::string &Table::name() const noexcept { return name_; }
 
+void Table::setName(std::string name) {
+    std::unique_lock lock{mutex_};
+    if (name.empty()) {
+        throw std::invalid_argument("table name cannot be empty");
+    }
+    name_ = std::move(name);
+}
+
 std::span<const Column> Table::schema() const noexcept { return schema_; }
 
 std::optional<std::size_t> Table::columnIndex(std::string_view column) const {

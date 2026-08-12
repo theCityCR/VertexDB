@@ -22,13 +22,27 @@ bool Database::createTable(std::string name, std::vector<Column> schema) {
 }
 
 bool Database::dropTable(std::string_view name) {
+    return static_cast<bool>(detachTable(name));
+}
+
+std::shared_ptr<Table> Database::detachTable(std::string_view name) {
     std::unique_lock lock{mutex_};
     auto it = tables_.find(name);
     if (it == tables_.end()) {
+        return {};
+    }
+    auto table = it->second;
+    tables_.erase(it);
+    return table;
+}
+
+bool Database::attachTable(std::shared_ptr<Table> table) {
+    if (!table) {
         return false;
     }
-    tables_.erase(it);
-    return true;
+    std::unique_lock lock{mutex_};
+    auto [_, inserted] = tables_.try_emplace(table->name(), std::move(table));
+    return inserted;
 }
 
 bool Database::renameTable(std::string_view oldName, std::string newName) {
@@ -37,22 +51,11 @@ bool Database::renameTable(std::string_view oldName, std::string newName) {
     if (it == tables_.end() || tables_.contains(newName)) {
         return false;
     }
-    auto oldTable = it->second;
+    auto table = it->second;
     tables_.erase(it);
-    std::vector<Column> schema{oldTable->schema().begin(), oldTable->schema().end()};
-    auto replacement = std::make_shared<Table>(newName, std::move(schema));
-    // Restore indexes first so replaceSparse can rebuild entries into them.
-    for (const auto &definition : oldTable->indexDefinitions()) {
-        const bool ok =
-            definition.expression
-                ? replacement->createIndex(definition.name, *definition.expression)
-                : replacement->createIndex(definition.name, definition.column);
-        if (!ok) {
-            return false;
-        }
-    }
-    replacement->replaceSparse(oldTable->capacity(), oldTable->freeList(), oldTable->liveEntries());
-    tables_.emplace(std::move(newName), std::move(replacement));
+    const std::string key = newName;
+    table->setName(key);
+    tables_.emplace(key, std::move(table));
     return true;
 }
 

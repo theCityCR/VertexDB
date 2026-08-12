@@ -16,9 +16,11 @@ CatalogEngine::CatalogEngine(ExecutionContext &ctx, RecoveryService &recovery,
     : ctx_(ctx), recovery_(recovery), storage_(storage), wal_(wal) {}
 
 QueryResult CatalogEngine::executeCreateDatabase(const CreateDatabase &command) {
-    if (const auto rejected = ctx_.session.rejectIfTransactionActive("CREATE DATABASE");
-        !rejected.success) {
-        return rejected;
+    if (ctx_.session.transactionActive()) {
+        UndoRecord undo;
+        undo.kind = UndoKind::SwapDatabase;
+        undo.previousDatabase = ctx_.database;
+        ctx_.session.pushUndo(std::move(undo));
     }
     recovery_.appendWal(WalOperation::CreateDatabase, command.name);
     ctx_.database = std::make_shared<Database>(command.name);
@@ -26,15 +28,17 @@ QueryResult CatalogEngine::executeCreateDatabase(const CreateDatabase &command) 
 }
 
 QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
-    if (const auto rejected = ctx_.session.rejectIfTransactionActive("CREATE TABLE");
-        !rejected.success) {
-        return rejected;
-    }
     if (!ctx_.database) {
         return messageResult(false, "no active database");
     }
     const bool created = ctx_.database->createTable(command.name, command.columns);
     if (created) {
+        if (ctx_.session.transactionActive()) {
+            UndoRecord undo;
+            undo.tableName = command.name;
+            undo.kind = UndoKind::CreateTable;
+            ctx_.session.pushUndo(std::move(undo));
+        }
         recovery_.appendWal(WalOperation::CreateTable, createTableSql(command));
     }
     return messageResult(created,
@@ -42,30 +46,38 @@ QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
 }
 
 QueryResult CatalogEngine::executeDropTable(const DropTable &command) {
-    if (const auto rejected = ctx_.session.rejectIfTransactionActive("DROP TABLE");
-        !rejected.success) {
-        return rejected;
-    }
     if (!ctx_.database) {
         return messageResult(false, "no active database");
     }
-    const bool dropped = ctx_.database->dropTable(command.name);
-    if (dropped) {
-        recovery_.appendWal(WalOperation::DropTable, "DROP TABLE " + command.name + ";");
+    auto retained = ctx_.database->detachTable(command.name);
+    if (!retained) {
+        return messageResult(false, "unknown table");
     }
-    return messageResult(dropped, dropped ? "dropped table " + command.name : "unknown table");
+    if (ctx_.session.transactionActive()) {
+        UndoRecord undo;
+        undo.tableName = command.name;
+        undo.kind = UndoKind::DropTable;
+        undo.retainedTable = std::move(retained);
+        ctx_.session.pushUndo(std::move(undo));
+    }
+    recovery_.appendWal(WalOperation::DropTable, "DROP TABLE " + command.name + ";");
+    return messageResult(true, "dropped table " + command.name);
 }
 
 QueryResult CatalogEngine::executeRenameTable(const RenameTable &command) {
-    if (const auto rejected = ctx_.session.rejectIfTransactionActive("RENAME TABLE");
-        !rejected.success) {
-        return rejected;
-    }
     if (!ctx_.database) {
         return messageResult(false, "no active database");
     }
     const bool renamed = ctx_.database->renameTable(command.oldName, command.newName);
     if (renamed) {
+        if (ctx_.session.transactionActive()) {
+            ctx_.session.rewriteTableName(command.oldName, command.newName);
+            UndoRecord undo;
+            undo.tableName = command.oldName;
+            undo.renameTo = command.newName;
+            undo.kind = UndoKind::RenameTable;
+            ctx_.session.pushUndo(std::move(undo));
+        }
         recovery_.appendWal(WalOperation::RenameTable,
                             "RENAME TABLE " + command.oldName + " TO " + command.newName + ";");
     }
