@@ -136,34 +136,99 @@ TEST(TransactionBehaviorTests, RollbackReversesMixedDmlAndIndexedLookups) {
     EXPECT_EQ(bob.rows.front().front(), Value{std::string{"Bob"}});
 }
 
-TEST(TransactionBehaviorTests, CatalogDdlAllowedWhileTransactionActive) {
-    // CREATE/DROP/RENAME TABLE and CREATE DATABASE are transactional (undo + deferred WAL).
-    // SAVE/LOAD remain rejected until the implicit commit/rollback semantics land.
+TEST(TransactionBehaviorTests, CatalogDdlAndSaveLoadAllowedWhileTransactionActive) {
     Parser parser;
     auto executor = makeExecutor("txn-ddl-all");
     seedEmployees(executor, parser, true, false);
     ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
 
     ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
-
     ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Other (id INT);")).success);
     ASSERT_TRUE(executor.execute(parser.parse("DROP TABLE Other;")).success);
     ASSERT_TRUE(executor.execute(parser.parse("RENAME TABLE Employees TO Staff;")).success);
+    // SAVE implicitly commits the open transaction, then checkpoints.
+    auto saved = executor.execute(parser.parse("SAVE DATABASE;"));
+    ASSERT_TRUE(saved.success);
+    EXPECT_NE(saved.message.find("committed and saved"), std::string::npos);
+    EXPECT_FALSE(executor.execute(parser.parse("COMMIT;")).success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE other;")).success);
-
-    for (const char *sql : {"SAVE DATABASE;", "LOAD DATABASE company;"}) {
-        auto result = executor.execute(parser.parse(sql));
-        EXPECT_FALSE(result.success) << sql << " -> " << result.message;
-        EXPECT_NE(result.message.find("not allowed while a transaction is active"),
-                  std::string::npos)
-            << sql << " -> " << result.message;
-    }
-
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
     auto tables = executor.execute(parser.parse("LIST TABLES;"));
     ASSERT_TRUE(tables.success);
     ASSERT_EQ(tables.rows.size(), 1U);
-    EXPECT_EQ(tables.rows[0][0], Value{"Employees"});
+    EXPECT_EQ(tables.rows[0][0], Value{"Staff"});
+}
+
+TEST(TransactionBehaviorTests, SaveDatabaseInTransactionCommitsThenCheckpoints) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-save-in-txn";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                        .success);
+        auto saved = executor.execute(parser.parse("SAVE DATABASE;"));
+        ASSERT_TRUE(saved.success);
+        EXPECT_NE(saved.message.find("committed and saved"), std::string::npos);
+    }
+
+    QueryExecutor recovered{root};
+    auto rows = recovered.execute(parser.parse("SELECT id FROM Employees;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    std::filesystem::remove_all(root);
+}
+
+TEST(TransactionBehaviorTests, LoadDatabaseInTransactionRollsBackThenLoads) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-load-in-txn";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (2, \"Bob\", 90000.0);"))
+                        .success);
+        auto loaded = executor.execute(parser.parse("LOAD DATABASE company;"));
+        ASSERT_TRUE(loaded.success);
+        EXPECT_NE(loaded.message.find("rolled back and loaded"), std::string::npos);
+
+        auto rows =
+            executor.execute(parser.parse("SELECT id FROM Employees ORDER BY id;"));
+        ASSERT_TRUE(rows.success);
+        ASSERT_EQ(rows.rows.size(), 1U);
+        EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+        EXPECT_FALSE(executor.execute(parser.parse("ROLLBACK;")).success);
+    }
+    std::filesystem::remove_all(root);
 }
 
 TEST(TransactionBehaviorTests, CreateTableRollbackRemovesTable) {

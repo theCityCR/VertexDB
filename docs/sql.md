@@ -238,8 +238,9 @@ While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, 
 `CREATE INDEX`, and `DROP INDEX` are allowed: each applies immediately and pushes an undo record
 (with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `RENAME TABLE` remounts the same
 table object and rewrites open-txn undo/pending WAL table names. `CREATE DATABASE` swaps in a new
-empty database and restores the prior instance on rollback. `SAVE DATABASE` and `LOAD DATABASE`
-remain rejected while a transaction is active.
+empty database and restores the prior instance on rollback. `SAVE DATABASE` inside a transaction
+implicitly `COMMIT`s (flush deferred WAL) then checkpoints. `LOAD DATABASE` inside a transaction
+implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
 
 ## Types
 

@@ -138,9 +138,11 @@ ids, captures a commit-seq snapshot at `BEGIN`, and supplies all SELECT visibili
 commit-aware MVCC (dirty-read prevention, SI watermark for post-`BEGIN` commits, and held-snapshot
 phantom hiding). Write skew remains allowed under classic SI.
 `BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML and transactional
-`CREATE INDEX` / `DROP INDEX` record compensating actions, `RecoveryService` applies them LIFO on
-`ROLLBACK` to the same `Database` instance, and `COMMIT` discards the log after `RecoveryService`
-flushes deferred WAL (logical index DDL SQL plus collapsed page-image redo).
+catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP INDEX`) record
+compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to the same `Database`
+instance (or restores a prior DB after `CREATE DATABASE`), and `COMMIT` discards the log after
+`RecoveryService` flushes deferred WAL (logical DDL SQL plus collapsed page-image redo).
+`SAVE DATABASE` may implicitly commit first; `LOAD DATABASE` may implicitly roll back first.
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
 pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered before rows so
@@ -153,8 +155,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
   DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
   `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped
-  on `ROLLBACK`. `SAVE`/`LOAD` remain rejected in open transactions. SI allows write skew; there are
-  no row/page locks, predicate locks, or SSI aborts.
+  on `ROLLBACK`. `SAVE DATABASE` in an open transaction implicitly commits then checkpoints;
+  `LOAD DATABASE` implicitly rolls back then loads. SI allows write skew; there are no row/page
+  locks, predicate locks, or SSI aborts.
 
 ## Current Data Flow
 

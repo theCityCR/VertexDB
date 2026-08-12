@@ -54,7 +54,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Snapshot isolation prevents dirty reads and hides commits after `BEGIN`; classic SI still allows
   write skew. There are no row/page locks, predicate locks, or SSI aborts. See
   [si_anomaly_wedge.md](si_anomaly_wedge.md).
-- `SAVE DATABASE` and `LOAD DATABASE` are still rejected inside an open transaction.
+- `SAVE DATABASE` in an open transaction implicitly commits then checkpoints; `LOAD DATABASE`
+  implicitly rolls back then loads.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
   `PhysicalRedo` and logical `Insert`/`Update`/`Delete` records remain replayable for old WALs.
 - Top-level `OR` of equality (or expression-equality) index probes uses multi-index union when the
@@ -83,12 +84,12 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 Shipped recently (no longer open work): literal `IN` lists, indexed `UPDATE`/`DELETE` access paths,
 transactional `CREATE INDEX` / `DROP INDEX`, same-column `OR`→`IN`, MVCC `UPDATE` close-prior-version,
 `EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), `EXPLAIN UPDATE`/`DELETE`, multi-index
-AND intersect packaging, the SI anomaly concurrency wedge, and composite Intersect∪Union for fully
-indexable nested `OR` under `AND`.
+AND intersect packaging, the SI anomaly concurrency wedge, composite Intersect∪Union for fully
+indexable nested `OR` under `AND`, transactional catalog DDL, and `SAVE`/`LOAD` inside open
+transactions (implicit commit / rollback).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- SQL / catalog: `SAVE`/`LOAD` inside open transactions
 - Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already

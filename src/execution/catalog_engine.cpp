@@ -161,23 +161,37 @@ QueryResult CatalogEngine::executeAnalyze(const Analyze &command) {
 }
 
 QueryResult CatalogEngine::executeSaveDatabase() {
-    if (const auto rejected = ctx_.session.rejectIfTransactionActive("SAVE DATABASE");
-        !rejected.success) {
-        return rejected;
-    }
     if (!ctx_.database) {
         return messageResult(false, "no active database");
+    }
+    bool implicitCommit = false;
+    if (ctx_.session.transactionActive()) {
+        recovery_.flushPendingWal();
+        const auto committed = ctx_.session.commit();
+        if (!committed.success) {
+            return committed;
+        }
+        implicitCommit = true;
     }
     recovery_.appendWal(WalOperation::SaveDatabase, ctx_.database->name());
     storage_.saveDatabase(*ctx_.database);
     wal_.reset();
-    return messageResult(true, "saved database " + ctx_.database->name());
+    return messageResult(true, (implicitCommit ? "committed and saved database "
+                                               : "saved database ") +
+                                   ctx_.database->name());
 }
 
 QueryResult CatalogEngine::executeLoadDatabase(const LoadDatabase &command) {
-    if (const auto rejected = ctx_.session.rejectIfTransactionActive("LOAD DATABASE");
-        !rejected.success) {
-        return rejected;
+    bool implicitRollback = false;
+    if (ctx_.session.transactionActive()) {
+        while (auto record = ctx_.session.undoLog().pop()) {
+            recovery_.applyUndoRecord(*record);
+        }
+        const auto rolled = ctx_.session.rollback();
+        if (!rolled.success) {
+            return rolled;
+        }
+        implicitRollback = true;
     }
     if (command.name) {
         ctx_.database = storage_.loadDatabase(*command.name);
@@ -187,7 +201,9 @@ QueryResult CatalogEngine::executeLoadDatabase(const LoadDatabase &command) {
         ctx_.database = storage_.loadFirstDatabase();
     }
     ctx_.session.reset();
-    return messageResult(true, "loaded database " + ctx_.database->name());
+    return messageResult(true, (implicitRollback ? "rolled back and loaded database "
+                                                 : "loaded database ") +
+                                   ctx_.database->name());
 }
 
 } // namespace VertexDB

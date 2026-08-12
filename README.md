@@ -149,10 +149,12 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
-transactional `CREATE INDEX`, same-column equality `OR`→`IN` rewrite, literal `IN` lists,
+transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`),
+same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for UPDATE/DELETE,
 `EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, composite Intersect∪Union for
-fully indexable nested `OR` under `AND`, and a dated absolute-time benchmark
-summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+fully indexable nested `OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit
+commit/rollback), and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
+CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 [materialize vs inline comparison](docs/cte_materialize_comparison.md),
