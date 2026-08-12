@@ -31,6 +31,7 @@ add_library(VertexDB
     src/parser/parser_dml.cpp
     src/parser/parser_select.cpp
     src/parser/parser_with.cpp
+    src/parser/recursive_cte.cpp
     src/parser/parser_outer_refs.cpp
     src/parser/parser_predicate.cpp
     src/parser/tokenizer.cpp

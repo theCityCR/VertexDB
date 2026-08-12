@@ -44,6 +44,9 @@ class SubqueryRuntime {
     [[nodiscard]] std::shared_ptr<Table> materializeCteTable(
         const CteEntry &cte,
         const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps = {}) const;
+    // Materialize a rewriter materialize list into `temps` (mutual recursive SCCs co-evaluate).
+    void materializeCteList(const std::vector<CteEntry> &ctes,
+                            std::unordered_map<std::string, std::shared_ptr<Table>> &temps) const;
 
   private:
     // Evaluate a SELECT (including set-op chains) to a QueryResult without calling SelectEngine::execute.

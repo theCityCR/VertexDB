@@ -145,17 +145,20 @@ derived-table bodies may include left-deep joins (`INNER` / `LEFT` / `RIGHT` / `
 `WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. Outer `JOIN`
 against a CTE/derived alias force-materializes the CTE (body filters stay inside the temp).
 
-`WITH RECURSIVE name AS ( anchor UNION [ALL] recursive_arm )` materializes a working table by
-evaluating the anchor, then repeatedly evaluating the recursive arm with the CTE name bound to the
-previous iteration's **delta** (new rows only). Exactly one self-reference to `name` is required in
-the recursive arm (as `FROM`/`JOIN` table). Bare `UNION` (deduplicating) excludes rows already present
-in the accumulating working table, which stops graph cycles. `UNION ALL` keeps duplicates and can
-`WITH RECURSIVE` may declare multiple independent recursive CTEs in one `WITH` list (each with its
-own `UNION` / `UNION ALL` self-reference). Mutual recursion (recursive CTEs that reference each
-other in a cycle) is rejected. Iteration stops when the delta is empty, or when a safety cap is hit
-(1000 iterations or 100000 accumulated rows) — those caps are intentional v1 limits.
-The row cap is checked before inserting a recursive step so a single oversized step cannot
-partially accumulate past the limit.
+`WITH RECURSIVE name AS [ACCUMULATOR] ( anchor UNION [ALL] recursive_arm )` materializes a working
+table by evaluating the anchor, then repeatedly evaluating the recursive arm. By default the CTE
+name is bound to the previous iteration's **delta** (new rows only). `AS ACCUMULATOR` binds the
+name to the full working table instead. Each recursive arm must reference exactly one recursive CTE
+name from the same `WITH` list exactly once (as a `FROM`/`JOIN` table) — usually itself (linear
+recursion), or another recursive CTE in a mutual group. Bare `UNION` (deduplicating) excludes rows
+already present in the accumulating working table, which stops graph cycles. `UNION ALL` keeps
+duplicates and can diverge; with `AS ACCUMULATOR`, a naïve `UNION ALL` hierarchy walk typically
+does not shrink the delta and hits the iteration cap. `WITH RECURSIVE` may declare multiple
+recursive CTEs in one `WITH` list: independent CTEs evaluate separately; mutually recursive CTEs
+(a cycle of arm references) co-evaluate in lockstep. Iteration stops when every delta in the group
+is empty, or when a safety cap is hit (1000 iterations or 100000 accumulated rows) — those caps are
+intentional v1 limits. The row cap is checked before inserting a recursive step so a single
+oversized step cannot partially accumulate past the limit.
 
 Top-level and CTE-body set operations are left-associative: `UNION` / `UNION ALL` / `INTERSECT` /
 `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`. Distinct forms deduplicate; `ALL` forms use multiset
@@ -273,9 +276,6 @@ Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`colum
 
 Intentional v1 limits (documented, not near-term polish):
 
-- Mutual recursion among `WITH RECURSIVE` CTEs, or self-ref to the full accumulator
-  (recursive `UNION` / `UNION ALL` still binds the arm to the prior **delta**, not the full working
-  table; multiple independent recursive CTEs in one `WITH` are supported)
 - Derived-table syntax in the JOIN position (`JOIN (SELECT …) AS alias`); use a CTE name or put
   the join inside the CTE/derived body instead
 - Joins beyond left-deep chains with `ON col op col` (or no `ON` for `CROSS`)

@@ -145,7 +145,8 @@ Uncorrelated `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally he
 optionally containing joins) materialize into value lists when uncorrelated; correlated
 `IN`/`EXISTS` bind outer scopes per row for up to four FROM frames, including `FROM` / `JOIN`
 table aliases. Nested `WITH` up to depth 3 reuses the same inliner. `WITH RECURSIVE`
-(`UNION` / `UNION ALL`, delta binding, multiple independent recursive CTEs, iteration/row caps)
+(`UNION` / `UNION ALL`, delta or `AS ACCUMULATOR` binding, independent or mutual recursive CTEs,
+iteration/row caps)
 always force-materializes. Bare `UNION`
 deduplicates against the accumulating working table (cycle-safe); `UNION ALL` does not.
 Caps default to 1000

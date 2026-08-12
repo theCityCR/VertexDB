@@ -47,7 +47,9 @@ struct CteEntry {
     bool recursive{false};
     // true = bare UNION (dedup / cycle filter); false = UNION ALL.
     bool recursiveDistinct{false};
-    // Recursive UNION [ALL] arm; self-references `name` (bound to the working delta).
+    // When true, bind the recursive name to the full working table; otherwise prior delta.
+    bool recursiveBindAccumulator{false};
+    // Recursive UNION [ALL] arm; references this CTE or another recursive CTE in a mutual group.
     std::shared_ptr<Select> recursiveArm;
 };
 
