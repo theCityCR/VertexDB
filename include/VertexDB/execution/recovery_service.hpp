@@ -1,6 +1,8 @@
 #pragma once
 
 // WAL and undo recovery service for the QueryExecutor façade.
+// Owns WAL replay policy, undo apply, and deferred flush; codecs stay in persistence/.
+// Implementation: recovery_service.cpp.
 
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/persistence/page_image_redo.hpp"

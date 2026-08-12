@@ -5,6 +5,9 @@
 // QueryExecutor remains the public façade; shared services live in ExecutionContext.
 // Predicate matching (including correlated IN/EXISTS) is owned by SubqueryRuntime;
 // SelectEngine::matches forwards to keep scan/join call sites stable.
+// Allowed peer calls: SelectEngine may call SubqueryRuntime::matches only;
+// SubqueryRuntime may call SelectEngine collect/plan helpers only (no mutual recursion
+// through execute/explain).
 
 #include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/query_result.hpp"

@@ -1,5 +1,8 @@
 #pragma once
 
+// Internal parser helpers (literals, identifiers). Used by Parser TUs under src/parser/.
+// Not part of the public include surface.
+
 #include "VertexDB/common/string_utils.hpp"
 
 #include <charconv>

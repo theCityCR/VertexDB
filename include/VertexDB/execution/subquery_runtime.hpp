@@ -4,6 +4,8 @@
 // Implementation: subquery_runtime.cpp (+ subquery_runtime_bind.cpp, subquery_runtime_cte.cpp).
 // Rewrites go through rewriter.hpp first. Shared services and SelectEngine peer live in
 // ExecutionContext.
+// Allowed peer calls: SubqueryRuntime may call SelectEngine collect/plan helpers only;
+// SelectEngine may call SubqueryRuntime::matches only (no mutual recursion through execute).
 
 #include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/parser/ast.hpp"

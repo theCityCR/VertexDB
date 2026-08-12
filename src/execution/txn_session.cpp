@@ -1,18 +1,10 @@
 #include "VertexDB/execution/txn_session.hpp"
 
+#include "VertexDB/execution/select_helpers.hpp"
+
 #include <utility>
 
 namespace VertexDB {
-namespace {
-
-QueryResult messageResult(bool success, std::string message) {
-    QueryResult result;
-    result.success = success;
-    result.message = std::move(message);
-    return result;
-}
-
-} // namespace
 
 QueryResult TxnSession::begin() {
     if (transactionActive()) {
