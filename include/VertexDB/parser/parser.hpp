@@ -34,6 +34,8 @@ class Parser {
     [[nodiscard]] Insert parseInsert();
     [[nodiscard]] Select parseSelect();
     [[nodiscard]] Select parseSelectAfterSelectKeyword();
+    // Single SELECT arm without trailing set-ops / ORDER BY / LIMIT.
+    [[nodiscard]] Select parseSelectCoreAfterSelectKeyword();
     [[nodiscard]] Select parseWithSelect();
     // depth 0 = top-level WITH; deeper WITH inside CTE bodies up to kMaxNestedWithDepth.
     [[nodiscard]] Select parseWithSelectAtDepth(int depth);

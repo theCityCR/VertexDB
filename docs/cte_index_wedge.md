@@ -137,7 +137,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 ### Limitations (honest)
 
 - Correlation deeper than four outer frames is unsupported; `WITH` nesting depth up to 3 is
-  supported. CTE/derived bodies may include left-deep join chains. Minimal `WITH RECURSIVE` is
+  supported. CTE/derived bodies may include left-deep join chains. `WITH RECURSIVE` is
   supported with documented safety caps.
 - Cost-based access paths using live row counts, index distinct keys, and optional `ANALYZE`
   histograms; multi-index AND intersection when cheaper than a single index + residual.

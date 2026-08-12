@@ -29,6 +29,19 @@ namespace {
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<SetOpKind> matchSetOpKeyword(std::string_view lexeme) {
+    if (equalsIgnoreCase(lexeme, "UNION")) {
+        return SetOpKind::Union;
+    }
+    if (equalsIgnoreCase(lexeme, "INTERSECT")) {
+        return SetOpKind::Intersect;
+    }
+    if (equalsIgnoreCase(lexeme, "EXCEPT")) {
+        return SetOpKind::Except;
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 Select Parser::parseSelect() {
@@ -37,6 +50,56 @@ Select Parser::parseSelect() {
 }
 
 Select Parser::parseSelectAfterSelectKeyword() {
+    Select query = parseSelectCoreAfterSelectKeyword();
+
+    while (peek().type == TokenType::Identifier) {
+        const auto kind = matchSetOpKeyword(peek().lexeme);
+        if (!kind) {
+            break;
+        }
+        (void)advance();
+        SetOpKind op = *kind;
+        if (op == SetOpKind::Union) {
+            if (match(TokenType::Identifier, "ALL")) {
+                op = SetOpKind::UnionAll;
+            }
+        } else if (match(TokenType::Identifier, "ALL")) {
+            throw std::runtime_error("INTERSECT ALL and EXCEPT ALL are not supported");
+        }
+        expect(TokenType::Identifier, "SELECT");
+        auto right = parseSelectCoreAfterSelectKeyword();
+        if (!right.ctes.empty()) {
+            // Derived-table CTEs on a set-op arm stay with that arm.
+        }
+        query.setOps.push_back(
+            SetOpArm{op, std::make_shared<Select>(std::move(right))});
+    }
+
+    if (match(TokenType::Identifier, "ORDER")) {
+        expect(TokenType::Identifier, "BY");
+        const auto column = advance();
+        if (column.type != TokenType::Identifier) {
+            throw std::runtime_error("expected ORDER BY column");
+        }
+        bool ascending = true;
+        if (match(TokenType::Identifier, "DESC")) {
+            ascending = false;
+        } else {
+            (void)match(TokenType::Identifier, "ASC");
+        }
+        query.orderBy = OrderBy{column.lexeme, ascending};
+    }
+    if (match(TokenType::Identifier, "LIMIT")) {
+        const auto count = advance();
+        if (count.type != TokenType::Number) {
+            throw std::runtime_error("expected numeric limit");
+        }
+        query.limit = static_cast<std::size_t>(parser_detail::parseIntLiteral(count.lexeme));
+    }
+    return query;
+}
+
+Select Parser::parseSelectCoreAfterSelectKeyword() {
     std::vector<SelectExpr> columns;
     if (match(TokenType::Star)) {
         columns.push_back(SelectExpr::makeStar());
@@ -172,8 +235,6 @@ Select Parser::parseSelectAfterSelectKeyword() {
 
     std::optional<Predicate> where;
     std::vector<std::string> groupBy;
-    std::optional<OrderBy> orderBy;
-    std::optional<std::size_t> limit;
     const auto previousFromTable = currentFromTable_;
     currentFromTable_ = tableAlias.value_or(tableName);
     if (match(TokenType::Identifier, "WHERE")) {
@@ -190,30 +251,9 @@ Select Parser::parseSelectAfterSelectKeyword() {
             groupBy.push_back(column.lexeme);
         } while (match(TokenType::Comma));
     }
-    if (match(TokenType::Identifier, "ORDER")) {
-        expect(TokenType::Identifier, "BY");
-        const auto column = advance();
-        if (column.type != TokenType::Identifier) {
-            throw std::runtime_error("expected ORDER BY column");
-        }
-        bool ascending = true;
-        if (match(TokenType::Identifier, "DESC")) {
-            ascending = false;
-        } else {
-            (void)match(TokenType::Identifier, "ASC");
-        }
-        orderBy = OrderBy{column.lexeme, ascending};
-    }
-    if (match(TokenType::Identifier, "LIMIT")) {
-        const auto count = advance();
-        if (count.type != TokenType::Number) {
-            throw std::runtime_error("expected numeric limit");
-        }
-        limit = static_cast<std::size_t>(parser_detail::parseIntLiteral(count.lexeme));
-    }
     Select query{std::move(tableName), std::move(joins),   std::move(columns),
-                 std::move(where),     std::move(groupBy), std::move(orderBy),
-                 limit,                std::move(derivedCtes)};
+                 std::move(where),     std::move(groupBy), std::nullopt,
+                 std::nullopt,         std::move(derivedCtes)};
     query.tableAlias = std::move(tableAlias);
     return query;
 }

@@ -8,6 +8,7 @@
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace VertexDB {
@@ -57,40 +58,73 @@ namespace {
 
 } // namespace
 
+QueryResult SubqueryRuntime::evaluateSelectResult(
+    const Select &body,
+    const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps) const {
+    if (!body.setOps.empty()) {
+        Select left = body;
+        left.setOps.clear();
+        left.orderBy = std::nullopt;
+        left.limit = std::nullopt;
+        QueryResult combined = evaluateSelectResult(left, extraTemps);
+        for (const auto &arm : body.setOps) {
+            if (!arm.select) {
+                throw std::runtime_error("set operation is missing a SELECT arm");
+            }
+            combined = applySetOperation(arm.op, std::move(combined),
+                                         evaluateSelectResult(*arm.select, extraTemps));
+        }
+        if (body.orderBy) {
+            const auto orderColumn = resolveResultColumn(combined.columns, body.orderBy->column);
+            if (!orderColumn) {
+                throw std::runtime_error("unknown ORDER BY column");
+            }
+            sortRowsByColumn(combined.rows, *orderColumn, body.orderBy->ascending);
+        }
+        if (body.limit && combined.rows.size() > *body.limit) {
+            combined.rows.resize(*body.limit);
+        }
+        return combined;
+    }
+
+    RewriteResult rewrite;
+    const Select prepared = prepareSelect(body, rewrite);
+    std::unordered_map<std::string, std::shared_ptr<Table>> temps = extraTemps;
+    for (const auto &nested : rewrite.materialize) {
+        temps.emplace(nested.name, materializeCteTable(nested));
+    }
+    if (!prepared.joins.empty()) {
+        return ctx_.select->executeJoinSelect(prepared, temps);
+    }
+    auto source = ctx_.select->requireTable(prepared.table, temps);
+    const auto plan = ctx_.select->planPreparedSelect(prepared, *source, rewrite);
+    std::vector<std::string> sourceColumns;
+    for (const auto &column : source->schema()) {
+        sourceColumns.push_back(column.name);
+    }
+    auto rows = ctx_.select->collectRows(prepared, *source, plan);
+    return ctx_.select->finalizeSelectResult(prepared, std::move(sourceColumns), std::move(rows));
+}
+
 std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte) const {
     if (!cte.body) {
         throw std::runtime_error("materialized CTE is missing a body");
     }
 
-    auto evaluateSelectToResult =
-        [&](const Select &body,
-            const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps =
-                {}) -> QueryResult {
-        RewriteResult rewrite;
-        const Select prepared = prepareSelect(body, rewrite);
-        std::unordered_map<std::string, std::shared_ptr<Table>> temps = extraTemps;
-        for (const auto &nested : rewrite.materialize) {
-            temps.emplace(nested.name, materializeCteTable(nested));
-        }
-        if (!prepared.joins.empty()) {
-            return ctx_.select->executeJoinSelect(prepared, temps);
-        }
-        auto source = ctx_.select->requireTable(prepared.table, temps);
-        const auto plan = ctx_.select->planPreparedSelect(prepared, *source, rewrite);
-        std::vector<std::string> sourceColumns;
-        for (const auto &column : source->schema()) {
-            sourceColumns.push_back(column.name);
-        }
-        auto rows = ctx_.select->collectRows(prepared, *source, plan);
-        return ctx_.select->finalizeSelectResult(prepared, std::move(sourceColumns),
-                                                 std::move(rows));
-    };
-
     if (cte.recursive) {
         if (!cte.recursiveArm) {
             throw std::runtime_error("recursive CTE is missing a recursive arm");
         }
-        auto anchorResult = evaluateSelectToResult(*cte.body);
+        auto anchorResult = evaluateSelectResult(*cte.body);
+        if (cte.recursiveDistinct) {
+            anchorResult.rows = deduplicateRows(std::move(anchorResult.rows));
+        }
+        std::unordered_set<Row, RowHash> seen;
+        if (cte.recursiveDistinct) {
+            for (const auto &row : anchorResult.rows) {
+                seen.insert(row);
+            }
+        }
         // Copy rows before first tableFromQueryResult moves them out of anchorResult.
         QueryResult deltaSource = anchorResult;
         auto result = tableFromQueryResult(cte.name, std::move(anchorResult));
@@ -102,7 +136,17 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
             }
             std::unordered_map<std::string, std::shared_ptr<Table>> temps;
             temps.emplace(cte.name, delta);
-            auto stepResult = evaluateSelectToResult(*cte.recursiveArm, temps);
+            auto stepResult = evaluateSelectResult(*cte.recursiveArm, temps);
+            if (cte.recursiveDistinct) {
+                QueryResult filtered = stepResult;
+                filtered.rows.clear();
+                for (auto &row : stepResult.rows) {
+                    if (seen.insert(row).second) {
+                        filtered.rows.push_back(std::move(row));
+                    }
+                }
+                stepResult = std::move(filtered);
+            }
             if (result->rowCount() + stepResult.rows.size() > recursiveCteLimits().maxRows) {
                 throw std::runtime_error("WITH RECURSIVE exceeded maximum row count");
             }
@@ -118,7 +162,7 @@ std::shared_ptr<Table> SubqueryRuntime::materializeCteTable(const CteEntry &cte)
         return result;
     }
 
-    return tableFromQueryResult(cte.name, evaluateSelectToResult(*cte.body));
+    return tableFromQueryResult(cte.name, evaluateSelectResult(*cte.body));
 }
 
 } // namespace VertexDB

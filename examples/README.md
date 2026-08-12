@@ -16,7 +16,7 @@ cmake --build build
 [`company.sql`](company.sql) creates a small company schema, inserts employees and departments,
 runs filtered and join queries, exercises a rolled-back transaction, and saves the database.
 For the full SQL surface (including `RIGHT`/`FULL`/`CROSS` joins, `JOIN` inside `IN`/`EXISTS`,
-CTE join targets, and minimal `WITH RECURSIVE`), see [docs/sql.md](../docs/sql.md).
+CTE join targets, and `WITH RECURSIVE`), see [docs/sql.md](../docs/sql.md).
 
 ```sh
 ./build/VertexDB_cli < examples/company.sql

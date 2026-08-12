@@ -16,7 +16,7 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` `[OUTER]` and `CROSS`
   joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
   `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED`, nesting depth up to 3, minimal
-  `WITH RECURSIVE` with `UNION ALL`), derived tables,
+  `WITH RECURSIVE` with `UNION` / `UNION ALL`), derived tables,
   `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` / `JOIN` inside them and
   correlation through four outer frames), outer `JOIN` against CTE/derived aliases (force
   materialize), expression indexes (including `trigram(column)`),
@@ -25,7 +25,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete (UPDATE/DELETE `WHERE` uses the same planner index access paths as SELECT), table management,
   multi-join chains (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), CTE/derived-table
-  inlining or materialization (including recursive delta iteration), correlated `IN`/`EXISTS` with
+  inlining or materialization (including recursive delta iteration), set operations (`UNION` /
+  `UNION ALL` / `INTERSECT` / `EXCEPT`), correlated `IN`/`EXISTS` with
   alias scopes (including joined subqueries), expression-index maintenance (including trigram),
   prepared AST binding, save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
@@ -69,12 +70,13 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
   frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
   derived tables and `JOIN` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias (force
-  materialize), minimal `WITH RECURSIVE` (`UNION ALL`, delta self-ref, 1000-iteration /
+  materialize), `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta self-ref, 1000-iteration /
   100000-row caps), `FROM` / `JOIN` table aliases (`AS` optional) for qualification and
   correlation scopes, and expression indexes (`column`, `-column`, `column+/-literal`,
   `trigram(column)`). CTE/derived bodies may include left-deep `INNER` / `LEFT` / `RIGHT` /
   `FULL` / `CROSS` joins. Parser/tokenizer failures report `line`/`column` source positions via
-  `ParseError`.
+  `ParseError`. Set operations (`UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`) are left-associative
+  outside and inside CTE bodies; recursive CTEs accept bare `UNION` (dedup) or `UNION ALL`.
 - Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL`
   `[OUTER]` and `CROSS` chains (`ON col op col` for non-`CROSS`). General DDL beyond
   the current table/index commands is still out of scope.
@@ -85,17 +87,19 @@ Shipped recently (no longer open work): literal `IN` lists, indexed `UPDATE`/`DE
 transactional `CREATE INDEX` / `DROP INDEX`, same-column `OR`→`IN`, MVCC `UPDATE` close-prior-version,
 `EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), `EXPLAIN UPDATE`/`DELETE`, multi-index
 AND intersect packaging, the SI anomaly concurrency wedge, composite Intersect∪Union for fully
-indexable nested `OR` under `AND`, transactional catalog DDL, and `SAVE`/`LOAD` inside open
-transactions (implicit commit / rollback).
+indexable nested `OR` under `AND`, transactional catalog DDL, `SAVE`/`LOAD` inside open
+transactions (implicit commit / rollback), and set operations (`UNION` / `UNION ALL` / `INTERSECT` /
+`EXCEPT`, including recursive `UNION` dedup).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- Recursive / set-ops beyond minimal `WITH RECURSIVE … UNION ALL` (see [sql.md](sql.md))
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
 - Planner follow-ups: partial nested `OR` under `AND` (indexable arms + complementary residual
   under the outer AND) without expanding to full SSI-style boolean algebra
+- Recursive follow-ups: multiple recursive CTEs / mutual recursion, or binding the recursive arm to
+  the full accumulator instead of the delta; `INTERSECT ALL` / `EXCEPT ALL`
 
 Demo wedges (done):
 

@@ -87,13 +87,9 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
     EXPECT_THROW((void)parser.parse(
                      "WITH RECURSIVE t AS (SELECT id FROM Nodes) SELECT id FROM t;"),
                  std::runtime_error);
+    // Self-reference without WITH RECURSIVE is rejected (set-ops alone are not enough).
     EXPECT_THROW((void)parser.parse(
                      "WITH t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
-                     "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
-                     "SELECT id FROM t;"),
-                 std::runtime_error);
-    EXPECT_THROW((void)parser.parse(
-                     "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION "
                      "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) "
                      "SELECT id FROM t;"),
                  std::runtime_error);
@@ -129,7 +125,7 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
             "SELECT Nodes.id FROM Nodes JOIN t ON Nodes.parent_id = t.id) SELECT id FROM t;"),
         std::runtime_error);
 
-    // WITH inside recursive arm is unsupported.
+    // WITH inside recursive arm is unsupported (arm must start with SELECT).
     EXPECT_THROW(
         (void)parser.parse(
             "WITH RECURSIVE t AS (SELECT id FROM Nodes WHERE id = 1 UNION ALL "
@@ -137,8 +133,8 @@ TEST(NestedSqlTests, WithRecursiveDocumentedRefusals) {
             "ON Nodes.parent_id = t.id) SELECT id FROM t;"),
         std::runtime_error);
 
-    // General set ops outside recursive CTE bodies are unsupported.
-    EXPECT_THROW((void)parser.parse("SELECT id FROM Nodes UNION SELECT id FROM Nodes;"),
+    EXPECT_THROW((void)parser.parse(
+                     "SELECT id FROM Nodes INTERSECT ALL SELECT id FROM Nodes;"),
                  std::runtime_error);
 }
 

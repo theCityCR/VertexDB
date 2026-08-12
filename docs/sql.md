@@ -69,6 +69,9 @@ WITH RECURSIVE tree AS (
   ON Nodes.parent_id = tree.id
 )
 SELECT name FROM tree;
+SELECT id FROM A UNION SELECT id FROM B ORDER BY id;
+SELECT id FROM A INTERSECT SELECT id FROM B;
+SELECT id FROM A EXCEPT SELECT id FROM B;
 EXPLAIN SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN ANALYZE SELECT name FROM Employees WHERE id = 1 AND salary > 100000.0;
 EXPLAIN UPDATE Employees SET name = "x" WHERE id = 1;
@@ -140,14 +143,21 @@ derived-table bodies may include left-deep joins (`INNER` / `LEFT` / `RIGHT` / `
 `WITH` / derived tables and `JOIN` are allowed inside `IN`/`EXISTS` subqueries. Outer `JOIN`
 against a CTE/derived alias force-materializes the CTE (body filters stay inside the temp).
 
-`WITH RECURSIVE name AS ( anchor UNION ALL recursive_arm )` materializes a working table by
+`WITH RECURSIVE name AS ( anchor UNION [ALL] recursive_arm )` materializes a working table by
 evaluating the anchor, then repeatedly evaluating the recursive arm with the CTE name bound to the
 previous iteration's **delta** (new rows only). Exactly one self-reference to `name` is required in
-the recursive arm (as `FROM`/`JOIN` table). Bare `UNION`, multiple recursive CTEs, and mutual
-recursion are rejected. Iteration stops when the delta is empty, or when a safety cap is hit
-(1000 iterations or 100000 accumulated rows) — those caps are intentional v1 limits.
+the recursive arm (as `FROM`/`JOIN` table). Bare `UNION` (deduplicating) excludes rows already present
+in the accumulating working table, which stops graph cycles. `UNION ALL` keeps duplicates and can
+loop on cyclic data until a safety cap trips. Multiple recursive CTEs and mutual recursion are
+rejected. Iteration stops when the delta is empty, or when a safety cap is hit (1000 iterations or
+100000 accumulated rows) — those caps are intentional v1 limits.
 The row cap is checked before inserting a recursive step so a single oversized step cannot
 partially accumulate past the limit.
+
+Top-level and CTE-body set operations are left-associative: `UNION` / `UNION ALL` / `INTERSECT` /
+`EXCEPT` (distinct forms). `INTERSECT ALL` and `EXCEPT ALL` are rejected. Arms must project the same
+column count; `ORDER BY` / `LIMIT` after the chain apply to the combined result. Set-op CTE bodies
+are force-materialized (they are not inlined).
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where
@@ -259,9 +269,9 @@ Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`colum
 
 Intentional v1 limits (documented, not near-term polish):
 
-- `UNION` (deduplicating) inside recursive CTEs; only `UNION ALL` is supported
 - Multiple recursive CTEs in one `WITH`, mutual recursion, or self-ref to the full accumulator
-- General set operations outside recursive CTE bodies
+  (recursive `UNION` still binds the arm to the prior **delta**, not the full working table)
+- `INTERSECT ALL` / `EXCEPT ALL`
 - Derived-table syntax in the JOIN position (`JOIN (SELECT …) AS alias`); use a CTE name or put
   the join inside the CTE/derived body instead
 - Joins beyond left-deep chains with `ON col op col` (or no `ON` for `CROSS`)

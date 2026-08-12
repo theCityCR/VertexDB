@@ -154,6 +154,7 @@ if(VERTEXDB_BUILD_TESTS)
         tests/nested_correlation_tests.cpp
         tests/nested_subquery_tests.cpp
         tests/nested_recursive_tests.cpp
+        tests/set_ops_tests.cpp
         tests/planner_access_tests.cpp
         tests/planner_intersect_union_tests.cpp
         tests/planner_explain_tests.cpp

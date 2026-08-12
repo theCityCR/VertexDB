@@ -29,10 +29,12 @@ inline std::int64_t parseIntLiteral(std::string_view text) {
     return equalsIgnoreCase(lexeme, "WHERE") || equalsIgnoreCase(lexeme, "JOIN") ||
            equalsIgnoreCase(lexeme, "GROUP") || equalsIgnoreCase(lexeme, "ORDER") ||
            equalsIgnoreCase(lexeme, "LIMIT") || equalsIgnoreCase(lexeme, "UNION") ||
+           equalsIgnoreCase(lexeme, "INTERSECT") || equalsIgnoreCase(lexeme, "EXCEPT") ||
            equalsIgnoreCase(lexeme, "HAVING") || equalsIgnoreCase(lexeme, "ON") ||
            equalsIgnoreCase(lexeme, "LEFT") || equalsIgnoreCase(lexeme, "RIGHT") ||
            equalsIgnoreCase(lexeme, "FULL") || equalsIgnoreCase(lexeme, "INNER") ||
-           equalsIgnoreCase(lexeme, "OUTER") || equalsIgnoreCase(lexeme, "CROSS");
+           equalsIgnoreCase(lexeme, "OUTER") || equalsIgnoreCase(lexeme, "CROSS") ||
+           equalsIgnoreCase(lexeme, "ALL");
 }
 
 [[nodiscard]] inline bool isJoinIntroducer(std::string_view lexeme) {

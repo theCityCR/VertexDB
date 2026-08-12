@@ -143,8 +143,10 @@ CTE/derived alias also force-materializes so body filters stay scoped inside the
 Uncorrelated `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`, and
 optionally containing joins) materialize into value lists when uncorrelated; correlated
 `IN`/`EXISTS` bind outer scopes per row for up to four FROM frames, including `FROM` / `JOIN`
-table aliases. Nested `WITH` up to depth 3 reuses the same inliner. Minimal `WITH RECURSIVE`
-(`UNION ALL`, delta binding, iteration/row caps) always force-materializes. Caps default to 1000
+table aliases. Nested `WITH` up to depth 3 reuses the same inliner. `WITH RECURSIVE`
+(`UNION` / `UNION ALL`, delta binding, iteration/row caps) always force-materializes. Bare `UNION`
+deduplicates against the accumulating working table (cycle-safe); `UNION ALL` does not.
+Caps default to 1000
 iterations and 100000 accumulated rows (`recursiveCteLimits()`); the row cap is checked before
 inserting a recursive step.
 Expression indexes match `(expr) =/>/< const` predicates; `trigram(column)` indexes serve substring

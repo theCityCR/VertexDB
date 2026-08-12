@@ -8,6 +8,7 @@
 // SelectEngine may call SubqueryRuntime::matches only (no mutual recursion through execute).
 
 #include "VertexDB/execution/execution_context.hpp"
+#include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/parser/ast.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 #include "VertexDB/storage/table.hpp"
@@ -15,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace VertexDB {
@@ -42,6 +44,11 @@ class SubqueryRuntime {
     [[nodiscard]] std::shared_ptr<Table> materializeCteTable(const CteEntry &cte) const;
 
   private:
+    // Evaluate a SELECT (including set-op chains) to a QueryResult without calling SelectEngine::execute.
+    [[nodiscard]] QueryResult evaluateSelectResult(
+        const Select &body,
+        const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps = {}) const;
+
     ExecutionContext &ctx_;
 };
 

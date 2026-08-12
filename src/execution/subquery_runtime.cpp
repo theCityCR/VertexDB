@@ -53,6 +53,19 @@ Predicate SubqueryRuntime::materializePredicate(const Predicate &predicate) cons
 }
 
 std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquery) const {
+    if (!subquery.setOps.empty()) {
+        auto result = evaluateSelectResult(subquery);
+        if (result.columns.size() != 1) {
+            throw std::runtime_error("IN subquery must project exactly one column");
+        }
+        std::vector<Value> values;
+        values.reserve(result.rows.size());
+        for (const auto &row : result.rows) {
+            values.push_back(row[0]);
+        }
+        return values;
+    }
+
     RewriteResult rewrite;
     const Select prepared = prepareSelect(subquery, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
@@ -114,6 +127,13 @@ std::vector<Value> SubqueryRuntime::evaluateSubqueryValues(const Select &subquer
 }
 
 bool SubqueryRuntime::evaluateExists(const Select &subquery) const {
+    if (!subquery.setOps.empty()) {
+        Select limited = subquery;
+        // Prefer a cheap existence check: evaluate fully (set ops need both arms) then test empty.
+        auto result = evaluateSelectResult(limited);
+        return !result.rows.empty();
+    }
+
     RewriteResult rewrite;
     Select prepared = prepareSelect(subquery, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;

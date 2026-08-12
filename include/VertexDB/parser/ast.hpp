@@ -25,13 +25,27 @@ enum class MaterializeMode {
     NotMaterialized,
 };
 
+enum class SetOpKind : std::uint8_t {
+    Union,      // DISTINCT
+    UnionAll,
+    Intersect,  // DISTINCT
+    Except,     // DISTINCT
+};
+
+struct SetOpArm {
+    SetOpKind op{SetOpKind::UnionAll};
+    std::shared_ptr<Select> select;
+};
+
 struct CteEntry {
     std::string name;
-    // Anchor body; for recursive CTEs this is the non-recursive UNION ALL arm.
+    // Anchor body; for recursive CTEs this is the non-recursive UNION [ALL] arm.
     std::shared_ptr<Select> body;
     MaterializeMode materializeMode{MaterializeMode::DefaultInline};
     bool recursive{false};
-    // Recursive UNION ALL arm; self-references `name` (bound to the working delta).
+    // true = bare UNION (dedup / cycle filter); false = UNION ALL.
+    bool recursiveDistinct{false};
+    // Recursive UNION [ALL] arm; self-references `name` (bound to the working delta).
     std::shared_ptr<Select> recursiveArm;
 };
 
@@ -179,6 +193,9 @@ struct Select {
     std::optional<std::size_t> limit;
     // CTE bodies are stored by shared_ptr to avoid an incomplete-type cycle.
     std::vector<CteEntry> ctes;
+    // Left-associative set-op chain; empty means a plain SELECT. ORDER BY / LIMIT bind to the
+    // whole chain (stored on this outer Select).
+    std::vector<SetOpArm> setOps;
     // Optional FROM alias (`FROM Employees AS e`); correlation / qualifiers use this scope name.
     std::optional<std::string> tableAlias;
     bool hasOuterRefs{false};

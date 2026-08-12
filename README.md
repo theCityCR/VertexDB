@@ -58,7 +58,8 @@ ROLLBACK;
 Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
-depth up to 3; minimal `WITH RECURSIVE`), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, `EXPLAIN` /
+depth up to 3; `WITH RECURSIVE` with `UNION` / `UNION ALL`), derived tables `FROM (SELECT …) [AS] alias`, `IN`/`EXISTS` subqueries, set operations
+(`UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`), `EXPLAIN` /
   `EXPLAIN ANALYZE`,
 prepared statements that store a typed AST with `?` parameter slots, table rename/drop/list
 operations, and `EXIT`.
@@ -99,8 +100,9 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 247 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
-  subquery / recursive), planner behavior (access / intersect-union / explain / mutation / join-stats),
+- 266 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+  subquery / recursive), set operations (`UNION` / `INTERSECT` / `EXCEPT`), planner behavior (access /
+  intersect-union / explain / mutation / join-stats),
   transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
   (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
@@ -131,7 +133,7 @@ Or feed an example script:
   partial union of indexable arms with a residual OR complementary scan) are supported
 - Nested SQL is intentionally limited: `WITH` nesting deeper than depth 3 and correlation deeper
   than four outer frames are rejected. Outer `JOIN` against a CTE/derived alias force-materializes
-  the CTE. Minimal `WITH RECURSIVE` (`UNION ALL`, delta iteration, safety caps) and `JOIN` inside
+  the CTE. `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta iteration, safety caps) and `JOIN` inside
   `IN`/`EXISTS` are supported. Expression indexes cover column / unary minus / `+/-` literal /
   `trigram(column)` (substring `LIKE`); prefix `LIKE` uses ordered indexes; regex `~` is residual
   full-scan. `FROM` / `JOIN` table aliases and `WITH` / derived tables inside `IN`/`EXISTS` are
@@ -147,13 +149,14 @@ include snapshot v4 + page-image WAL, correlated subqueries / expression indexes
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
 `WITH` nesting depth up to 3 and correlation through four outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
-inside `IN`/`EXISTS`, CTE join targets, minimal `WITH RECURSIVE`, parse diagnostics with source
+inside `IN`/`EXISTS`, CTE join targets, `WITH RECURSIVE` (`UNION` / `UNION ALL`), parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
 transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`),
 same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for UPDATE/DELETE,
 `EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, composite Intersect∪Union for
 fully indexable nested `OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit
-commit/rollback), and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
+commit/rollback), top-level and CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` /
+`EXCEPT`, recursive `UNION` dedup), and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
 CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /

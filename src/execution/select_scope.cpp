@@ -162,6 +162,14 @@ void normalizeSelectScopeQualifiers(Select &select) {
         if (cte.body) {
             normalizeSelectScopeQualifiers(*cte.body);
         }
+        if (cte.recursiveArm) {
+            normalizeSelectScopeQualifiers(*cte.recursiveArm);
+        }
+    }
+    for (auto &arm : select.setOps) {
+        if (arm.select) {
+            normalizeSelectScopeQualifiers(*arm.select);
+        }
     }
 
     if (!select.joins.empty()) {

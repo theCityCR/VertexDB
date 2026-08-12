@@ -29,12 +29,26 @@ Select Parser::parseSubquerySelect(bool /*allowOuterRefs*/) {
 void Parser::markOuterRefs(Select &select, std::string_view innerTable,
                            bool nestedUnderCorrelated) {
     for (auto &cte : select.ctes) {
-        if (!cte.body) {
-            continue;
+        if (cte.body) {
+            markOuterRefs(*cte.body, selectScopeName(*cte.body), nestedUnderCorrelated);
+            if (cte.body->hasOuterRefs) {
+                select.hasOuterRefs = true;
+            }
         }
-        markOuterRefs(*cte.body, selectScopeName(*cte.body), nestedUnderCorrelated);
-        if (cte.body->hasOuterRefs) {
-            select.hasOuterRefs = true;
+        if (cte.recursiveArm) {
+            markOuterRefs(*cte.recursiveArm, selectScopeName(*cte.recursiveArm),
+                          nestedUnderCorrelated);
+            if (cte.recursiveArm->hasOuterRefs) {
+                select.hasOuterRefs = true;
+            }
+        }
+    }
+    for (auto &arm : select.setOps) {
+        if (arm.select) {
+            markOuterRefs(*arm.select, selectScopeName(*arm.select), nestedUnderCorrelated);
+            if (arm.select->hasOuterRefs) {
+                select.hasOuterRefs = true;
+            }
         }
     }
     if (select.where) {

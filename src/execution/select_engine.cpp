@@ -17,7 +17,52 @@ namespace VertexDB {
 
 SelectEngine::SelectEngine(ExecutionContext &ctx) noexcept : ctx_(ctx) {}
 
+namespace {
+
+[[nodiscard]] Select stripSetOpsAndOrderLimit(Select select) {
+    select.setOps.clear();
+    select.orderBy = std::nullopt;
+    select.limit = std::nullopt;
+    return select;
+}
+
+[[nodiscard]] QueryResult applyOrderLimitToResult(QueryResult result, const Select &command) {
+    if (!result.success) {
+        return result;
+    }
+    if (command.orderBy) {
+        const auto orderColumn = resolveResultColumn(result.columns, command.orderBy->column);
+        if (!orderColumn) {
+            throw std::runtime_error("unknown ORDER BY column");
+        }
+        sortRowsByColumn(result.rows, *orderColumn, command.orderBy->ascending);
+    }
+    if (command.limit && result.rows.size() > *command.limit) {
+        result.rows.resize(*command.limit);
+    }
+    return result;
+}
+
+} // namespace
+
 QueryResult SelectEngine::execute(const Select &command) {
+    if (!command.setOps.empty()) {
+        Select left = stripSetOpsAndOrderLimit(command);
+        QueryResult combined = execute(left);
+        for (const auto &arm : command.setOps) {
+            if (!arm.select) {
+                throw std::runtime_error("set operation is missing a SELECT arm");
+            }
+            Select right = *arm.select;
+            // Outer WITH CTEs are visible to every arm.
+            if (right.ctes.empty() && !command.ctes.empty()) {
+                right.ctes = command.ctes;
+            }
+            combined = applySetOperation(arm.op, std::move(combined), execute(right));
+        }
+        return applyOrderLimitToResult(std::move(combined), command);
+    }
+
     RewriteResult rewrite;
     const Select prepared = ctx_.subquery->prepareSelect(command, rewrite);
     std::unordered_map<std::string, std::shared_ptr<Table>> temps;
@@ -70,6 +115,56 @@ QueryResult SelectEngine::explain(const ExplainQuery &command) {
     }
 
     const Select &selectQuery = std::get<Select>(command.query);
+
+    if (!selectQuery.setOps.empty()) {
+        QueryResult result;
+        result.success = true;
+        result.message = "explain";
+        result.columns = {"plan"};
+        result.rows.push_back({Value{std::string{"set operation left arm"}}});
+        ExplainQuery leftExplain;
+        leftExplain.analyze = false;
+        Select left = selectQuery;
+        left.setOps.clear();
+        left.orderBy = std::nullopt;
+        left.limit = std::nullopt;
+        leftExplain.query = left;
+        auto leftPlan = explain(leftExplain);
+        for (auto &row : leftPlan.rows) {
+            result.rows.push_back(std::move(row));
+        }
+        for (const auto &arm : selectQuery.setOps) {
+            result.rows.push_back(
+                {Value{std::string{setOpKindName(arm.op)}}});
+            if (!arm.select) {
+                continue;
+            }
+            ExplainQuery rightExplain;
+            rightExplain.analyze = false;
+            Select right = *arm.select;
+            if (right.ctes.empty() && !selectQuery.ctes.empty()) {
+                right.ctes = selectQuery.ctes;
+            }
+            rightExplain.query = right;
+            auto rightPlan = explain(rightExplain);
+            for (auto &row : rightPlan.rows) {
+                result.rows.push_back(std::move(row));
+            }
+        }
+        if (command.analyze) {
+            const auto started = std::chrono::steady_clock::now();
+            auto executed = execute(selectQuery);
+            const auto elapsedMs = std::chrono::duration<double, std::milli>(
+                                       std::chrono::steady_clock::now() - started)
+                                       .count();
+            auto summary = appendExplainAnalyzeActuals(
+                std::string{"set operation result"}, executed.rows.size(), std::nullopt,
+                elapsedMs);
+            result.rows.insert(result.rows.begin(), {Value{std::move(summary)}});
+        }
+        return result;
+    }
+
     const auto started = std::chrono::steady_clock::now();
 
     RewriteResult rewrite;

@@ -116,8 +116,12 @@ RewriteResult rewriteSelect(const Select &query) {
     // Fully rewrite the CTE/derived body first (nested derived tables become synthetic CTEs).
     Select bodySelect = rewriteBody(*matched->body, result);
 
-    if (matched->recursive) {
-        result.notes.push_back("materialized recursive CTE " + matched->name);
+    if (matched->recursive || !bodySelect.setOps.empty()) {
+        if (matched->recursive) {
+            result.notes.push_back("materialized recursive CTE " + matched->name);
+        } else {
+            result.notes.push_back("materialized CTE " + matched->name + " (set operation)");
+        }
         Select remaining = query;
         remaining.ctes.clear();
         for (const auto &cte : query.ctes) {
@@ -127,7 +131,7 @@ RewriteResult rewriteSelect(const Select &query) {
         }
         CteEntry materializeEntry = *matched;
         materializeEntry.body = std::make_shared<Select>(std::move(bodySelect));
-        if (matched->recursiveArm) {
+        if (matched->recursive && matched->recursiveArm) {
             materializeEntry.recursiveArm =
                 std::make_shared<Select>(rewriteBody(*matched->recursiveArm, result));
         }

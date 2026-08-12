@@ -53,7 +53,7 @@ CLI
   than owning the type.
 
 - `planner`: CTE/derived-table rewrite (inline, `AS MATERIALIZED`, force-materialize for outer
-  `JOIN` targets and minimal `WITH RECURSIVE`), correlated/`IN` prep, and cost-based access-path /
+  `JOIN` targets and `WITH RECURSIVE`), correlated/`IN` prep, set operations, and cost-based access-path /
   join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
   `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
   complementary scan and composite Intersect∪Union for fully indexable nested OR under AND),
@@ -165,12 +165,12 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 2. `Tokenizer` emits a token stream.
 3. `Parser` creates a strongly typed `Query` variant (including aggregates/`GROUP BY`, multi-join
    chains with `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` and non-equi `ON`, `WITH` materialize modes,
-   nesting depth up to 3, and minimal `WITH RECURSIVE`, `IN`/`EXISTS`, `LIKE`/`~`, expression
+   nesting depth up to 3, and `WITH RECURSIVE` (`UNION` / `UNION ALL`), `IN`/`EXISTS`, set ops, `LIKE`/`~`, expression
    indexes including trigram, and `EXPLAIN` / `EXPLAIN ANALYZE`). Prepared statements store that
    AST with `?` parameter slots for later binding.
 4. For `SELECT`/`EXPLAIN`/`EXPLAIN ANALYZE`, a rewriter inlines or materializes CTEs/derived tables
    (including nested `WITH` up to depth 3, `WITH`/`JOIN` inside `IN`/`EXISTS`, outer `JOIN` against
-   CTE/derived aliases, and minimal `WITH RECURSIVE`); the executor materializes uncorrelated `IN`
+   CTE/derived aliases, and `WITH RECURSIVE`); the executor materializes uncorrelated `IN`
    subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to four outer binding
    frames (including `FROM` / `JOIN` table aliases), routing joined subqueries through
    `executeJoinSelect`.

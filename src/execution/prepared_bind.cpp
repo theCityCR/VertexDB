@@ -80,6 +80,15 @@ Select bindSelect(const Select &select, const std::vector<Value> &parameters, st
         if (cte.body) {
             cte.body = std::make_shared<Select>(bindSelect(*cte.body, parameters, seen));
         }
+        if (cte.recursiveArm) {
+            cte.recursiveArm =
+                std::make_shared<Select>(bindSelect(*cte.recursiveArm, parameters, seen));
+        }
+    }
+    for (auto &arm : bound.setOps) {
+        if (arm.select) {
+            arm.select = std::make_shared<Select>(bindSelect(*arm.select, parameters, seen));
+        }
     }
     return bound;
 }

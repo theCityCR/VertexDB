@@ -106,14 +106,29 @@ Select SubqueryRuntime::bindOuterReferences(const Select &subquery, const Row &o
     Select bound = subquery;
     bound.hasOuterRefs = false;
     for (auto &cte : bound.ctes) {
-        if (!cte.body) {
-            continue;
+        if (cte.body) {
+            auto body = bindOuterReferences(*cte.body, outerRow, outerTable, outerScope);
+            if (body.hasOuterRefs) {
+                bound.hasOuterRefs = true;
+            }
+            cte.body = std::make_shared<Select>(std::move(body));
         }
-        auto body = bindOuterReferences(*cte.body, outerRow, outerTable, outerScope);
-        if (body.hasOuterRefs) {
-            bound.hasOuterRefs = true;
+        if (cte.recursiveArm) {
+            auto arm = bindOuterReferences(*cte.recursiveArm, outerRow, outerTable, outerScope);
+            if (arm.hasOuterRefs) {
+                bound.hasOuterRefs = true;
+            }
+            cte.recursiveArm = std::make_shared<Select>(std::move(arm));
         }
-        cte.body = std::make_shared<Select>(std::move(body));
+    }
+    for (auto &arm : bound.setOps) {
+        if (arm.select) {
+            auto right = bindOuterReferences(*arm.select, outerRow, outerTable, outerScope);
+            if (right.hasOuterRefs) {
+                bound.hasOuterRefs = true;
+            }
+            arm.select = std::make_shared<Select>(std::move(right));
+        }
     }
     if (bound.where) {
         bound.where = bindOuterReferences(*bound.where, outerRow, outerTable, outerScope);
