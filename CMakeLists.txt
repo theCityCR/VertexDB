@@ -73,7 +73,7 @@ add_library(VertexDB
     src/planner/query_planner.cpp
     src/planner/query_planner_select.cpp
     src/planner/query_planner_access.cpp
-    src/planner/planner_predicate.cpp
+    src/planner/query_planner_predicate.cpp
     src/planner/query_planner_join.cpp
     src/planner/query_planner_format.cpp
     src/planner/rewriter.cpp

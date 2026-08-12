@@ -60,7 +60,7 @@ CLI
   `EXPLAIN ANALYZE` formatting lives in `query_planner_format.cpp`. `QueryPlanner` is
   split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`
   orchestration), `query_planner_access.cpp` (OR-union / AND-intersect / best-path finalize),
-  `planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
+  `query_planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
 existence, `LIKE`, or regex node owns only the fields valid for that shape. Physical access paths

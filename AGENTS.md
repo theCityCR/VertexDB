@@ -16,7 +16,7 @@ CLI → Parser → QueryExecutor → Planner / Storage / Indexes / Persistence /
 | `include/VertexDB/<module>/` | Public headers (mirrors `src/`) |
 | `src/common/` | Values, `IndexExpression`, string/binary helpers |
 | `src/parser/` | Tokenizer + AST; one `Parser`, DDL/DML/SELECT/WITH/outer-refs/predicate TUs |
-| `src/planner/` | Rewriter + costed access paths / joins (`query_planner_select.cpp` orchestrates `planSelect`; `query_planner_access.cpp` owns OR-union / AND-intersect / finalize) |
+| `src/planner/` | Rewriter + costed access paths / joins (`query_planner_select.cpp` orchestrates `planSelect`; `query_planner_access.cpp` owns OR-union / AND-intersect / finalize; `query_planner_predicate.cpp` owns predicate trees/costing) |
 | `src/execution/` | `QueryExecutor` façade; `ExecutionContext`; `SelectEngine` (+ scan/join), `DmlEngine`, `CatalogEngine`, subquery (+ bind/cte TUs), txn, recovery |
 | `src/storage/` | `Database` / `Table` / `RowStore` (+ `PageRowStore` CRUD/buffer/io TUs, `VectorRowStore`) / buffer pool / stats |
 | `src/indexing/` | `IndexManager`, hash and B+ tree |
