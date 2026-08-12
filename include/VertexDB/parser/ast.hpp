@@ -57,6 +57,10 @@ struct CreateDatabase {
     std::string name;
 };
 
+struct DropDatabase {
+    std::string name;
+};
+
 struct CreateTable {
     std::string name;
     std::vector<Column> columns;
@@ -252,8 +256,8 @@ struct ExecutePrepared {
     std::vector<Value> parameters;
 };
 struct ExplainQuery {
-    // SELECT/WITH, or plain UPDATE/DELETE (ANALYZE only for SELECT/WITH).
-    std::variant<Select, Update, Delete> query;
+    // SELECT/WITH, plain UPDATE/DELETE/INSERT (ANALYZE only for SELECT/WITH).
+    std::variant<Select, Update, Delete, Insert> query;
     // When true, execute once and append actual_rows / candidates / actual_time_ms.
     bool analyze{false};
 };
@@ -264,8 +268,8 @@ struct Analyze {
 struct Exit {};
 
 using Query =
-    std::variant<CreateDatabase, CreateTable, DropTable, RenameTable, ListTables, Insert, Select,
-                 Update, Delete, CreateIndex, DropIndex, SaveDatabase, LoadDatabase,
+    std::variant<CreateDatabase, DropDatabase, CreateTable, DropTable, RenameTable, ListTables,
+                 Insert, Select, Update, Delete, CreateIndex, DropIndex, SaveDatabase, LoadDatabase,
                  BeginTransaction, CommitTransaction, RollbackTransaction, PrepareStatement,
                  ExecutePrepared, ExplainQuery, Analyze, Exit>;
 

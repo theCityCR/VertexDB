@@ -87,14 +87,13 @@ void Parser::markOuterRefs(Predicate &predicate, std::string_view innerTable,
                         outer = true;
                     }
                 }
-                if (outer) {
-                    // Allow up to four outer FROM frames while correlating.
-                    if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
-                        throw std::runtime_error(
-                            "correlated subquery exceeds maximum outer depth");
+                    if (outer) {
+                        if (outerTableStack_.size() > kMaxOuterCorrelationDepth) {
+                            throw std::runtime_error(
+                                "correlated subquery exceeds maximum outer depth");
+                        }
+                        node.referencesOuter = true;
                     }
-                    node.referencesOuter = true;
-                }
             } else if constexpr (std::is_same_v<T, LikePred> || std::is_same_v<T, RegexPred> ||
                                  std::is_same_v<T, InListPred>) {
                 if (refersToOuterTable(node.column, innerTable, outerTableStack_)) {

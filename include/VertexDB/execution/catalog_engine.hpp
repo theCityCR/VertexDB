@@ -18,6 +18,7 @@ class CatalogEngine {
                   WriteAheadLog &wal) noexcept;
 
     [[nodiscard]] QueryResult executeCreateDatabase(const CreateDatabase &command);
+    [[nodiscard]] QueryResult executeDropDatabase(const DropDatabase &command);
     [[nodiscard]] QueryResult executeCreateTable(const CreateTable &command);
     [[nodiscard]] QueryResult executeDropTable(const DropTable &command);
     [[nodiscard]] QueryResult executeRenameTable(const RenameTable &command);

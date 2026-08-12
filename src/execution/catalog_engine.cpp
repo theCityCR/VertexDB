@@ -27,6 +27,22 @@ QueryResult CatalogEngine::executeCreateDatabase(const CreateDatabase &command) 
     return messageResult(true, "created database " + command.name);
 }
 
+QueryResult CatalogEngine::executeDropDatabase(const DropDatabase &command) {
+    if (ctx_.session.transactionActive()) {
+        return messageResult(false, "DROP DATABASE is not allowed while a transaction is active");
+    }
+    if (!ctx_.database) {
+        return messageResult(false, "no active database");
+    }
+    if (ctx_.database->name() != command.name) {
+        return messageResult(false, "DROP DATABASE must name the active database");
+    }
+    recovery_.appendWal(WalOperation::DropDatabase, command.name);
+    ctx_.database.reset();
+    storage_.deleteDatabase(command.name);
+    return messageResult(true, "dropped database " + command.name);
+}
+
 QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
     if (!ctx_.database) {
         return messageResult(false, "no active database");

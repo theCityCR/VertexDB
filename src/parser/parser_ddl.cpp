@@ -49,6 +49,14 @@ CreateTable Parser::parseCreateTable() {
     return {table.lexeme, std::move(columns)};
 }
 
+DropDatabase Parser::parseDropDatabase() {
+    const auto name = advance();
+    if (name.type != TokenType::Identifier) {
+        throw std::runtime_error("expected database name");
+    }
+    return {name.lexeme};
+}
+
 DropTable Parser::parseDropTable() {
     expect(TokenType::Identifier, "TABLE");
     const auto table = advance();

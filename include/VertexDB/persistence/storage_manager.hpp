@@ -16,6 +16,8 @@ class StorageManager {
     explicit StorageManager(std::filesystem::path root);
 
     void saveDatabase(const Database &database) const;
+    // Removes the on-disk `.tcrdb` snapshot when present; no-op if missing.
+    void deleteDatabase(std::string_view databaseName) const;
     [[nodiscard]] std::shared_ptr<Database> loadDatabase(std::string_view databaseName) const;
     [[nodiscard]] std::shared_ptr<Database> loadFirstDatabase() const;
     [[nodiscard]] bool metadataExists(std::string_view databaseName) const;

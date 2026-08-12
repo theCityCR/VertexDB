@@ -144,7 +144,7 @@ CTE/derived alias also force-materializes so body filters stay scoped inside the
 Uncorrelated `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`, and
 optionally containing joins) materialize into value lists when uncorrelated; correlated
 `IN`/`EXISTS` bind outer scopes per row for up to four FROM frames, including `FROM` / `JOIN`
-table aliases. Nested `WITH` up to depth 3 reuses the same inliner. `WITH RECURSIVE`
+table aliases. Nested `WITH` up to depth 6 reuses the same inliner. `WITH RECURSIVE`
 (`UNION` / `UNION ALL`, delta or `AS ACCUMULATOR` binding, independent or mutual recursive CTEs,
 iteration/row caps)
 always force-materializes. Bare `UNION`

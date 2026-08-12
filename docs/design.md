@@ -15,12 +15,13 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
   predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` `[OUTER]` and `CROSS`
   joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
-  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED` / `AS ACCUMULATOR`, nesting depth up to 3,
+  `WITH` CTEs (`AS MATERIALIZED` / `AS NOT MATERIALIZED` / `AS ACCUMULATOR`, nesting depth up to 6,
   `WITH RECURSIVE` with `UNION` / `UNION ALL`, including mutual recursion), derived tables,
   `FROM` / `JOIN` table aliases, `IN`/`EXISTS` subqueries (including `WITH` / `JOIN` inside them and
-  correlation through four outer frames), outer `JOIN` against CTE/derived aliases (force
+  correlation through eight outer frames), outer `JOIN` against CTE/derived aliases (force
   materialize), expression indexes (including `trigram(column)`),
-  `EXPLAIN` / `EXPLAIN ANALYZE`, transactions, prepared statements (typed AST + `?` slots), save/load, exit, and
+  `EXPLAIN` / `EXPLAIN ANALYZE`, transactions, prepared statements (typed AST + `?` slots), save/load,
+  `DROP DATABASE`, exit, and
   `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete (UPDATE/DELETE `WHERE` uses the same planner index access paths as SELECT), table management,
@@ -71,8 +72,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   Intersect∪Union) when that plan beats the best single conjunct; non-indexable arms become a
   complementary residual under the outer AND (partial nested OR). If no nested-OR arm is
   equality-indexable, the whole `OrPred` stays an AND residual.
-- Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
-  frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
+- Nested SQL is limited: `WITH` nesting deeper than depth 6 and correlation deeper than eight outer
+  frames are rejected. Supported nested forms include `WITH` nesting depth up to 6, `WITH` /
   derived tables and `JOIN` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias (force
   materialize), `WITH RECURSIVE` (`UNION` / `UNION ALL`, delta or `AS ACCUMULATOR` binding, multiple
   independent or mutually recursive CTEs, 1000-iteration / 100000-row caps), `FROM` / `JOIN`
@@ -84,8 +85,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   `EXCEPT ALL`) are left-associative outside and inside CTE bodies; recursive CTEs accept bare
   `UNION` (dedup) or `UNION ALL`.
 - Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL`
-  `[OUTER]` and `CROSS` chains (`ON col op col` for non-`CROSS`). General DDL beyond
-  the current table/index commands is still out of scope.
+  `[OUTER]` and `CROSS` chains (`ON col op col` for non-`CROSS`). Catalog DDL includes
+  `CREATE`/`DROP DATABASE`, table/index commands, and `RENAME TABLE`; broader ALTER-style DDL is
+  still out of scope.
 
 ## Next Steps
 
@@ -98,15 +100,16 @@ transactions (implicit commit / rollback), set operations (`UNION` / `UNION ALL`
 `EXCEPT`, including recursive `UNION` dedup), partial nested `OR` under `AND` (indexable
 arms + complementary residual), multiple independent recursive CTEs, `INTERSECT ALL` /
 `EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` binding
-for the recursive arm, and row-level SSI commit aborts for write skew / write–write conflicts.
+for the recursive arm, and row-level SSI commit aborts for write skew / write–write conflicts,
+`DROP DATABASE`, raised `WITH`/correlation caps (6 / 8), and `EXPLAIN INSERT`.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
-- Predicate-lock / insert-phantom SSI (beyond row read/write sets), or general DDL beyond the
-  current table/index commands
+- Predicate-lock / insert-phantom SSI (beyond row read/write sets), or ALTER-style DDL
+  (`ADD`/`DROP COLUMN`, etc.)
 
 Demo wedges (done):
 

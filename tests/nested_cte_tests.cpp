@@ -398,12 +398,37 @@ TEST(NestedSqlTests, NestedWithInlinesThreeLevels) {
 
 TEST(NestedSqlTests, NestedWithDeeperThanMaxIsRejected) {
     Parser parser;
-    // depth 0..3 allowed; four nested WITH bodies inside the outermost exceeds kMaxNestedWithDepth.
+    // depth 0..6 allowed; eight nested WITH names (a..h) exceeds kMaxNestedWithDepth (6).
     EXPECT_THROW((void)parser.parse(
-                     "WITH a AS (WITH b AS (WITH c AS (WITH d AS (WITH e AS "
-                     "(SELECT id FROM Employees) SELECT id FROM e) SELECT id FROM d) "
+                     "WITH a AS (WITH b AS (WITH c AS (WITH d AS (WITH e AS (WITH f AS ("
+                     "WITH g AS (WITH h AS "
+                     "(SELECT id FROM Employees) SELECT id FROM h) SELECT id FROM g) "
+                     "SELECT id FROM f) SELECT id FROM e) SELECT id FROM d) "
                      "SELECT id FROM c) SELECT id FROM b) SELECT id FROM a;"),
                  std::runtime_error);
+}
+
+TEST(NestedSqlTests, NestedWithAtNewMaxDepthIsAccepted) {
+    Parser parser;
+    auto executor = makeExecutor("nested-with-depth6");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                    .success);
+    // Seven WITH frames (depths 0..6) is the new ceiling.
+    auto result = executor.execute(parser.parse(
+        "WITH a AS (WITH b AS (WITH c AS (WITH d AS (WITH e AS (WITH f AS ("
+        "WITH g AS (SELECT id, name FROM Employees WHERE id = 1) "
+        "SELECT id, name FROM g) SELECT id, name FROM f) SELECT id, name FROM e) "
+        "SELECT id, name FROM d) SELECT id, name FROM c) SELECT id, name FROM b) "
+        "SELECT name FROM a;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
 TEST(NestedSqlTests, OuterJoinAgainstCteAndDerivedAlias) {

@@ -84,7 +84,7 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseIndexAccessForEqualityPredicate) {
     EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
 }
 
-TEST(PlannerBehaviorTests, ExplainUpdateAndDeleteShowsHashIndexAccessPath) {
+TEST(PlannerBehaviorTests, ExplainUpdateDeleteAndInsertDoNotMutate) {
     Parser parser;
     auto executor = makeExecutor("explain-mutation");
     seedEmployees(executor, parser, true, false);
@@ -104,6 +104,14 @@ TEST(PlannerBehaviorTests, ExplainUpdateAndDeleteShowsHashIndexAccessPath) {
     const auto deleteText = explainDelete.rows.front().front().toString();
     EXPECT_NE(deleteText.find("delete:"), std::string::npos);
     EXPECT_NE(deleteText.find("hash index"), std::string::npos);
+
+    auto explainInsert = executor.execute(
+        parser.parse("EXPLAIN INSERT INTO Employees VALUES (99, \"Zed\", 1.0);"));
+    ASSERT_TRUE(explainInsert.success) << explainInsert.message;
+    ASSERT_FALSE(explainInsert.rows.empty());
+    const auto insertText = explainInsert.rows.front().front().toString();
+    EXPECT_NE(insertText.find("insert:"), std::string::npos);
+    EXPECT_NE(insertText.find("1 row(s) into Employees"), std::string::npos);
 
     // EXPLAIN must not mutate.
     auto stillThere =

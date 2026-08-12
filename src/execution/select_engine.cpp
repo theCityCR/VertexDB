@@ -83,6 +83,23 @@ QueryResult SelectEngine::execute(const Select &command) {
 }
 
 QueryResult SelectEngine::explain(const ExplainQuery &command) {
+    if (std::holds_alternative<Insert>(command.query)) {
+        if (command.analyze) {
+            throw std::runtime_error("EXPLAIN ANALYZE does not support INSERT");
+        }
+        const auto &insert = std::get<Insert>(command.query);
+        (void)requireTable(insert.table);
+        auto text = std::string{"insert: "} + std::to_string(insert.rows.size()) + " row(s) into " +
+                    insert.table;
+
+        QueryResult result;
+        result.success = true;
+        result.message = "explain";
+        result.columns = {"plan"};
+        result.rows.push_back({Value{std::move(text)}});
+        return result;
+    }
+
     if (std::holds_alternative<Update>(command.query) ||
         std::holds_alternative<Delete>(command.query)) {
         if (command.analyze) {

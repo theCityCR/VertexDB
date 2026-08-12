@@ -38,6 +38,9 @@ Query Parser::parse(std::span<const Token> tokens) {
         if (match(TokenType::Identifier, "INDEX")) {
             return finish(parseDropIndex());
         }
+        if (match(TokenType::Identifier, "DATABASE")) {
+            return finish(parseDropDatabase());
+        }
         return finish(parseDropTable());
     }
     if (match(TokenType::Identifier, "RENAME")) {

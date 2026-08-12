@@ -105,7 +105,7 @@ Query bindQueryParameters(const Query &query, const std::vector<Value> &paramete
             } else if constexpr (std::is_same_v<Command, ExplainQuery>) {
                 ExplainQuery explained = command;
                 explained.query = std::visit(
-                    [&](const auto &inner) -> std::variant<Select, Update, Delete> {
+                    [&](const auto &inner) -> std::variant<Select, Update, Delete, Insert> {
                         using Inner = std::decay_t<decltype(inner)>;
                         if constexpr (std::is_same_v<Inner, Select>) {
                             return bindSelect(inner, parameters, seen);
@@ -116,6 +116,14 @@ Query bindQueryParameters(const Query &query, const std::vector<Value> &paramete
                                 update.where = bindPredicate(*inner.where, parameters, seen);
                             }
                             return update;
+                        } else if constexpr (std::is_same_v<Inner, Insert>) {
+                            Insert insert = inner;
+                            for (auto &row : insert.rows) {
+                                for (auto &value : row) {
+                                    value = bindValue(value, parameters, seen);
+                                }
+                            }
+                            return insert;
                         } else {
                             Delete del = inner;
                             if (del.where) {
