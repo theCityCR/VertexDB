@@ -102,7 +102,7 @@ CI shape gates (median CPU time, same process):
 | scan CTE 100k / indexed CTE 100k | ≥ 20× | win at 100k is not a full scan |
 | materialized CTE 1k / indexed CTE 1k | ≥ 50× | `AS MATERIALIZED` is far slower than inline |
 | scan CTE 100k / scan CTE 1k | ≥ 10× | non-indexed baseline actually grows with N |
-| residual AND 100k / intersect 100k | ≥ 5× | intersect ≪ single-index + residual at scale |
+| residual AND 100k / intersect 100k | ≥ 3× | intersect ≪ single-index + residual at scale |
 | residual AND 100k / residual AND 1k | ≥ 10× | residual baseline grows with posting-list size |
 | intersect 100k / intersect 1k | ≤ 150× | intersect does not collapse to full-table scan growth |
 
