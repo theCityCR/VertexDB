@@ -12,7 +12,7 @@ std::string formatPlanExplanation(const QueryPlan &plan) {
     for (const auto &note : plan.estimates.notes) {
         out << "\n" << note;
     }
-    if (plan.estimates.residual) {
+    if (plan.estimates.residual || plan.estimates.complementaryResidual) {
         out << "\nresidual: yes";
     } else if (plan.accessPath() != AccessPath::FullScan) {
         out << "\nresidual: no";

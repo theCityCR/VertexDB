@@ -81,7 +81,13 @@ struct PlanEstimates {
     double estimatedCost{};
     std::string explanation{"full table scan"};
     std::vector<std::string> notes;
+    // AND-style filter applied to index hits (Intersect / HashEq / …).
     std::optional<Predicate> residual;
+    // OR-style complementary scan: rows matching this predicate are added if not
+    // already returned by the index path (top-level partial OR uses `residual`
+    // for the same role; nested partial OR under AND uses this field so AND
+    // residual filtering stays distinct).
+    std::optional<Predicate> complementaryResidual;
 };
 
 struct FullScanPlan {};
@@ -129,6 +135,12 @@ struct QueryPlan {
     [[nodiscard]] AccessPath accessPath() const;
     [[nodiscard]] std::optional<Predicate> &residual() { return estimates.residual; }
     [[nodiscard]] const std::optional<Predicate> &residual() const { return estimates.residual; }
+    [[nodiscard]] std::optional<Predicate> &complementaryResidual() {
+        return estimates.complementaryResidual;
+    }
+    [[nodiscard]] const std::optional<Predicate> &complementaryResidual() const {
+        return estimates.complementaryResidual;
+    }
 };
 
 struct JoinPlan {

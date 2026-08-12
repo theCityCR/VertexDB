@@ -156,7 +156,8 @@ same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for UPDA
 `EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, composite Intersect∪Union for
 fully indexable nested `OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit
 commit/rollback), top-level and CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` /
-`EXCEPT`, recursive `UNION` dedup), and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
+`EXCEPT`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
+complementary residual), and a dated absolute-time benchmark summary (last refreshed 2026-08-10 from the
 CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /

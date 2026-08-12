@@ -43,8 +43,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   prevented; write skew allowed), undo-log DML rollback, transaction-batched page-image WAL flush
   on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
-  partial residual OR, composite Intersect∪Union for fully indexable nested OR under AND, prefix
-  `LIKE`, and trigram intersect), residual filters, join algorithm
+  partial residual OR, composite Intersect∪Union for nested OR under AND including partial nested
+  OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
   selection (`INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS`, equi and non-equi), expression-index matching,
   `EXPLAIN`, and `EXPLAIN ANALYZE` (actual vs estimated rows)
 - Quality: themed GoogleTest suites, regression tests, sanitizer/coverage scripts, benchmarks with
@@ -63,10 +63,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   indexable subset is cheaper than a full scan. Non-indexable disjuncts become a residual OR
   complementary scan (partial OR). When no disjunct is indexable, or the indexable union is not
   cheaper than a scan, the planner keeps a full scan. Same-column equality `OR` (top-level or under
-  `AND`) is rewritten to `IN` for HashIn. A heterogeneous `OR` nested under `AND` whose every
-  disjunct is an equality index probe becomes a Union child of a multi-index Intersect
-  (composite Intersect∪Union) when that plan beats the best single conjunct. If any nested-OR arm
-  is not equality-indexable, the whole `OrPred` stays an AND residual.
+  `AND`) is rewritten to `IN` for HashIn. A heterogeneous `OR` nested under `AND` whose equality-
+  indexable arms are non-empty becomes a Union child of a multi-index Intersect (composite
+  Intersect∪Union) when that plan beats the best single conjunct; non-indexable arms become a
+  complementary residual under the outer AND (partial nested OR). If no nested-OR arm is
+  equality-indexable, the whole `OrPred` stays an AND residual.
 - Nested SQL is limited: `WITH` nesting deeper than depth 3 and correlation deeper than four outer
   frames are rejected. Supported nested forms include `WITH` nesting depth up to 3, `WITH` /
   derived tables and `JOIN` inside `IN`/`EXISTS`, outer `JOIN` against a CTE/derived alias (force
@@ -88,16 +89,15 @@ transactional `CREATE INDEX` / `DROP INDEX`, same-column `OR`→`IN`, MVCC `UPDA
 `EXPLAIN ANALYZE` (actual vs estimated rows for SELECT/WITH), `EXPLAIN UPDATE`/`DELETE`, multi-index
 AND intersect packaging, the SI anomaly concurrency wedge, composite Intersect∪Union for fully
 indexable nested `OR` under `AND`, transactional catalog DDL, `SAVE`/`LOAD` inside open
-transactions (implicit commit / rollback), and set operations (`UNION` / `UNION ALL` / `INTERSECT` /
-`EXCEPT`, including recursive `UNION` dedup).
+transactions (implicit commit / rollback), set operations (`UNION` / `UNION ALL` / `INTERSECT` /
+`EXCEPT`, including recursive `UNION` dedup), and partial nested `OR` under `AND` (indexable
+arms + complementary residual).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
-- Planner follow-ups: partial nested `OR` under `AND` (indexable arms + complementary residual
-  under the outer AND) without expanding to full SSI-style boolean algebra
 - Recursive follow-ups: multiple recursive CTEs / mutual recursion, or binding the recursive arm to
   the full accumulator instead of the delta; `INTERSECT ALL` / `EXCEPT ALL`
 

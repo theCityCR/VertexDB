@@ -305,9 +305,11 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
 }
 
 TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
-    // Desired: nested OR under AND that is not fully equality-indexable stays an AND residual
-    // while another conjunct uses an index. Fully indexable nested OR uses composite
-    // Intersect∪Union (see NestedOrUnderAndUsesCompositeIntersectUnion).
+    // Desired: nested OR under AND with *no* equality-indexable arms stays an AND residual
+    // while another conjunct uses an index. Partially indexable nested OR uses composite
+    // Intersect∪Union + complementary residual (see NestedOrUnderAndPartialOrUsesComplementaryScan).
+    // Fully indexable nested OR uses composite Intersect∪Union without complementary
+    // (see NestedOrUnderAndUsesCompositeIntersectUnion).
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"dept", ColumnType::Int}}};
     table.insert({Value{1}, Value{std::string{"Alice"}}, Value{10}});
@@ -325,6 +327,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
     EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "id");
     ASSERT_TRUE(plan.residual().has_value());
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Or);
+    EXPECT_FALSE(plan.complementaryResidual().has_value());
 
     Parser parser;
     auto executor = makeExecutor("nested-or-residual");

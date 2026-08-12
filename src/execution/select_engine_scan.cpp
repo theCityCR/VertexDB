@@ -147,10 +147,34 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                 return applyResidual(entriesByIdForRead(table, combined));
             } else if constexpr (std::is_same_v<T, IntersectPlan>) {
                 auto intersection = evalIntersectPlan(path, table);
-                if (intersection.empty()) {
+                if (intersection.empty() && !plan.complementaryResidual()) {
                     return {};
                 }
-                return applyResidual(entriesByIdForRead(table, intersection));
+                auto out = intersection.empty()
+                               ? std::vector<std::pair<RowId, Row>>{}
+                               : applyResidual(entriesByIdForRead(table, intersection));
+                if (!plan.complementaryResidual()) {
+                    return out;
+                }
+                // Partial nested OR under AND: index Intersect∪Union covers indexable arms;
+                // complementary scan adds rows matching outer AND + non-indexable OR arms.
+                if (stats) {
+                    stats->candidates = out.size();
+                }
+                std::unordered_set<RowId> seen;
+                seen.reserve(out.size() * 2 + 1);
+                for (const auto &entry : out) {
+                    seen.insert(entry.first);
+                }
+                for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
+                    if (seen.contains(rowId)) {
+                        continue;
+                    }
+                    if (matches(row, table, *plan.complementaryResidual(), scope)) {
+                        out.emplace_back(rowId, row);
+                    }
+                }
+                return out;
             } else if constexpr (std::is_same_v<T, UnionPlan>) {
                 auto ids = evalUnionPlan(path, table);
                 if (!plan.residual()) {
