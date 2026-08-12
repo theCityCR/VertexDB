@@ -1,0 +1,24 @@
+---
+description: Run gh with unsandboxed shell so macOS keychain tokens work
+alwaysApply: true
+---
+
+# GitHub CLI (`gh`) in agent shells
+
+On macOS, `gh` stores credentials in the system keychain. Sandboxed agent shells
+cannot read that keychain, so `gh auth status` / `gh run` / `gh api` fail with
+"token in keyring is invalid" or HTTP `Forbidden` even when the user is logged in.
+
+## Required
+
+- When running any `gh` command that needs auth (status, api, run, pr, issue,
+  release, workflow, etc.), use the Shell tool with `required_permissions: ["all"]`.
+- Quote URLs that contain `?` so zsh does not glob them, e.g.
+  `gh api 'repos/owner/repo/actions/runs?per_page=5'`.
+
+## Do not
+
+- Treat sandbox `Forbidden` / "invalid keyring token" as a need to re-login or
+  rotate PATs until the same command has been retried unsandboxed.
+- Paste PATs into the transcript unless the user explicitly provides one for
+  `gh auth login --with-token`.
