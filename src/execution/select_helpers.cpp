@@ -4,6 +4,7 @@
 #include <iterator>
 #include <optional>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -149,8 +150,12 @@ std::string_view setOpKindName(SetOpKind op) noexcept {
         return "union all";
     case SetOpKind::Intersect:
         return "intersect";
+    case SetOpKind::IntersectAll:
+        return "intersect all";
     case SetOpKind::Except:
         return "except";
+    case SetOpKind::ExceptAll:
+        return "except all";
     }
     return "set-op";
 }
@@ -197,6 +202,21 @@ QueryResult applySetOperation(SetOpKind op, QueryResult left, QueryResult right)
         }
         break;
     }
+    case SetOpKind::IntersectAll: {
+        // Multiset intersect: emit min(count_left, count_right) copies, left order.
+        std::unordered_map<Row, std::size_t, RowHash> rightCounts;
+        for (const auto &row : right.rows) {
+            ++rightCounts[row];
+        }
+        for (auto &row : left.rows) {
+            auto it = rightCounts.find(row);
+            if (it != rightCounts.end() && it->second > 0) {
+                --it->second;
+                result.rows.push_back(std::move(row));
+            }
+        }
+        break;
+    }
     case SetOpKind::Except: {
         std::unordered_set<Row, RowHash> rightSet(right.rows.begin(), right.rows.end());
         std::unordered_set<Row, RowHash> emitted;
@@ -204,6 +224,22 @@ QueryResult applySetOperation(SetOpKind op, QueryResult left, QueryResult right)
             if (!rightSet.contains(row) && emitted.insert(row).second) {
                 result.rows.push_back(std::move(row));
             }
+        }
+        break;
+    }
+    case SetOpKind::ExceptAll: {
+        // Multiset except: emit max(0, count_left - count_right) copies, left order.
+        std::unordered_map<Row, std::size_t, RowHash> rightCounts;
+        for (const auto &row : right.rows) {
+            ++rightCounts[row];
+        }
+        for (auto &row : left.rows) {
+            auto it = rightCounts.find(row);
+            if (it != rightCounts.end() && it->second > 0) {
+                --it->second;
+                continue;
+            }
+            result.rows.push_back(std::move(row));
         }
         break;
     }

@@ -41,7 +41,9 @@ class SubqueryRuntime {
     [[nodiscard]] Predicate bindOuterReferences(const Predicate &predicate, const Row &outerRow,
                                                 const Table &outerTable,
                                                 std::string_view outerScope) const;
-    [[nodiscard]] std::shared_ptr<Table> materializeCteTable(const CteEntry &cte) const;
+    [[nodiscard]] std::shared_ptr<Table> materializeCteTable(
+        const CteEntry &cte,
+        const std::unordered_map<std::string, std::shared_ptr<Table>> &extraTemps = {}) const;
 
   private:
     // Evaluate a SELECT (including set-op chains) to a QueryResult without calling SelectEngine::execute.

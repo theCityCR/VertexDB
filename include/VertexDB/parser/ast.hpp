@@ -26,10 +26,12 @@ enum class MaterializeMode {
 };
 
 enum class SetOpKind : std::uint8_t {
-    Union,      // DISTINCT
+    Union,         // DISTINCT
     UnionAll,
-    Intersect,  // DISTINCT
-    Except,     // DISTINCT
+    Intersect,     // DISTINCT
+    IntersectAll,
+    Except,        // DISTINCT
+    ExceptAll,
 };
 
 struct SetOpArm {
