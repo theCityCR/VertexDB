@@ -62,17 +62,25 @@ CLI
   prefix `LIKE` / trigram intersect, and residual filters. `EXPLAIN` /
   `EXPLAIN ANALYZE` formatting lives in `query_planner_format.cpp`. `QueryPlanner` is
   split across `query_planner.cpp` (thin wrappers), `query_planner_select.cpp` (`planSelect`
-  orchestration), `query_planner_access.cpp` (OR-union / AND-intersect / best-path finalize),
+  orchestration), access strategies declared in `src/planner/query_planner_access.hpp`
+  (`query_planner_or_union.cpp`, `query_planner_composite_eq.cpp`,
+  `query_planner_and_intersect.cpp`, plus finalize helpers in `query_planner_access.cpp`),
   `query_planner_predicate.cpp`, `query_planner_join.cpp`, and `query_planner_format.cpp`.
 
 SQL predicates are a recursive `std::variant`: each comparison, boolean connective, list/subquery,
 existence, `LIKE`, or regex node owns only the fields valid for that shape. Physical access paths
 are likewise a variant (`FullScanPlan`, equality/range/IN/prefix-LIKE probes, intersection, or
 union), while estimates and residual filters live in the shared `PlanEstimates` metadata.
+Top-level partial OR reuses `residual` for the complementary scan; nested partial OR under AND
+uses `complementaryResidual` so AND residual filtering stays distinct. AccessPath enum names are
+`Intersect` / `Union` / `HashEq` (older docs/benchmarks may still say MultiIndex*).
 - `storage`: database/table ownership, row storage boundaries, schema validation, `TableStatistics`,
   snapshot/redo logic in `TableSnapshotIO`, and page cache abstractions. `Table` is the synchronized
-  façade over row, index, statistics, snapshot I/O, and MVCC components. `RowStore` (interface) lives
-  in `row_store.hpp`; `VectorRowStore` and `PageRowStore` have dedicated headers. `PageRowStore` is
+  façade over row, index, statistics, snapshot I/O, and MVCC components (implementation TUs:
+  `table.cpp` identity/DML/MVCC reads, `table_constraints.cpp`, `table_schema.cpp` ALTER,
+  `table_recovery.cpp` undo/physical/page-image redo — preferred callers for recovery hooks are
+  `RecoveryService`, codecs, and `TableSnapshotIO`). `RowStore` (interface) lives in
+  `row_store.hpp`; `VectorRowStore` and `PageRowStore` have dedicated headers. `PageRowStore` is
   split across `page_row_store.cpp` (CRUD), `page_row_store_buffer.cpp` (pool/dirty), and
   `page_row_store_io.cpp` (encode/decode/replace/redo), sharing sparse-layout validation with
   `VectorRowStore`.
@@ -92,9 +100,13 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
-  `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. `predicate_eval`,
-  `foreign_key_eval`, `select_helpers` / `select_scope` / `select_aggregate`, `prepared_bind`, and
-  `sql_literal` provide shared execution helpers.
+  `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. Predicate matching:
+  `predicate_eval` for non-subquery WHERE residuals, `storage/check_eval` for CHECK, and
+  `SubqueryRuntime::matches` for correlated `IN`/`EXISTS` / full trees (scan/join call it via
+  `ExecutionContext`). `foreign_key_eval` owns RI actions (FK metadata lives on `Table`);
+  `select_helpers` / `set_ops` / `select_scope` / `select_aggregate`, `prepared_bind`, and
+  `sql_literal` provide shared execution helpers. Recursive CTE: parser validate in
+  `parser/recursive_cte`, materialize in `subquery_runtime_cte.cpp`.
 - `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
   forwards its public index API while holding the appropriate lock. `BTreeIndex` is split across

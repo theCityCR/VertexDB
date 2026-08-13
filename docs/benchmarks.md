@@ -86,7 +86,8 @@ Suggested comparisons:
   cost; non-indexed grows with table size.
 - Inlined CTE vs `AS MATERIALIZED` (`BM_CteMaterializedSelect`) — materialize rebuilds a temp each
   iteration and should be far slower than the index-win inline path.
-- Multi-index intersect (`BM_MultiIndexIntersectSelect`) vs single-index residual
+- Multi-index intersect (`BM_MultiIndexIntersectSelect`, AccessPath `Intersect` alias) vs
+  single-index residual
   (`BM_SingleIndexResidualSelect`) — intersect should stay cheaper than probing one medium-cardinality
   index and residual-filtering the other predicate; residual cost grows with posting-list size.
 - Page vs vector row-store insert/select.
