@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -1363,6 +1364,217 @@ TEST(ConstraintBehaviorTests, DropUnreferencedNullableColumnSucceeds) {
     ASSERT_TRUE(executor.execute(parser.parse("ALTER TABLE Employees DROP COLUMN note;")).success);
     EXPECT_THROW((void)executor.execute(parser.parse("SELECT note FROM Employees WHERE id = 1;")),
                  std::runtime_error);
+}
+
+// Desired: ADD COLUMN DEFAULT pads existing rows; NOT NULL without DEFAULT rejects nonempty tables.
+TEST(ConstraintBehaviorTests, AddColumnDefaultPadsExistingRows) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-add-default-", "case");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "ALTER TABLE Employees ADD COLUMN bonus INT NULL DEFAULT 42;"))
+                    .success);
+    auto rows = executor.execute(parser.parse("SELECT bonus FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(42)});
+}
+
+TEST(ConstraintBehaviorTests, AddColumnNotNullRequiresDefaultWhenTableHasRows) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-add-nn-", "case");
+    seedEmployees(executor, parser, false, false);
+
+    auto rejected =
+        executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN flag INT NOT NULL;"));
+    EXPECT_FALSE(rejected.success);
+    EXPECT_NE(rejected.message.find("DEFAULT"), std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "ALTER TABLE Employees ADD COLUMN flag INT NOT NULL DEFAULT 1;"))
+                    .success);
+    try {
+        (void)executor.execute(
+            parser.parse("INSERT INTO Employees VALUES (99, \"Zed\", 1.0, NULL);"));
+        FAIL() << "expected NOT NULL violation";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("NOT NULL constraint violation on column flag"),
+                  std::string::npos);
+    }
+}
+
+TEST(ConstraintBehaviorTests, AddColumnNotNullWithoutDefaultOnEmptyTableSucceeds) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-add-nn-empty-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Empty (id INT);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Empty ADD COLUMN flag INT NOT NULL;")).success);
+    auto table = executor.currentDatabase()->table("Empty");
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->schema().size(), 2U);
+    EXPECT_FALSE(table->schema()[1].nullable);
+}
+
+// Desired: DROP CASCADE removes same-table dependents; FK parent still rejected.
+TEST(ConstraintBehaviorTests, DropColumnCascadeRemovesSameTableDependents) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-cascade-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Customers (id INT PRIMARY KEY, name STRING NULL);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT NULL "
+                        "REFERENCES Customers(id), note STRING NULL, "
+                        "CHECK (customer_id > 0));"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_note ON Orders(note);")).success);
+
+    auto plain =
+        executor.execute(parser.parse("ALTER TABLE Orders DROP COLUMN customer_id;"));
+    EXPECT_FALSE(plain.success);
+
+    // Parent key still referenced — CASCADE on the parent must still reject.
+    auto parentReject =
+        executor.execute(parser.parse("ALTER TABLE Customers DROP COLUMN id CASCADE;"));
+    EXPECT_FALSE(parentReject.success);
+    EXPECT_NE(parentReject.message.find("FOREIGN KEY"), std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("ALTER TABLE Orders DROP COLUMN customer_id CASCADE;"))
+                    .success);
+    auto orders = executor.currentDatabase()->table("Orders");
+    ASSERT_NE(orders, nullptr);
+    EXPECT_FALSE(orders->columnIndex("customer_id").has_value());
+    EXPECT_TRUE(orders->foreignKeys().empty());
+    EXPECT_TRUE(orders->checkConstraints().empty());
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Orders DROP COLUMN note CASCADE;")).success);
+    EXPECT_FALSE(orders->hasIndex("note"));
+}
+
+TEST(ConstraintBehaviorTests, DropColumnCascadeRemovesUniqueConstraint) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-cascade-uq-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE, "
+                        "note STRING NULL);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Accounts DROP COLUMN email CASCADE;")).success);
+    auto table = executor.currentDatabase()->table("Accounts");
+    ASSERT_NE(table, nullptr);
+    EXPECT_FALSE(table->columnIndex("email").has_value());
+    EXPECT_TRUE(table->listIndexes().size() >= 1U); // __pk_id remains
+}
+
+// Desired: RENAME COLUMN rewrites schema, indexes, CHECKs, and parent FK names.
+TEST(ConstraintBehaviorTests, RenameColumnRewritesDependentsAndParentForeignKeys) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-rename-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Customers (id INT PRIMARY KEY, name STRING NULL);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id), amount DOUBLE, CHECK (amount > 0.0));"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_amount ON Orders(amount);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1, \"A\");")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1, 5.0);")).success);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("ALTER TABLE Orders RENAME COLUMN amount TO total;"))
+                    .success);
+    auto renamed = executor.execute(parser.parse("SELECT total FROM Orders WHERE id = 10;"));
+    ASSERT_TRUE(renamed.success);
+    ASSERT_EQ(renamed.rows.size(), 1U);
+    EXPECT_EQ(renamed.rows[0][0], Value{5.0});
+    EXPECT_TRUE(executor.currentDatabase()->table("Orders")->hasIndex("total"));
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("ALTER TABLE Customers RENAME COLUMN id TO cust_id;"))
+                    .success);
+    auto orders = executor.currentDatabase()->table("Orders");
+    ASSERT_EQ(orders->foreignKeys().size(), 1U);
+    EXPECT_EQ(orders->foreignKeys()[0].parentColumns.front(), "cust_id");
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Orders VALUES (11, 1, 6.0);")).success);
+}
+
+TEST(ConstraintBehaviorTests, RenameColumnRollbackRestoresOldName) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-rename-rb-", "case");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("ALTER TABLE Employees RENAME COLUMN name TO full_name;"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    auto rows = executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+}
+
+TEST(ConstraintBehaviorTests, RenameColumnCommitRecoversFromWal) {
+    Parser parser;
+    const auto root = makeTempRoot("vertexdb-alter-rename-wal-", "case");
+    std::filesystem::remove_all(root);
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE T (id INT, note STRING NULL);"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO T VALUES (1, \"a\");")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("ALTER TABLE T RENAME COLUMN note TO memo;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+    QueryExecutor recovered{root};
+    auto rows = recovered.execute(parser.parse("SELECT memo FROM T WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{std::string{"a"}});
+    std::filesystem::remove_all(root);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnCascadeRollbackRestoresDependents) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-cascade-rb-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT, salary DOUBLE, CHECK (salary > 0.0));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Pay VALUES (1, 10.0);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Pay DROP COLUMN salary CASCADE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    auto table = executor.currentDatabase()->table("Pay");
+    ASSERT_NE(table, nullptr);
+    EXPECT_TRUE(table->columnIndex("salary").has_value());
+    ASSERT_EQ(table->checkConstraints().size(), 1U);
+    auto rows = executor.execute(parser.parse("SELECT salary FROM Pay WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{10.0});
 }
 
 } // namespace VertexDB

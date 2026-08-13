@@ -5,7 +5,11 @@
 
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
+#include "VertexDB/indexing/index_manager.hpp"
+#include "VertexDB/parser/predicate.hpp"
+#include "VertexDB/storage/foreign_key.hpp"
 #include "VertexDB/storage/row.hpp"
+#include "VertexDB/storage/unique_constraint.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +37,7 @@ enum class UndoKind : std::uint8_t {
     SwapDatabase,
     AlterAddColumn,
     AlterDropColumn,
+    AlterRenameColumn,
 };
 
 struct UndoRecord {
@@ -52,11 +57,17 @@ struct UndoRecord {
     std::shared_ptr<Database> previousDatabase;
     // Populated for UndoKind::RenameTable: tableName is the pre-rename name, renameTo the new name.
     std::string renameTo;
-    // Populated for UndoKind::AlterAddColumn / AlterDropColumn.
+    // Populated for UndoKind::AlterAddColumn / AlterDropColumn / AlterRenameColumn.
     Column alterColumn;
     std::size_t alterColumnIndex{};
     std::vector<std::pair<RowId, Value>> alterHeapColumnValues;
     std::vector<std::pair<RowId, std::vector<Value>>> alterVersionColumnValues;
+    bool alterCascaded{false};
+    std::vector<IndexDefinition> alterDroppedUserIndexes;
+    std::vector<Predicate> alterDroppedChecks;
+    std::vector<UniqueConstraint> alterDroppedUniques;
+    std::vector<ForeignKeyConstraint> alterDroppedChildForeignKeys;
+    // AlterRenameColumn: alterColumn.name is old name, renameTo is new name.
 };
 
 class UndoLog {

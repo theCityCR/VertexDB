@@ -402,10 +402,35 @@ AlterTable Parser::parseAlterTable() {
         if (!type) {
             throw std::runtime_error("unsupported column type");
         }
-        // First slice: nullable ADD only; require explicit NULL (no DEFAULT / NOT NULL / constraints).
-        expect(TokenType::Identifier, "NULL");
-        Column column{columnName.lexeme, *type, true, false, false};
-        return AlterTable{table.lexeme, AlterAddColumn{std::move(column)}};
+        bool nullable = false;
+        if (match(TokenType::Identifier, "NOT")) {
+            expect(TokenType::Identifier, "NULL");
+            nullable = false;
+        } else if (match(TokenType::Identifier, "NULL")) {
+            nullable = true;
+        } else {
+            throw std::runtime_error("expected NULL or NOT NULL after column type");
+        }
+        std::optional<Value> defaultValue;
+        if (match(TokenType::Identifier, "DEFAULT")) {
+            defaultValue = parseValue();
+            if (defaultValue->isNull()) {
+                if (!nullable) {
+                    throw std::runtime_error("DEFAULT NULL requires a nullable column");
+                }
+            } else if (defaultValue->type() != *type) {
+                throw std::runtime_error("DEFAULT literal type does not match column type");
+            }
+        }
+        // Refuse inline constraints on ADD COLUMN (create them via CREATE TABLE / separate DDL).
+        if (match(TokenType::Identifier, "PRIMARY") || match(TokenType::Identifier, "UNIQUE") ||
+            match(TokenType::Identifier, "CHECK") || match(TokenType::Identifier, "REFERENCES")) {
+            throw std::runtime_error(
+                "ALTER TABLE ADD COLUMN does not support inline PRIMARY KEY / UNIQUE / CHECK / "
+                "REFERENCES");
+        }
+        Column column{columnName.lexeme, *type, nullable, false, false};
+        return AlterTable{table.lexeme, AlterAddColumn{std::move(column), std::move(defaultValue)}};
     }
     if (match(TokenType::Identifier, "DROP")) {
         expect(TokenType::Identifier, "COLUMN");
@@ -413,9 +438,23 @@ AlterTable Parser::parseAlterTable() {
         if (columnName.type != TokenType::Identifier) {
             throw std::runtime_error("expected column name");
         }
-        return AlterTable{table.lexeme, AlterDropColumn{columnName.lexeme}};
+        const bool cascade = match(TokenType::Identifier, "CASCADE");
+        return AlterTable{table.lexeme, AlterDropColumn{columnName.lexeme, cascade}};
     }
-    throw std::runtime_error("expected ADD or DROP after ALTER TABLE");
+    if (match(TokenType::Identifier, "RENAME")) {
+        expect(TokenType::Identifier, "COLUMN");
+        const auto oldName = advance();
+        if (oldName.type != TokenType::Identifier) {
+            throw std::runtime_error("expected column name");
+        }
+        expect(TokenType::Identifier, "TO");
+        const auto newName = advance();
+        if (newName.type != TokenType::Identifier) {
+            throw std::runtime_error("expected new column name");
+        }
+        return AlterTable{table.lexeme, AlterRenameColumn{oldName.lexeme, newName.lexeme}};
+    }
+    throw std::runtime_error("expected ADD, DROP, or RENAME after ALTER TABLE");
 }
 
 CreateIndex Parser::parseCreateIndex() {

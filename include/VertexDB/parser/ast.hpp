@@ -85,13 +85,21 @@ struct RenameTable {
 
 struct AlterAddColumn {
     Column column;
+    // Fill-only pad for existing rows/MVCC versions; not a persistent INSERT default.
+    std::optional<Value> defaultValue;
 };
 
 struct AlterDropColumn {
     std::string column;
+    bool cascade{false};
 };
 
-using AlterTableAction = std::variant<AlterAddColumn, AlterDropColumn>;
+struct AlterRenameColumn {
+    std::string oldName;
+    std::string newName;
+};
+
+using AlterTableAction = std::variant<AlterAddColumn, AlterDropColumn, AlterRenameColumn>;
 
 struct AlterTable {
     std::string table;

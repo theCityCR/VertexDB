@@ -337,16 +337,27 @@ implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
 
 ```sql
 ALTER TABLE Employees ADD COLUMN nickname STRING NULL;
+ALTER TABLE Employees ADD COLUMN bonus INT NULL DEFAULT 0;
+ALTER TABLE Employees ADD COLUMN active INT NOT NULL DEFAULT 1;
 ALTER TABLE Employees DROP COLUMN nickname;
+ALTER TABLE Employees DROP COLUMN bonus CASCADE;
+ALTER TABLE Employees RENAME COLUMN nickname TO handle;
 ```
 
-- `ADD COLUMN` requires an explicit `NULL` (nullable only). No `DEFAULT`, `NOT NULL`, or inline
-  `PRIMARY KEY` / `UNIQUE` / `CHECK` / `REFERENCES` on the added column. Existing live rows and MVCC
-  version images are eagerly padded with `NULL`. `INSERT` remains full-width positional: supply
-  `NULL` (or a value) for the new trailing column.
-- `DROP COLUMN` rewrites live rows and MVCC versions. It is rejected when the column is indexed
-  (user indexes), referenced by `CHECK`, is a FOREIGN KEY child or parent, or is `PRIMARY KEY` /
-  `UNIQUE` (including composite UNIQUE/PK membership). Dropping the last column is rejected.
+- `ADD COLUMN` requires explicit `NULL` or `NOT NULL`. Optional fill-only `DEFAULT lit` pads
+  existing live rows and MVCC versions (not a persistent INSERT default; `INSERT` stays full-width
+  positional). `DEFAULT NULL` is allowed only on nullable columns. `NOT NULL` without `DEFAULT`
+  is allowed only when the table has no live rows. Inline `PRIMARY KEY` / `UNIQUE` / `CHECK` /
+  `REFERENCES` on the added column are refused.
+- `DROP COLUMN` rewrites live rows and MVCC versions. Without `CASCADE` it is rejected when the
+  column is indexed (user indexes), referenced by `CHECK`, is a FOREIGN KEY child or parent, or is
+  `PRIMARY KEY` / `UNIQUE` (including composite UNIQUE/PK membership). `DROP COLUMN … CASCADE`
+  drops same-table dependents (user indexes, CHECKs, UNIQUE/PK including composites containing the
+  column, and child FKs on this table) then drops the column; it still rejects when another table’s
+  FK references the column as a parent. Dropping the last column is rejected.
+- `RENAME COLUMN old TO new` rewrites the schema name plus dependents (user/constraint indexes,
+  CHECKs, UNIQUE/PK lists, child FKs, histograms) and remaps parent FK column names on other tables
+  that reference this column.
 - No new `.tcrdb` snapshot version: schema + page payloads are written at the current format on
   `SAVE DATABASE`.
 

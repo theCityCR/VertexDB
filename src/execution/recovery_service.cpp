@@ -58,6 +58,7 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
     case UndoKind::DropIndex:
     case UndoKind::AlterAddColumn:
     case UndoKind::AlterDropColumn:
+    case UndoKind::AlterRenameColumn:
         break;
     }
 
@@ -104,7 +105,7 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
     }
     case UndoKind::AlterAddColumn:
         try {
-            (void)table->dropUnreferencedColumn(record.alterColumn.name, database_.get());
+            (void)table->dropColumn(record.alterColumn.name, database_.get(), false);
         } catch (const std::exception &ex) {
             throw std::runtime_error(std::string{"failed to undo ADD COLUMN: "} + ex.what());
         }
@@ -115,6 +116,11 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
         capture.columnIndex = record.alterColumnIndex;
         capture.heapValues = record.alterHeapColumnValues;
         capture.versionValues = record.alterVersionColumnValues;
+        capture.cascaded = record.alterCascaded;
+        capture.droppedUserIndexes = record.alterDroppedUserIndexes;
+        capture.droppedChecks = record.alterDroppedChecks;
+        capture.droppedUniques = record.alterDroppedUniques;
+        capture.droppedChildForeignKeys = record.alterDroppedChildForeignKeys;
         try {
             table->restoreDroppedColumn(capture);
         } catch (const std::exception &ex) {
@@ -122,6 +128,13 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
         }
         break;
     }
+    case UndoKind::AlterRenameColumn:
+        try {
+            table->renameColumn(record.renameTo, record.alterColumn.name, database_.get());
+        } catch (const std::exception &ex) {
+            throw std::runtime_error(std::string{"failed to undo RENAME COLUMN: "} + ex.what());
+        }
+        break;
     case UndoKind::CreateTable:
     case UndoKind::DropTable:
     case UndoKind::RenameTable:

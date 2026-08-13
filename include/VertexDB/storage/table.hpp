@@ -59,19 +59,31 @@ class Table : public RelationStats, public IndexCatalogView {
     void ensureConstraintIndexes();
 
     // --- Schema evolution (ALTER TABLE; CatalogEngine) ---
-    // Append a nullable column and pad every live heap row + MVCC version with NULL.
-    void addNullableColumn(Column column);
-    // Drop an unreferenced column; returns captured values for txn undo.
+    // Append a column and pad every live heap row + MVCC version with `fill`
+    // (or NULL when fill is nullopt). NOT NULL without a fill requires an empty table.
+    void addColumn(Column column, std::optional<Value> fill = std::nullopt);
+    // Drop a column; with cascade, drops same-table dependents first. Returns capture for undo.
     struct DroppedColumnCapture {
         Column column;
         std::size_t columnIndex{};
         std::vector<std::pair<RowId, Value>> heapValues;
         std::vector<std::pair<RowId, std::vector<Value>>> versionValues;
+        bool cascaded{false};
+        std::vector<IndexDefinition> droppedUserIndexes;
+        std::vector<Predicate> droppedChecks;
+        std::vector<UniqueConstraint> droppedUniques;
+        std::vector<ForeignKeyConstraint> droppedChildForeignKeys;
     };
-    [[nodiscard]] DroppedColumnCapture
-    dropUnreferencedColumn(std::string_view columnName, const Database *database);
-    // Restore a previously dropped column (ROLLBACK of DROP COLUMN).
+    [[nodiscard]] DroppedColumnCapture dropColumn(std::string_view columnName,
+                                                  const Database *database, bool cascade);
+    // Restore a previously dropped column (ROLLBACK of DROP COLUMN), including cascaded deps.
     void restoreDroppedColumn(const DroppedColumnCapture &capture);
+    // Rename a column across schema, indexes, CHECKs, UNIQUE/PK, child FKs, histograms;
+    // also rewrites parent FK column names on other tables when `database` is set.
+    void renameColumn(std::string_view oldName, std::string_view newName, Database *database);
+    // Rewrite parentColumns when this table's FK references `parentTable.oldName`.
+    void rewriteForeignKeyParentColumn(std::string_view parentTable, std::string_view oldName,
+                                       std::string_view newName);
 
     // --- MVCC / visibility reads (SelectEngine / SSI) ---
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;

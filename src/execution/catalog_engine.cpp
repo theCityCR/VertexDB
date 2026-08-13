@@ -132,7 +132,7 @@ QueryResult CatalogEngine::executeAlterTable(const AlterTable &command) {
             [&](const auto &action) -> QueryResult {
                 using T = std::decay_t<decltype(action)>;
                 if constexpr (std::is_same_v<T, AlterAddColumn>) {
-                    table->addNullableColumn(action.column);
+                    table->addColumn(action.column, action.defaultValue);
                     if (ctx_.session.transactionActive()) {
                         UndoRecord undo;
                         undo.tableName = command.table;
@@ -142,10 +142,9 @@ QueryResult CatalogEngine::executeAlterTable(const AlterTable &command) {
                     }
                     recovery_.appendWal(WalOperation::AlterTable, alterTableSql(command));
                     return messageResult(true, "added column " + action.column.name);
-                } else {
-                    static_assert(std::is_same_v<T, AlterDropColumn>);
+                } else if constexpr (std::is_same_v<T, AlterDropColumn>) {
                     auto capture =
-                        table->dropUnreferencedColumn(action.column, ctx_.database.get());
+                        table->dropColumn(action.column, ctx_.database.get(), action.cascade);
                     if (ctx_.session.transactionActive()) {
                         UndoRecord undo;
                         undo.tableName = command.table;
@@ -154,10 +153,31 @@ QueryResult CatalogEngine::executeAlterTable(const AlterTable &command) {
                         undo.alterColumnIndex = capture.columnIndex;
                         undo.alterHeapColumnValues = std::move(capture.heapValues);
                         undo.alterVersionColumnValues = std::move(capture.versionValues);
+                        undo.alterCascaded = capture.cascaded;
+                        undo.alterDroppedUserIndexes = std::move(capture.droppedUserIndexes);
+                        undo.alterDroppedChecks = std::move(capture.droppedChecks);
+                        undo.alterDroppedUniques = std::move(capture.droppedUniques);
+                        undo.alterDroppedChildForeignKeys =
+                            std::move(capture.droppedChildForeignKeys);
                         ctx_.session.pushUndo(std::move(undo));
                     }
                     recovery_.appendWal(WalOperation::AlterTable, alterTableSql(command));
                     return messageResult(true, "dropped column " + action.column);
+                } else {
+                    static_assert(std::is_same_v<T, AlterRenameColumn>);
+                    table->renameColumn(action.oldName, action.newName, ctx_.database.get());
+                    if (ctx_.session.transactionActive()) {
+                        UndoRecord undo;
+                        undo.tableName = command.table;
+                        undo.kind = UndoKind::AlterRenameColumn;
+                        undo.alterColumn = Column{action.oldName, ColumnType::Int, false, false,
+                                                  false};
+                        undo.renameTo = action.newName;
+                        ctx_.session.pushUndo(std::move(undo));
+                    }
+                    recovery_.appendWal(WalOperation::AlterTable, alterTableSql(command));
+                    return messageResult(true, "renamed column " + action.oldName + " to " +
+                                                   action.newName);
                 }
             },
             command.action);

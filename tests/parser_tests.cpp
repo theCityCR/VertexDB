@@ -122,6 +122,7 @@ TEST(ParserTests, ParsesAlterTableAddAndDropColumn) {
     EXPECT_TRUE(added.nullable);
     EXPECT_FALSE(added.unique);
     EXPECT_FALSE(added.primaryKey);
+    EXPECT_FALSE(std::get<AlterAddColumn>(addCommand.action).defaultValue.has_value());
 
     auto drop = parser.parse("ALTER TABLE Employees DROP COLUMN nickname;");
     ASSERT_TRUE(std::holds_alternative<AlterTable>(drop));
@@ -129,22 +130,61 @@ TEST(ParserTests, ParsesAlterTableAddAndDropColumn) {
     EXPECT_EQ(dropCommand.table, "Employees");
     ASSERT_TRUE(std::holds_alternative<AlterDropColumn>(dropCommand.action));
     EXPECT_EQ(std::get<AlterDropColumn>(dropCommand.action).column, "nickname");
+    EXPECT_FALSE(std::get<AlterDropColumn>(dropCommand.action).cascade);
 }
 
-TEST(ParserTests, RejectsAlterTableAddWithoutExplicitNull) {
+TEST(ParserTests, ParsesAlterTableAddDefaultNotNullDropCascadeRename) {
+    Parser parser;
+
+    auto addDefault = parser.parse("ALTER TABLE Employees ADD COLUMN bonus INT NULL DEFAULT 0;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(addDefault));
+    const auto &addDefaultAction = std::get<AlterAddColumn>(std::get<AlterTable>(addDefault).action);
+    EXPECT_TRUE(addDefaultAction.column.nullable);
+    ASSERT_TRUE(addDefaultAction.defaultValue.has_value());
+    EXPECT_EQ(*addDefaultAction.defaultValue, Value{static_cast<std::int64_t>(0)});
+
+    auto addNotNull =
+        parser.parse("ALTER TABLE Employees ADD COLUMN active INT NOT NULL DEFAULT 1;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(addNotNull));
+    const auto &addNotNullAction =
+        std::get<AlterAddColumn>(std::get<AlterTable>(addNotNull).action);
+    EXPECT_FALSE(addNotNullAction.column.nullable);
+    ASSERT_TRUE(addNotNullAction.defaultValue.has_value());
+    EXPECT_EQ(*addNotNullAction.defaultValue, Value{static_cast<std::int64_t>(1)});
+
+    auto addNotNullEmpty =
+        parser.parse("ALTER TABLE Employees ADD COLUMN flag INT NOT NULL;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(addNotNullEmpty));
+    EXPECT_FALSE(std::get<AlterAddColumn>(std::get<AlterTable>(addNotNullEmpty).action)
+                     .column.nullable);
+    EXPECT_FALSE(std::get<AlterAddColumn>(std::get<AlterTable>(addNotNullEmpty).action)
+                     .defaultValue.has_value());
+
+    auto dropCascade = parser.parse("ALTER TABLE Employees DROP COLUMN nickname CASCADE;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(dropCascade));
+    EXPECT_TRUE(std::get<AlterDropColumn>(std::get<AlterTable>(dropCascade).action).cascade);
+
+    auto rename = parser.parse("ALTER TABLE Employees RENAME COLUMN nickname TO handle;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(rename));
+    const auto &renameAction = std::get<AlterRenameColumn>(std::get<AlterTable>(rename).action);
+    EXPECT_EQ(renameAction.oldName, "nickname");
+    EXPECT_EQ(renameAction.newName, "handle");
+}
+
+TEST(ParserTests, RejectsAlterTableAddWithoutNullability) {
     Parser parser;
     EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING;"),
                  std::runtime_error);
-    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NOT NULL;"),
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT DEFAULT 1;"),
                  std::runtime_error);
 }
 
-TEST(ParserTests, RejectsAlterTableAddColumnDefaultAndInlineConstraints) {
-    // Desired: ADD COLUMN accepts only `… TYPE NULL` — DEFAULT and inline constraints are refused.
+TEST(ParserTests, RejectsAlterTableAddColumnBadDefaultAndInlineConstraints) {
+    // Desired: DEFAULT type must match; DEFAULT NULL only on nullable; no inline constraints.
     Parser parser;
-    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT DEFAULT 1;"),
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NOT NULL DEFAULT NULL;"),
                  std::runtime_error);
-    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL DEFAULT 1;"),
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL DEFAULT \"x\";"),
                  std::runtime_error);
     EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL PRIMARY KEY;"),
                  std::runtime_error);

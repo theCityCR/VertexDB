@@ -125,11 +125,21 @@ std::string alterTableSql(const AlterTable &command) {
         [&](const auto &action) -> std::string {
             using T = std::decay_t<decltype(action)>;
             if constexpr (std::is_same_v<T, AlterAddColumn>) {
-                return "ALTER TABLE " + command.table + " ADD COLUMN " + action.column.name + " " +
-                       toString(action.column.type) + " NULL;";
+                std::string sql = "ALTER TABLE " + command.table + " ADD COLUMN " +
+                                  action.column.name + " " + toString(action.column.type) + " " +
+                                  (action.column.nullable ? "NULL" : "NOT NULL");
+                if (action.defaultValue) {
+                    sql += " DEFAULT " + sqlLiteral(*action.defaultValue);
+                }
+                sql += ";";
+                return sql;
+            } else if constexpr (std::is_same_v<T, AlterDropColumn>) {
+                return "ALTER TABLE " + command.table + " DROP COLUMN " + action.column +
+                       (action.cascade ? " CASCADE;" : ";");
             } else {
-                static_assert(std::is_same_v<T, AlterDropColumn>);
-                return "ALTER TABLE " + command.table + " DROP COLUMN " + action.column + ";";
+                static_assert(std::is_same_v<T, AlterRenameColumn>);
+                return "ALTER TABLE " + command.table + " RENAME COLUMN " + action.oldName +
+                       " TO " + action.newName + ";";
             }
         },
         command.action);

@@ -57,6 +57,8 @@ CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));
 CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));
 CREATE TABLE Enrollments (student_id INT, course_id INT, PRIMARY KEY (student_id, course_id));
 ALTER TABLE Employees ADD COLUMN nickname STRING NULL;
+ALTER TABLE Employees ADD COLUMN bonus INT NULL DEFAULT 0;
+ALTER TABLE Employees RENAME COLUMN nickname TO handle;
 CREATE INDEX idx_salary ON Employees(salary);
 INSERT INTO Employees VALUES (1, "Alice", 120000.0), (2, "Bob", 90000.0);
 SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY salary DESC LIMIT 10;
@@ -71,8 +73,9 @@ ROLLBACK;
 
 Also supported: nullable columns and explicit `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`,
 simple `CHECK` (column comparisons with `AND`/`OR`), single- and multi-column `FOREIGN KEY`
-(`NO ACTION` / `CASCADE` / `SET NULL`), `ALTER TABLE ADD COLUMN … NULL` / `DROP COLUMN` (dependency
-rejection; transactional undo + logical WAL),
+(`NO ACTION` / `CASCADE` / `SET NULL`), `ALTER TABLE ADD COLUMN` (`NULL`/`NOT NULL`/fill-only
+`DEFAULT`), `DROP COLUMN` [`CASCADE`], `RENAME COLUMN` (dependency rejection or same-table cascade;
+transactional undo + logical WAL),
 compound predicates
 (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
@@ -121,7 +124,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 397 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 407 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -159,7 +162,7 @@ Or feed an example script:
   are ignored so recovery replays the durable prefix. `SAVE DATABASE` durable-syncs the temp
   `.tcrdb` before rename and syncs the storage directory on POSIX (Windows: file sync only)
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `ALTER TABLE`
-  ADD/DROP COLUMN, `CREATE`/`DROP INDEX`)
+  ADD/DROP/RENAME COLUMN, `CREATE`/`DROP INDEX`)
   and `DROP DATABASE` / `SAVE`/`LOAD` follow documented txn rules: most catalog DDL is allowed with
   undo + deferred WAL; `DROP DATABASE` is rejected while a transaction is active; `SAVE`/`LOAD`
   implicitly commit / roll back
@@ -212,7 +215,8 @@ crash-injection durability cut points, composite indexes and multi-column `PRIMA
 (snapshot v8), FK `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL`, Phase 4 atomicity packaging
 (catalog+DML failure matrix + SAVE/LOAD ACID FAQ), planner composite-index `HashEq` for
 multi-equality `AND`, multi-column `FOREIGN KEY` (snapshot v9), `ALTER TABLE ADD COLUMN … NULL` /
-`DROP COLUMN` (eager rewrite; dependency rejection; transactional WAL), optional
+`DROP COLUMN` (eager rewrite; dependency rejection or same-table `CASCADE`; transactional WAL),
+`RENAME COLUMN`, optional
 `WalDurability::{Sync,FlushOnly}` (default Sync; SQL benches use FlushOnly), and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
