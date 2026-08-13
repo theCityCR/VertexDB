@@ -6,6 +6,7 @@
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/parser/predicate.hpp"
 #include "VertexDB/planner/query_planner.hpp"
+#include "VertexDB/storage/check_eval.hpp"
 #include "VertexDB/storage/database.hpp"
 #include "VertexDB/storage/foreign_key.hpp"
 #include "VertexDB/storage/table.hpp"
@@ -739,6 +740,87 @@ TEST(ConstraintBehaviorTests, TableForeignKeyWithoutChildIndexUsesScanOnParentDe
     EXPECT_THROW((void)executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")),
                  std::invalid_argument);
     ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Customers WHERE id = 2;")).success);
+}
+
+TEST(ConstraintBehaviorTests, CheckOrEqualLessAndStringLiteralPaths) {
+    // Desired: CHECK supports OR / = / < and string literals (incl. escapes) in messages/SQL.
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "check-or-eq-lt");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Flags (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "label STRING, CHECK ((a = 1) OR (b < 0)), CHECK (label = \"ok\\\"x\"));"))
+                    .success);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Flags VALUES (1, 1, 5, \"ok\\\"x\");"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Flags VALUES (2, 0, -1, \"ok\\\"x\");"))
+            .success);
+    // OR both false → reject.
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("INSERT INTO Flags VALUES (3, 0, 5, \"ok\\\"x\");")),
+        std::invalid_argument);
+    // String CHECK reject.
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("INSERT INTO Flags VALUES (4, 1, 5, \"no\");")),
+        std::invalid_argument);
+    // NULL arm of OR is UNKNOWN; other false → still UNKNOWN → accept.
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Flags VALUES (5, NULL, 5, \"ok\\\"x\");"))
+            .success);
+
+    auto table = executor.currentDatabase()->table("Flags");
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->checkConstraints().size(), 2U);
+    const auto orLiteral = checkConstraintLiteral(table->checkConstraints()[0]);
+    EXPECT_NE(orLiteral.find(" OR "), std::string::npos);
+    EXPECT_NE(orLiteral.find("a = 1"), std::string::npos);
+    EXPECT_NE(orLiteral.find("b < 0"), std::string::npos);
+    const auto stringLiteral = checkConstraintLiteral(table->checkConstraints()[1]);
+    EXPECT_NE(stringLiteral.find("label = \"ok\\\"x\""), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, CatalogCommandsRequireActiveDatabase) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "catalog-no-db");
+
+    auto createTable = executor.execute(parser.parse("CREATE TABLE T (id INT);"));
+    EXPECT_FALSE(createTable.success);
+    EXPECT_NE(createTable.message.find("no active database"), std::string::npos);
+
+    auto dropTable = executor.execute(parser.parse("DROP TABLE T;"));
+    EXPECT_FALSE(dropTable.success);
+    EXPECT_NE(dropTable.message.find("no active database"), std::string::npos);
+
+    auto rename = executor.execute(parser.parse("RENAME TABLE T TO U;"));
+    EXPECT_FALSE(rename.success);
+    EXPECT_NE(rename.message.find("no active database"), std::string::npos);
+
+    auto list = executor.execute(parser.parse("LIST TABLES;"));
+    EXPECT_FALSE(list.success);
+    EXPECT_NE(list.message.find("no active database"), std::string::npos);
+
+    auto save = executor.execute(parser.parse("SAVE DATABASE;"));
+    EXPECT_FALSE(save.success);
+    EXPECT_NE(save.message.find("no active database"), std::string::npos);
+
+    auto dropDb = executor.execute(parser.parse("DROP DATABASE missing;"));
+    EXPECT_FALSE(dropDb.success);
+    EXPECT_NE(dropDb.message.find("no active database"), std::string::npos);
+
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    auto wrongDrop = executor.execute(parser.parse("DROP DATABASE other;"));
+    EXPECT_FALSE(wrongDrop.success);
+    EXPECT_NE(wrongDrop.message.find("active database"), std::string::npos);
+
+    EXPECT_THROW((void)executor.execute(parser.parse("UPDATE missing SET id = 1;")),
+                 std::runtime_error);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE T (id INT);")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("UPDATE T SET nosuch = 1;")),
+                 std::runtime_error);
 }
 
 } // namespace VertexDB
