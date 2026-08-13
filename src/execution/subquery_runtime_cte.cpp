@@ -4,6 +4,7 @@
 #include "VertexDB/execution/recursive_cte_limits.hpp"
 #include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/execution/set_ops.hpp"
 #include "VertexDB/parser/recursive_cte.hpp"
 #include "VertexDB/planner/rewriter.hpp"
 

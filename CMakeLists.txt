@@ -75,6 +75,7 @@ add_library(VertexDB
     src/execution/foreign_key_eval.cpp
     src/execution/sql_literal.cpp
     src/execution/select_helpers.cpp
+    src/execution/set_ops.cpp
     src/execution/select_scope.cpp
     src/execution/select_aggregate.cpp
     src/execution/prepared_bind.cpp

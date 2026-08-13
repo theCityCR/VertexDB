@@ -3,6 +3,7 @@
 #include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/execution/select_aggregate.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/execution/set_ops.hpp"
 #include "VertexDB/execution/subquery_runtime.hpp"
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/planner/rewriter.hpp"

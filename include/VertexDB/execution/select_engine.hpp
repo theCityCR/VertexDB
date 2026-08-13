@@ -1,13 +1,15 @@
 #pragma once
 
 // SELECT / join / EXPLAIN execution owned by SelectEngine.
-// Implementation: select_engine.cpp (+ select_engine_scan.cpp, select_engine_join.cpp).
+// Implementation: select_engine.cpp (+ select_engine_scan.cpp, select_engine_join.cpp,
+// select_engine_ssi.cpp, select_engine_bitmap.cpp).
 // QueryExecutor remains the public façade; shared services live in ExecutionContext.
 // Predicate matching (including correlated IN/EXISTS) is owned by SubqueryRuntime;
-// SelectEngine::matches forwards to keep scan/join call sites stable.
-// Allowed peer calls: SelectEngine may call SubqueryRuntime::matches only;
-// SubqueryRuntime may call SelectEngine collect/plan helpers only (no mutual recursion
-// through execute/explain).
+// scan/join call ctx_.subquery->matches directly.
+// Peer contract: DmlEngine/CatalogEngine/SubqueryRuntime may call requireTable,
+// collectVisibleEntries, collectRows, planPreparedSelect, executeJoinSelect,
+// finalizeSelectResult. SelectEngine may call SubqueryRuntime::matches / prepare helpers
+// only (no mutual recursion through execute/explain).
 
 #include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/query_result.hpp"
@@ -41,13 +43,12 @@ class SelectEngine {
 
     [[nodiscard]] QueryResult execute(const Select &command);
     [[nodiscard]] QueryResult explain(const ExplainQuery &command);
-    [[nodiscard]] bool matches(const Row &row, const Table &table, const Predicate &predicate,
-                               std::string_view scopeName = {}) const;
     [[nodiscard]] std::shared_ptr<Table>
     requireTable(std::string_view tableName,
                  const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {}) const;
 
-    // Internal SELECT API used by SubqueryRuntime (via ExecutionContext::select).
+    // Internal SELECT API used by SubqueryRuntime / DmlEngine / CatalogEngine
+    // (via ExecutionContext::select).
     [[nodiscard]] QueryResult executeJoinSelect(
         const Select &command,
         const std::unordered_map<std::string, std::shared_ptr<Table>> &temps = {});
