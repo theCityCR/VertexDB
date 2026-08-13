@@ -1,0 +1,185 @@
+#include "VertexDB/storage/table.hpp"
+
+#include "VertexDB/storage/check_eval.hpp"
+
+#include <algorithm>
+#include <mutex>
+#include <shared_mutex>
+#include <stdexcept>
+#include <utility>
+
+namespace VertexDB {
+
+void Table::validateRow(const Row &row) const {
+    if (row.size() != schema_.size()) {
+        throw std::invalid_argument("row width does not match table schema");
+    }
+    for (std::size_t i = 0; i < row.size(); ++i) {
+        if (row[i].isNull()) {
+            if (!schema_[i].nullable) {
+                throw std::invalid_argument("NOT NULL constraint violation on column " +
+                                            schema_[i].name);
+            }
+            continue;
+        }
+        if (row[i].type() != schema_[i].type) {
+            throw std::invalid_argument("row value does not match column type");
+        }
+    }
+    enforceCheckConstraints(row);
+}
+
+void Table::enforceCheckConstraints(const Row &row) const {
+    auto lookup = [this](std::string_view column) -> std::optional<std::size_t> {
+        return columnIndex(column);
+    };
+    for (const auto &check : checkConstraints_) {
+        if (!evalCheckPredicate(check, row, lookup)) {
+            throw std::invalid_argument("CHECK constraint violation: " +
+                                        checkConstraintLiteral(check));
+        }
+    }
+}
+
+void Table::assertUniqueRow(const Row &row, std::optional<RowId> excludeRowId) const {
+    validateRow(row);
+    std::shared_lock lock{mutex_};
+    enforceUniqueConstraintsUnlocked(row, excludeRowId);
+}
+
+bool Table::rowsConflictOnUnique(const Row &left, const Row &right) const {
+    for (const auto &constraint : allUniqueConstraints()) {
+        if (uniqueRowsEqual(constraint, left, right)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<UniqueConstraint> Table::allUniqueConstraints() const {
+    std::vector<UniqueConstraint> constraints = uniqueConstraints_;
+    for (const auto &column : schema_) {
+        if (!column.unique && !column.primaryKey) {
+            continue;
+        }
+        // Column-level flags already covered when a matching table-level constraint exists.
+        const bool covered = std::ranges::any_of(uniqueConstraints_, [&](const UniqueConstraint &c) {
+            return c.columns.size() == 1 && c.columns.front() == column.name;
+        });
+        if (covered) {
+            continue;
+        }
+        constraints.push_back(UniqueConstraint{{column.name}, column.primaryKey});
+    }
+    return constraints;
+}
+
+std::string Table::constraintIndexName(const UniqueConstraint &constraint) {
+    std::string name = constraint.primaryKey ? "__pk_" : "__uq_";
+    for (std::size_t i = 0; i < constraint.columns.size(); ++i) {
+        if (i != 0) {
+            name.push_back('_');
+        }
+        name += constraint.columns[i];
+    }
+    return name;
+}
+
+std::string Table::formatUniqueColumns(const UniqueConstraint &constraint) {
+    if (constraint.columns.size() == 1) {
+        return constraint.columns.front();
+    }
+    std::string text = "(";
+    for (std::size_t i = 0; i < constraint.columns.size(); ++i) {
+        if (i != 0) {
+            text += ", ";
+        }
+        text += constraint.columns[i];
+    }
+    text.push_back(')');
+    return text;
+}
+
+Value Table::uniqueKeyForRow(const UniqueConstraint &constraint, const Row &row) const {
+    std::vector<Value> parts;
+    parts.reserve(constraint.columns.size());
+    for (const auto &columnName : constraint.columns) {
+        const auto index = columnIndex(columnName);
+        if (!index) {
+            throw std::runtime_error("unknown unique constraint column");
+        }
+        parts.push_back(row[*index]);
+    }
+    return Value::composite(std::move(parts));
+}
+
+bool Table::uniqueRowsEqual(const UniqueConstraint &constraint, const Row &left,
+                            const Row &right) const {
+    for (const auto &columnName : constraint.columns) {
+        const auto index = columnIndex(columnName);
+        if (!index) {
+            return false;
+        }
+        if (left[*index].isNull() || right[*index].isNull()) {
+            return false;
+        }
+        if (!(left[*index] == right[*index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Table::ensureConstraintIndexes() {
+    std::unique_lock lock{mutex_};
+    for (const auto &constraint : allUniqueConstraints()) {
+        if (indexManager_.hasIndex(constraint.columns, schema_)) {
+            continue;
+        }
+        const std::string indexName = constraintIndexName(constraint);
+        std::vector<std::size_t> indexes;
+        indexes.reserve(constraint.columns.size());
+        for (const auto &columnName : constraint.columns) {
+            const auto index = columnIndex(columnName);
+            if (!index) {
+                throw std::runtime_error("failed to create constraint index " + indexName);
+            }
+            indexes.push_back(*index);
+        }
+        if (!registerIndex(indexName, std::move(indexes), std::nullopt, true)) {
+            throw std::runtime_error("failed to create constraint index " + indexName);
+        }
+    }
+}
+
+void Table::enforceUniqueConstraintsUnlocked(const Row &row,
+                                             std::optional<RowId> excludeRowId) const {
+    for (const auto &constraint : allUniqueConstraints()) {
+        const Value key = uniqueKeyForRow(constraint, row);
+        if (key.hasNullCompositePart()) {
+            // UNIQUE allows rows with NULL parts; PRIMARY KEY columns are non-nullable.
+            continue;
+        }
+        if (auto hits = indexManager_.indexedLookup(constraint.columns, key, schema_)) {
+            for (const RowId hit : *hits) {
+                if (excludeRowId && hit == *excludeRowId) {
+                    continue;
+                }
+                throw std::invalid_argument("unique constraint violation on column " +
+                                            formatUniqueColumns(constraint));
+            }
+            continue;
+        }
+        for (const auto &[rowId, existing] : rowStore_->liveEntries()) {
+            if (excludeRowId && rowId == *excludeRowId) {
+                continue;
+            }
+            if (uniqueRowsEqual(constraint, row, existing)) {
+                throw std::invalid_argument("unique constraint violation on column " +
+                                            formatUniqueColumns(constraint));
+            }
+        }
+    }
+}
+
+} // namespace VertexDB

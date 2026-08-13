@@ -2,6 +2,9 @@
 
 // Table façade: schema/DML, MVCC, persistence, and planner-facing views.
 // IndexManager, TableStatistics, and TableSnapshotIO own focused logic; Table owns synchronization.
+// Implementation TUs: table.cpp (identity/DML/MVCC reads), table_constraints.cpp,
+// table_schema.cpp (ALTER), table_recovery.cpp (undo/physical/page-image redo),
+// table_indexes.cpp, table_persist.cpp (ANALYZE / snapshot I/O wrappers).
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/index_expression.hpp"
@@ -37,7 +40,7 @@ class Table : public RelationStats, public IndexCatalogView {
           std::vector<ForeignKeyConstraint> foreignKeys = {},
           std::vector<UniqueConstraint> uniqueConstraints = {});
 
-    // --- Identity / schema ---
+    // --- SQL-facing identity / schema metadata ---
     [[nodiscard]] const std::string &name() const noexcept;
     void setName(std::string name);
     [[nodiscard]] std::span<const Column> schema() const noexcept;
@@ -55,7 +58,7 @@ class Table : public RelationStats, public IndexCatalogView {
     // Register reserved `__pk_` / `__uq_` indexes when missing (CREATE TABLE / restore).
     void ensureConstraintIndexes();
 
-    // --- Schema evolution (ALTER TABLE) ---
+    // --- Schema evolution (ALTER TABLE; CatalogEngine) ---
     // Append a nullable column and pad every live heap row + MVCC version with NULL.
     void addNullableColumn(Column column);
     // Drop an unreferenced column; returns captured values for txn undo.
@@ -70,7 +73,7 @@ class Table : public RelationStats, public IndexCatalogView {
     // Restore a previously dropped column (ROLLBACK of DROP COLUMN).
     void restoreDroppedColumn(const DroppedColumnCapture &capture);
 
-    // --- MVCC / visibility reads ---
+    // --- MVCC / visibility reads (SelectEngine / SSI) ---
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
     // Snapshot reads record row-level SSI read sets for active `snapshot.self` transactions.
     [[nodiscard]] std::vector<Row> rowsSnapshot(const ReadSnapshot &snapshot,
@@ -91,7 +94,7 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::optional<Row> getRow(RowId rowId) const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
 
-    // --- DML ---
+    // --- SQL-facing DML ---
     // Optional `transactions` records SSI write sets and insert images for phantom checks.
     RowId insert(Row row, TransactionId writerId = kSystemTransactionId,
                  TransactionManager *transactions = nullptr);
@@ -101,7 +104,8 @@ class Table : public RelationStats, public IndexCatalogView {
                 TransactionId writerId = kSystemTransactionId,
                 TransactionManager *transactions = nullptr);
 
-    // --- Undo / recovery helpers ---
+    // --- Recovery / undo / page-image (preferred callers: RecoveryService, codecs,
+    // TableSnapshotIO) ---
     // Undo helpers: reverse INSERT/UPDATE/DELETE without leaving abort residue in MVCC.
     bool eraseDiscardingVersion(RowId rowId);
     bool replaceRow(RowId rowId, Row row);
@@ -115,7 +119,7 @@ class Table : public RelationStats, public IndexCatalogView {
                             std::vector<std::pair<std::string, BTreeIndexSnapshot>> btreeIndexes,
                             std::vector<std::pair<std::string, HashIndexSnapshot>> hashIndexes);
 
-    // --- Indexes / ANALYZE / planner views ---
+    // --- Planner views (RelationStats / IndexCatalogView) + index CRUD ---
     // On-demand stats for cost-based planning (row count + per-index distinct keys).
     [[nodiscard]] std::optional<std::size_t>
     indexDistinctCount(std::string_view column) const override;
@@ -162,7 +166,7 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::optional<std::vector<BTreeNode>>
     orderedIndexNodesSnapshot(std::string_view indexName) const;
 
-    // --- Snapshot / page-image I/O ---
+    // --- Snapshot / page-image I/O (preferred callers: CatalogEngine SAVE/LOAD, codecs) ---
     void replaceRows(std::vector<Row> rows);
     void replaceSparse(std::size_t capacity, std::vector<RowId> freeList,
                        std::vector<std::pair<RowId, Row>> entries);
