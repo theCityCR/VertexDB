@@ -27,11 +27,14 @@ The WAL records durable operations before they must survive process restart:
 The WAL persists append-only binary log records with a versioned header per record. Mutating
 executor DML writes `PageImageRedo` payloads. Inside an open transaction, those records are buffered
 in the executor and flushed on `COMMIT` as a single batch record (dropped on `ROLLBACK`) so a torn
-commit cannot partially apply the transaction. Autocommit DML and DDL still append immediately.
-Startup recovery loads the latest saved snapshot, then replays WAL records after the last save
-checkpoint. `readAll` returns only complete records and ignores a truncated trailing write (crash
-mid-append). If no saved snapshot exists, recovery replays the WAL from the beginning. Successful
-saves are written through a temporary snapshot file and then checkpoint the WAL. Legacy
+commit cannot partially apply the transaction. Each successful `WriteAheadLog::append` (and
+`reset`) flushes userspace buffers and `fsync`s the WAL file — on macOS via `F_FULLFSYNC` when
+available — and `fsync`s the parent directory when the file is newly created, so `COMMIT` and
+autocommit WAL writes are durable before the API returns. Autocommit DML and DDL still append
+immediately. Startup recovery loads the latest saved snapshot, then replays WAL records after the
+last save checkpoint. `readAll` returns only complete records and ignores a truncated trailing write
+(crash mid-append). If no saved snapshot exists, recovery replays the WAL from the beginning.
+Successful saves are written through a temporary snapshot file and then checkpoint the WAL. Legacy
 `PhysicalRedo` row after-images and logical `Insert`/`Update`/`Delete` SQL records remain replayable
 for older WAL files.
 

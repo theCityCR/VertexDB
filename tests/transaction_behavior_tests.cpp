@@ -693,6 +693,47 @@ TEST(TransactionBehaviorTests, CommitFlushesDeferredWalAndRecovers) {
     std::filesystem::remove_all(root);
 }
 
+// Desired: COMMIT returns only after deferred redo is on durable storage (flush+fsync via
+// WriteAheadLog::append). A new process must recover the committed rows from the WAL alone.
+TEST(TransactionBehaviorTests, CommitReturnsOnlyAfterDeferredWalIsDurable) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-commit-durable";
+    std::filesystem::remove_all(root);
+    Parser parser;
+    const auto walPath = root / "VertexDB.wal";
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE TABLE Items (id INT, label STRING);")).success);
+
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Items VALUES (1, \"durable\");")).success);
+        // Still deferred: no DML redo on disk until COMMIT.
+        ASSERT_EQ(WriteAheadLog{walPath}.readAll().size(), 2U);
+
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+
+        // After a successful COMMIT, the WAL file must already contain the batch redo — not
+        // merely buffered in the executor — so a crash here would still recover the insert.
+        const auto records = WriteAheadLog{walPath}.readAll();
+        ASSERT_EQ(records.size(), 3U);
+        EXPECT_EQ(records[2].operation, WalOperation::PageImageRedo);
+        EXPECT_GT(std::filesystem::file_size(walPath), 0U);
+    }
+
+    // Drop in-memory state; recovery must replay the durable COMMIT batch.
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id, label FROM Items;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[0][1], Value{"durable"});
+    std::filesystem::remove_all(root);
+}
+
 // --- SI anomaly wedge -------------------------------------------------------
 // Multi-txn interleaving uses shared Table + TransactionManager (one QueryExecutor
 // cannot hold two open SQL transactions). Executor honesty tests cover the RW gate.

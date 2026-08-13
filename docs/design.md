@@ -37,14 +37,15 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
   sparse v2, and dense v1 still readable) under `.tcrdb` files, with `tcrdb_codec` owning the layout
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
-  still replayable), logical SQL for DDL, truncated-trailing-record tolerance, startup replay, save
-  checkpoints, and crash-simulation tests
+  still replayable), logical SQL for DDL, flush+fsync on every successful append/`reset` (durable
+  `COMMIT` / autocommit), truncated-trailing-record tolerance, startup replay, save checkpoints,
+  and crash-simulation tests
 - Concurrency: executor-level reader/writer synchronization (`LockManager`) and concurrent client
   tests; SI/SSI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
 - Transactions: commit-aware MVCC snapshot isolation (dirty reads / SI watermark / mid-txn phantoms
   prevented) plus SSI commit aborts for write skew, write–write conflicts, and insert phantoms
   (predicate SIREAD vs insert/update images), undo-log DML rollback, transaction-batched page-image
-  WAL flush on `COMMIT`
+  WAL flush+fsync on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, composite Intersect∪Union for nested OR under AND including partial nested
   OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
@@ -103,15 +104,17 @@ arms + complementary residual), multiple independent recursive CTEs, `INTERSECT 
 `EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` binding
 for the recursive arm, row-level SSI commit aborts for write skew / write–write conflicts,
 insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, raised
-`WITH`/correlation caps (6 / 8), and `EXPLAIN INSERT`.
+`WITH`/correlation caps (6 / 8), `EXPLAIN INSERT`, and durable WAL `COMMIT` (flush+fsync on
+append/`reset`).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
-- ALTER-style DDL (`ADD`/`DROP COLUMN`, etc.), or richer predicate SSI (true gap/next-key locks
-  instead of relation-membership fallbacks for OR/LIKE)
+- ALTER-style DDL (`ADD`/`DROP COLUMN`, etc.), richer integrity constraints (PRIMARY KEY / UNIQUE),
+  or richer predicate SSI (true gap/next-key locks instead of relation-membership fallbacks for
+  OR/LIKE)
 
 Demo wedges (done):
 

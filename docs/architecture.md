@@ -98,7 +98,8 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   `btree_index_{lookup,mutate,snapshot}.cpp`.
 - `persistence`: `StorageManager` orchestrates snapshot paths; the slim `tcrdb_codec` orchestrates
   `.tcrdb` v1–v4 encode/decode across focused value, table, and index codec translation units.
-  WAL recovery uses page-image redo plus legacy physical/logical records.
+  WAL recovery uses page-image redo plus legacy physical/logical records. `WriteAheadLog::append`
+  and `reset` flush+fsync for durable COMMIT / autocommit / SAVE checkpoints.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager` (shared readers;
   exclusive writers). One `QueryExecutor` holds at most one open SQL transaction.
 - `transaction`: commit sequences, MVCC row versions, per-transaction undo-log rollback, and
@@ -143,7 +144,8 @@ phantom hiding). Write skew remains allowed under classic SI.
 catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP INDEX`) record
 compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to the same `Database`
 instance (or restores a prior DB after `CREATE DATABASE`), and `COMMIT` discards the log after
-`RecoveryService` flushes deferred WAL (logical DDL SQL plus collapsed page-image redo).
+`RecoveryService` flushes deferred WAL (logical DDL SQL plus collapsed page-image redo) with
+durable sync before discarding the undo log.
 `SAVE DATABASE` may implicitly commit first; `LOAD DATABASE` may implicitly roll back first.
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
@@ -153,7 +155,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 ## Current Limitations
 
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
-  logical DML remain replayable. Trailing torn WAL records are skipped.
+  logical DML remain replayable. Trailing torn WAL records are skipped. Successful WAL
+  `append`/`reset` flush and `fsync` (plus parent-directory sync on create) so committed redo is
+  durable before `COMMIT` returns.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
   DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
   `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped

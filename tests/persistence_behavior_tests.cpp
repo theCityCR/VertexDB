@@ -680,4 +680,41 @@ TEST(PersistenceBehaviorTests, RejectsInvalidSnapshotMagicAndVersion) {
     std::filesystem::remove_all(root);
 }
 
+// Desired: every successful WAL append flush+fsyncs before returning (COMMIT durability).
+TEST(PersistenceBehaviorTests, WriteAheadLogAppendPerformsDurableSync) {
+    const auto root = tempRoot("wal-durable-append");
+    std::filesystem::remove_all(root);
+    const auto path = root / "test.wal";
+
+    WriteAheadLog wal{path};
+    EXPECT_EQ(wal.durableSyncCount(), 0U);
+    EXPECT_EQ(wal.append(WalOperation::CreateDatabase, "company"), 1U);
+    EXPECT_EQ(wal.durableSyncCount(), 1U);
+    EXPECT_EQ(wal.append(WalOperation::CreateTable, "Employees"), 2U);
+    EXPECT_EQ(wal.durableSyncCount(), 2U);
+
+    // Survives reopen without relying on process-exit flush of libc buffers.
+    const auto records = WriteAheadLog{path}.readAll();
+    ASSERT_EQ(records.size(), 2U);
+    EXPECT_EQ(records[0].payload, "company");
+    EXPECT_EQ(records[1].payload, "Employees");
+    std::filesystem::remove_all(root);
+}
+
+TEST(PersistenceBehaviorTests, WriteAheadLogResetPerformsDurableSync) {
+    const auto root = tempRoot("wal-durable-reset");
+    std::filesystem::remove_all(root);
+    const auto path = root / "test.wal";
+
+    WriteAheadLog wal{path};
+    ASSERT_EQ(wal.append(WalOperation::CreateDatabase, "company"), 1U);
+    const auto syncsAfterAppend = wal.durableSyncCount();
+    ASSERT_GE(syncsAfterAppend, 1U);
+
+    wal.reset();
+    EXPECT_EQ(wal.durableSyncCount(), syncsAfterAppend + 1);
+    EXPECT_TRUE(WriteAheadLog{path}.readAll().empty());
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB

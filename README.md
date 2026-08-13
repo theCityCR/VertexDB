@@ -20,10 +20,11 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree indexes with incremental leaf/internal split/merge
 - Versioned binary persistence (page-payload + index-pages v4 `.tcrdb` snapshots; page-payload v3,
-  sparse v2, and dense v1 still loadable), page-image WAL redo for DML, save checkpoints, and
-  startup recovery
+  sparse v2, and dense v1 still loadable), page-image WAL redo for DML with flush+fsync on append
+  (durable `COMMIT` / autocommit), save checkpoints, and startup recovery
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
-  rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`)
+  rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`, then
+  durable-synced)
 - GoogleTest suite, Google Benchmark targets, sanitizer/coverage scripts, and multi-platform CI (GCC, Clang, macOS Clang, MSVC)
 
 ## Architecture
@@ -103,7 +104,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 284 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 287 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, deep features, and
@@ -128,8 +129,9 @@ Or feed an example script:
   SIREAD vs insert/update images; OR/LIKE use relation-membership fallbacks). One executor holds at
   most one open transaction; writers are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
-  row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
-  durable prefix
+  row after-images remain replayable. Every successful WAL append/`reset` flush+fsyncs (and syncs
+  the parent directory on create) so `COMMIT` / autocommit durability is not left in the OS page
+  cache. Trailing torn WAL records are ignored so recovery replays the durable prefix
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE`/`DROP INDEX`)
   and `DROP DATABASE` / `SAVE`/`LOAD` follow documented txn rules: most catalog DDL is allowed with
   undo + deferred WAL; `DROP DATABASE` is rejected while a transaction is active; `SAVE`/`LOAD`
