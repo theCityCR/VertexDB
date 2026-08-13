@@ -1340,6 +1340,48 @@ TEST(TransactionBehaviorTests, RegexSubqueryPredicateReadsUseRelationMembershipS
         << "relation-membership SIREAD must conflict with any insert into the relation";
 }
 
+TEST(TransactionBehaviorTests, SelectEngineExpressionIndexProbeRecordsRelationMembershipSiread) {
+    // Documented limitation: expression-index probes use relation-membership SIREADs — any
+    // concurrent insert into the relation conflicts, even when the insert would not match.
+    auto database = std::make_shared<Database>("company");
+    database->createTable("Employees",
+                          {{"id", ColumnType::Int}, {"name", ColumnType::String}});
+    auto &table = *database->table("Employees");
+    ASSERT_TRUE(table.createIndex(
+        "idx_id_minus",
+        IndexExpression{IndexExpression::Kind::Subtract, "id", Value{static_cast<std::int64_t>(1)}}));
+
+    TxnSession session;
+    QueryPlanner planner;
+    ExecutionContext ctx{database, planner, session};
+    SelectEngine selectEngine{ctx};
+    SubqueryRuntime subqueryRuntime{ctx};
+    ctx.select = &selectEngine;
+    ctx.subquery = &subqueryRuntime;
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}},
+                 session.transactionManager().beginCommitted(), &session.transactionManager());
+
+    Parser parser;
+    ASSERT_TRUE(session.begin().success);
+
+    auto select =
+        std::get<Select>(parser.parse("SELECT name FROM Employees WHERE (id-1) = 0;"));
+    auto plan = planner.planSelect(select, table);
+    ASSERT_EQ(plan.accessPath(), AccessPath::HashEq);
+    ASSERT_TRUE(std::get<HashEqPlan>(plan.path).indexExpression.has_value());
+    (void)selectEngine.collectVisibleEntries(select, table, plan);
+
+    const auto writer = session.transactionManager().begin();
+    table.insert({Value{static_cast<std::int64_t>(99)}, Value{"Zed"}}, writer.id,
+                 &session.transactionManager());
+    session.transactionManager().commit(writer.id);
+    const auto commit = session.commit();
+    EXPECT_FALSE(commit.success);
+    EXPECT_NE(commit.message.find("serialization failure"), std::string::npos)
+        << "expression-index SIREAD must conflict with any insert into the relation";
+}
+
 TEST(TransactionBehaviorTests, SelectEngineOrLikeScanRecordsColumnSireads) {
     // End-to-end: SelectEngine scan recording for OR / LIKE uses column SIREADs so a
     // non-matching concurrent insert does not abort the reader.

@@ -1,3 +1,5 @@
+#include "test_support.hpp"
+
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/persistence/write_ahead_log.hpp"
@@ -102,12 +104,17 @@ TEST(ExecutionTests, DropDatabaseClearsActiveAndDeletesSnapshot) {
     EXPECT_FALSE(executor.execute(parser.parse("DROP DATABASE company;")).success);
     EXPECT_THROW((void)executor.execute(parser.parse("SELECT id FROM Employees;")),
                  std::runtime_error);
+}
 
+TEST(ExecutionTests, DropDatabaseRejectedWhileTransactionActive) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-drop-db-txn-", "case");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
     ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
     auto inTxn = executor.execute(parser.parse("DROP DATABASE company;"));
     EXPECT_FALSE(inTxn.success);
-    EXPECT_NE(inTxn.message.find("transaction"), std::string::npos);
+    EXPECT_NE(inTxn.message.find("DROP DATABASE is not allowed"), std::string::npos);
+    EXPECT_NE(inTxn.message.find("transaction is active"), std::string::npos);
     ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
 }
 

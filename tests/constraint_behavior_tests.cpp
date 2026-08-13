@@ -972,6 +972,32 @@ TEST(ConstraintBehaviorTests, ForeignKeyOnDeleteCascadeRemovesChildren) {
     EXPECT_EQ(rows.rows[0][0], Value{20});
 }
 
+TEST(ConstraintBehaviorTests, ForeignKeyCascadeDepthExceeded) {
+    // Documented limitation: ON DELETE CASCADE chains deeper than kMaxReferentialActionDepth
+    // are rejected (self-FK chain of depth+1 descendants).
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-cascade-depth");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Nodes (id INT PRIMARY KEY, parent_id INT NULL, "
+                        "FOREIGN KEY (parent_id) REFERENCES Nodes(id) ON DELETE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Nodes VALUES (0, NULL);")).success);
+    for (std::size_t i = 1; i <= kMaxReferentialActionDepth; ++i) {
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Nodes VALUES (" + std::to_string(i) +
+                                              ", " + std::to_string(i - 1) + ");"))
+                        .success);
+    }
+    try {
+        (void)executor.execute(parser.parse("DELETE FROM Nodes WHERE id = 0;"));
+        FAIL() << "expected FOREIGN KEY CASCADE depth exceeded";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("CASCADE depth exceeded"), std::string::npos);
+    }
+}
+
 TEST(ConstraintBehaviorTests, ForeignKeyOnDeleteSetNullNullsChildren) {
     Parser parser;
     auto executor = makeTempExecutor("vertexdb-constraint-", "fk-setnull-del");
@@ -1240,6 +1266,44 @@ TEST(ConstraintBehaviorTests, DropColumnRejectedWhenPrimaryKey) {
     auto result = executor.execute(parser.parse("ALTER TABLE Accounts DROP COLUMN id;"));
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.message.find("PRIMARY KEY"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenUnique) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-uq-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE, "
+                        "note STRING NULL);"))
+                    .success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Accounts DROP COLUMN email;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("PRIMARY KEY or UNIQUE"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenCompositeUniqueMember) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-comp-uq-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Tags (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "UNIQUE (a, b));"))
+                    .success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Tags DROP COLUMN a;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("part of a UNIQUE"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropLastColumnRejected) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-last-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Solo (note STRING NULL);")).success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Solo DROP COLUMN note;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("last column"), std::string::npos);
 }
 
 TEST(ConstraintBehaviorTests, DropColumnRejectedWhenCheckReferencesColumn) {

@@ -139,6 +139,24 @@ TEST(ParserTests, RejectsAlterTableAddWithoutExplicitNull) {
                  std::runtime_error);
 }
 
+TEST(ParserTests, RejectsAlterTableAddColumnDefaultAndInlineConstraints) {
+    // Desired: ADD COLUMN accepts only `… TYPE NULL` — DEFAULT and inline constraints are refused.
+    Parser parser;
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT DEFAULT 1;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL DEFAULT 1;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL PRIMARY KEY;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL UNIQUE;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL CHECK (x > 0);"),
+                 std::runtime_error);
+    EXPECT_THROW(
+        (void)parser.parse("ALTER TABLE Employees ADD COLUMN x INT NULL REFERENCES T(id);"),
+        std::runtime_error);
+}
+
 TEST(ParserTests, RejectsTrailingTokens) {
     Parser parser;
 

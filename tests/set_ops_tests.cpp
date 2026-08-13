@@ -85,6 +85,32 @@ TEST(SetOpsTests, IntersectAndExceptDistinct) {
     EXPECT_EQ(except.rows[0][0], Value{static_cast<std::int64_t>(1)});
 }
 
+TEST(SetOpsTests, MixedSetOpsAreLeftAssociative) {
+    // Desired (docs/sql.md): set ops are left-associative — (A ∪ B) ∩ C, not A ∪ (B ∩ C).
+    Parser parser;
+    auto executor = makeExecutor("mixed-left-assoc");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE A (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE B (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE C (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO A VALUES (1), (2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO B VALUES (2), (3);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO C VALUES (2);")).success);
+
+    auto query = parser.parse(
+        "SELECT id FROM A UNION SELECT id FROM B INTERSECT SELECT id FROM C ORDER BY id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(query));
+    const auto &select = std::get<Select>(query);
+    ASSERT_EQ(select.setOps.size(), 2U);
+    EXPECT_EQ(select.setOps[0].op, SetOpKind::Union);
+    EXPECT_EQ(select.setOps[1].op, SetOpKind::Intersect);
+
+    auto result = executor.execute(query);
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(2)});
+}
+
 TEST(SetOpsTests, IntersectAllAndExceptAllPreserveMultisets) {
     // Desired: INTERSECT ALL / EXCEPT ALL use bag semantics (min / leftover counts).
     Parser parser;

@@ -364,4 +364,131 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseMultiIndexUnionPath) {
     EXPECT_EQ(remaining.rows[0][1], Value{"neither"});
 }
 
+TEST(PlannerBehaviorTests, UpdateUsesCompositeHashEqPath) {
+    // Desired: UPDATE/DELETE WHERE multi-equality on a composite PK uses HashEq like SELECT.
+    Parser parser;
+    auto executor = makeExecutor("dml-composite-hash-eq");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Enrollments (student_id INT, course_id INT, grade INT, "
+                        "PRIMARY KEY (student_id, course_id));"))
+                    .success);
+    for (int s = 1; s <= 10; ++s) {
+        for (int c = 1; c <= 5; ++c) {
+            ASSERT_TRUE(executor
+                            .execute(parser.parse(
+                                "INSERT INTO Enrollments VALUES (" + std::to_string(s) + ", " +
+                                std::to_string(c) + ", " + std::to_string(s + c) + ");"))
+                            .success);
+        }
+    }
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN UPDATE Enrollments SET grade = 99 WHERE student_id = 3 AND course_id = 2;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("update:"), std::string::npos);
+    EXPECT_NE(text.find("hash index equality lookup on student_id, course_id"), std::string::npos);
+    EXPECT_EQ(text.find("multi-index intersect"), std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Enrollments SET grade = 99 WHERE student_id = 3 AND course_id = 2;"))
+                    .success);
+    auto hit = executor.execute(
+        parser.parse("SELECT grade FROM Enrollments WHERE student_id = 3 AND course_id = 2;"));
+    ASSERT_TRUE(hit.success);
+    ASSERT_EQ(hit.rows.size(), 1U);
+    EXPECT_EQ(hit.rows[0][0], Value{static_cast<std::int64_t>(99)});
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "DELETE FROM Enrollments WHERE student_id = 3 AND course_id = 2;"))
+                    .success);
+    auto gone = executor.execute(
+        parser.parse("SELECT grade FROM Enrollments WHERE student_id = 3 AND course_id = 2;"));
+    ASSERT_TRUE(gone.success);
+    EXPECT_TRUE(gone.rows.empty());
+}
+
+TEST(PlannerBehaviorTests, DeleteUsesTrigramSubstringLikePath) {
+    // Desired: DELETE WHERE substring LIKE uses the same trigram intersect path as SELECT.
+    Parser parser;
+    auto executor = makeExecutor("dml-trigram");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, note STRING);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", \"hello world\"), "
+                        "(2, \"Bob\", \"goodbye\"), (3, \"Cara\", \"say hello\");"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_note_tri ON Employees((trigram(note)));"))
+            .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN DELETE FROM Employees WHERE note LIKE \"%hello%\";"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("delete:"), std::string::npos);
+    EXPECT_NE(text.find("trigram intersect for LIKE on note"), std::string::npos);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("DELETE FROM Employees WHERE note LIKE \"%hello%\";")).success);
+    auto remaining =
+        executor.execute(parser.parse("SELECT name FROM Employees ORDER BY name;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 1U);
+    EXPECT_EQ(remaining.rows[0][0], Value{"Bob"});
+}
+
+TEST(PlannerBehaviorTests, UpdateUsesNestedOrCompositeIntersectUnionPath) {
+    // Desired: UPDATE WHERE nested OR under AND uses Intersect∪Union like SELECT.
+    Parser parser;
+    auto executor = makeExecutor("dml-nested-or-iu");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON Employees(id);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, 0, \"id-dept\"), (2, 0, 2, \"id-miss\"), "
+                        "(1, 0, 2, \"id-city\"), (3, 1, 2, \"no-id\");"))
+                    .success);
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN UPDATE Employees SET name = \"hit\" WHERE id = 1 AND (dept = 1 OR city = 2);"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("update:"), std::string::npos);
+    EXPECT_NE(text.find("multi-index intersect on"), std::string::npos);
+    EXPECT_NE(text.find("union("), std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET name = \"hit\" WHERE id = 1 AND (dept = 1 OR city = 2);"))
+                    .success);
+    auto hits = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE name = \"hit\" ORDER BY name;"));
+    ASSERT_TRUE(hits.success);
+    ASSERT_EQ(hits.rows.size(), 2U);
+    EXPECT_EQ(hits.rows[0][0], Value{"hit"});
+    EXPECT_EQ(hits.rows[1][0], Value{"hit"});
+
+    auto missed = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE id = 2 OR id = 3 ORDER BY id;"));
+    ASSERT_TRUE(missed.success);
+    ASSERT_EQ(missed.rows.size(), 2U);
+    EXPECT_EQ(missed.rows[0][0], Value{"id-miss"});
+    EXPECT_EQ(missed.rows[1][0], Value{"no-id"});
+}
+
 } // namespace VertexDB
