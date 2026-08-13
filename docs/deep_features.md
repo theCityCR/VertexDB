@@ -22,6 +22,8 @@ The WAL records durable operations before they must survive process restart:
 - create database/table/index (logical SQL or name payloads)
 - page-image DML redo (dirty heap pages + touched index pages; optional free-list/capacity metadata)
 - drop/rename table
+- alter table (logical SQL for ADD/DROP COLUMN)
+- drop database
 - save
 
 The WAL persists append-only binary log records with a versioned header per record. Mutating
@@ -104,12 +106,14 @@ width). `Table` delegates physical row storage through a `RowStore` interface an
 page bytes in an in-memory page directory are the source of truth; the buffer pool caches those
 pages and fills on miss so reads deserialize live slots from page payloads. Both `PageRowStore` and
 `VectorRowStore` keep stable row IDs with tombstones and LIFO free-list reuse: deletes leave holes,
-and inserts reuse freed IDs before allocating new capacity. Database snapshots (format v7; v6–v1 still
+and inserts reuse freed IDs before allocating new capacity. Database snapshots (format v9; v8–v1 still
 loadable) persist
-`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and index pages
-(B+ tree nodes + hash buckets) so row IDs, page bytes, and indexes survive save/load without an
-index rebuild. Legacy CHECK v6, constraint-flags v5, page-payload v3, sparse v2, and dense v1
-snapshots remain
+`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, index pages
+(B+ tree nodes + hash buckets), per-column UNIQUE/PK flags, table-level composite UNIQUE/PK,
+`CHECK` predicate text, and `FOREIGN KEY` metadata (including multi-column column lists) so row IDs,
+page bytes, indexes, and constraints survive save/load without an index rebuild. Current writes are
+v9 (multi-column FK); v8 adds composite UNIQUE/PK; v7 single-column FK; legacy CHECK v6,
+constraint-flags v5, index-pages v4, page-payload v3, sparse v2, and dense v1 snapshots remain
 readable.
 
 ## Query Planner
@@ -164,7 +168,7 @@ A rewriter inlines `WITH` CTEs by default (`AS NOT MATERIALIZED` is explicit) an
 CTE/derived alias also force-materializes so body filters stay scoped inside the temp.
 Uncorrelated `IN (SELECT …)` / `EXISTS (SELECT …)` subqueries (optionally headed by `WITH`, and
 optionally containing joins) materialize into value lists when uncorrelated; correlated
-`IN`/`EXISTS` bind outer scopes per row for up to four FROM frames, including `FROM` / `JOIN`
+`IN`/`EXISTS` bind outer scopes per row for up to eight outer FROM frames, including `FROM` / `JOIN`
 table aliases. Nested `WITH` up to depth 6 reuses the same inliner. `WITH RECURSIVE`
 (`UNION` / `UNION ALL`, delta or `AS ACCUMULATOR` binding, independent or mutual recursive CTEs,
 iteration/row caps)

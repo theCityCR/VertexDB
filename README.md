@@ -29,8 +29,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   `AND`/`OR`); single- and multi-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION` / `CASCADE` /
   `SET NULL`)
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
-  rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`, then
-  durable-synced)
+  rollback for DML and transactional catalog DDL (incl. `ALTER TABLE`), and transaction-atomic
+  page-image WAL (DML deferred until `COMMIT`, then durable-synced)
 - GoogleTest suite, Google Benchmark targets, sanitizer/coverage scripts, and multi-platform CI (GCC, Clang, macOS Clang, MSVC)
 
 ## Architecture
@@ -54,6 +54,8 @@ CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
 CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));
 CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));
+CREATE TABLE Enrollments (student_id INT, course_id INT, PRIMARY KEY (student_id, course_id));
+ALTER TABLE Employees ADD COLUMN nickname STRING NULL;
 CREATE INDEX idx_salary ON Employees(salary);
 INSERT INTO Employees VALUES (1, "Alice", 120000.0), (2, "Bob", 90000.0);
 SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY salary DESC LIMIT 10;
@@ -68,7 +70,8 @@ ROLLBACK;
 
 Also supported: nullable columns and explicit `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`,
 simple `CHECK` (column comparisons with `AND`/`OR`), single- and multi-column `FOREIGN KEY`
-(`NO ACTION` / `CASCADE` / `SET NULL`),
+(`NO ACTION` / `CASCADE` / `SET NULL`), `ALTER TABLE ADD COLUMN … NULL` / `DROP COLUMN` (dependency
+rejection; transactional undo + logical WAL),
 compound predicates
 (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
@@ -136,9 +139,10 @@ Or feed an example script:
 
 ## Current Limitations
 
-- Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
-  transaction-atomic page-image WAL (DML deferred until `COMMIT` as one batch, dropped on
-  `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; SSI aborts later committers
+- Transactions use undo-log rollback for DML and transactional catalog DDL (incl. `ALTER TABLE`),
+  commit-aware MVCC snapshot isolation for reads, and transaction-atomic page-image WAL (DML
+  deferred until `COMMIT` as one batch, dropped on `ROLLBACK`). SI prevents dirty reads and hides
+  post-`BEGIN` commits; SSI aborts later committers
   on overlapping read/write sets (write skew / write–write) and on insert phantoms (predicate
   SIREAD vs insert/update images; OR of column leaves and column `LIKE` use real predicates;
   regex / subquery / expression-index probes use relation-membership fallbacks). One executor holds
