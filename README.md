@@ -59,7 +59,7 @@ ROLLBACK;
 Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
-depth up to 3; `WITH RECURSIVE` with `UNION` / `UNION ALL`, including multiple independent or mutually
+depth up to 6; `WITH RECURSIVE` with `UNION` / `UNION ALL`, including multiple independent or mutually
 recursive CTEs and optional `AS ACCUMULATOR` binding), derived tables `FROM (SELECT …) [AS] alias`,
 `IN`/`EXISTS` subqueries, set operations
 (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` / `EXCEPT ALL`), `EXPLAIN` /
@@ -104,10 +104,10 @@ Or feed an example script:
 ## Testing And Quality
 
 - 281 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
-  subquery / recursive), set operations (`UNION` / `INTERSECT` / `EXCEPT`), planner behavior (access /
-  intersect-union / explain / mutation / join-stats),
-  transactions, persistence/WAL, aggregates/prepared statements, deep features, and regressions
-  (see [docs/testing.md](docs/testing.md) for file ownership)
+  subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
+  `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
+  join-stats), transactions, persistence/WAL, aggregates/prepared statements, deep features, and
+  regressions (see [docs/testing.md](docs/testing.md) for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   85.19%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -129,8 +129,10 @@ Or feed an example script:
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
   durable prefix
-- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`) and `SAVE`/`LOAD` are
-  rejected while a transaction is active; `CREATE INDEX` is allowed with undo + deferred WAL
+- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE`/`DROP INDEX`)
+  and `DROP DATABASE` / `SAVE`/`LOAD` follow documented txn rules: most catalog DDL is allowed with
+  undo + deferred WAL; `DROP DATABASE` is rejected while a transaction is active; `SAVE`/`LOAD`
+  implicitly commit / roll back
 - Planner costs use live row counts, index distinct-key counts, and optional `ANALYZE` histograms
   for range/`IN` selectivity; multi-index AND intersection and top-level `OR` union (including
   partial union of indexable arms with a residual OR complementary scan) are supported
@@ -158,16 +160,16 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, `WITH RECURSIVE` (`UNION` / `UNION ALL`), parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
-transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`),
-same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for UPDATE/DELETE,
-`EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging, composite Intersect∪Union for
-fully indexable nested `OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit
-commit/rollback), top-level and CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` /
-`EXCEPT`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
-complementary residual), multiple independent recursive CTEs, `INTERSECT ALL` / `EXCEPT ALL`,
-mutual recursion among `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, and a dated
-absolute-time benchmark summary (last refreshed 2026-08-10 from the
-CI `benchmark report` artifact).
+transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
+`DROP DATABASE`), same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for
+`UPDATE`/`DELETE`/`INSERT`, `EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging with
+row-level SSI write-skew / write–write aborts, composite Intersect∪Union for fully indexable nested
+`OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit commit/rollback), top-level and
+CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` /
+`EXCEPT ALL`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
+complementary residual), multiple independent recursive CTEs, mutual recursion among
+`WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, and a dated absolute-time benchmark
+summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 [materialize vs inline comparison](docs/cte_materialize_comparison.md),
