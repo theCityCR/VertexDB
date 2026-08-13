@@ -237,4 +237,23 @@ TEST(SetOpsTests, SetOpColumnCountMismatchRejected) {
                  std::runtime_error);
 }
 
+TEST(SetOpsTests, SetOpOrderByLimitAppliesToCombinedResult) {
+    // Desired (docs/sql.md): ORDER BY / LIMIT after the chain apply to the combined result.
+    Parser parser;
+    auto executor = makeExecutor("setop-limit");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE A (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE B (id INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO A VALUES (1), (3), (5);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO B VALUES (2), (4), (6);")).success);
+
+    auto result = executor.execute(
+        parser.parse("SELECT id FROM A UNION SELECT id FROM B ORDER BY id LIMIT 3;"));
+    ASSERT_TRUE(result.success) << result.message;
+    ASSERT_EQ(result.rows.size(), 3U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[1][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(result.rows[2][0], Value{static_cast<std::int64_t>(3)});
+}
+
 } // namespace VertexDB

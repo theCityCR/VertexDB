@@ -925,6 +925,29 @@ TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteSkew) {
         << "SSI aborts the second committer; one doctor remains on-call";
 }
 
+TEST(TransactionBehaviorTests, OrLikePredicateReadsUseRelationMembershipSiread) {
+    // Documented limitation (docs/sql.md, docs/design.md): OR / LIKE / subquery scans use
+    // conservative relation-membership SIREADs rather than column predicates. Any concurrent
+    // insert into the relation conflicts — even a row that would not match the predicate.
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted(), &transactions);
+
+    const auto t1 = transactions.begin();
+    // SelectEngine records relation membership for OR/LIKE residual full scans (and prefix LIKE).
+    transactions.recordRelationRead(t1.id, "Employees");
+
+    const auto t2 = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Zed"}, Value{50000.0}}, t2.id,
+                 &transactions);
+    transactions.commit(t2.id);
+    EXPECT_THROW(transactions.commit(t1.id), SerializationFailure)
+        << "relation-membership SIREAD must conflict with any insert into the relation";
+}
+
 TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteWriteConflict) {
     // First-committer wins: two txns update the same row; the later commit aborts.
     TransactionManager transactions;

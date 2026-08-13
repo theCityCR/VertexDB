@@ -297,4 +297,37 @@ TEST(NestedSqlTests, DerivedTableInsideExistsIsAllowed) {
     EXPECT_EQ(result.rows[0][0], Value{"Alice"});
 }
 
+TEST(NestedSqlTests, UncorrelatedExistsFiltersBySubqueryPresence) {
+    // Desired: EXISTS without outer refs materializes once and filters outer rows.
+    Parser parser;
+    auto executor = makeExecutor("uncorrelated-exists");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse("CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+            .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Bonuses (emp_id INT, amount DOUBLE);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0), (2, \"Bob\", "
+                        "90000.0);"))
+                    .success);
+
+    auto empty = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE amount > 0.0);"));
+    ASSERT_TRUE(empty.success);
+    EXPECT_TRUE(empty.rows.empty());
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Bonuses VALUES (1, 5000.0);")).success);
+    auto hits = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE EXISTS (SELECT emp_id FROM Bonuses WHERE amount > 0.0) "
+        "ORDER BY name;"));
+    ASSERT_TRUE(hits.success);
+    ASSERT_EQ(hits.rows.size(), 2U);
+    EXPECT_EQ(hits.rows[0][0], Value{"Alice"});
+    EXPECT_EQ(hits.rows[1][0], Value{"Bob"});
+}
+
 } // namespace VertexDB

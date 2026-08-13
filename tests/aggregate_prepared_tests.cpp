@@ -94,6 +94,30 @@ TEST(AggregatePreparedTests, AggregatesAndGroupByProduceGroupedResults) {
                  std::runtime_error);
 }
 
+TEST(AggregatePreparedTests, SelectedColumnMustAppearInGroupBy) {
+    // Desired: non-aggregated selected columns must appear in GROUP BY.
+    auto executor = makeExecutor("groupby-completeness");
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, name STRING, dept_id INT);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, \"Alice\", 10), (2, \"Bob\", 10);"))
+                    .success);
+
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("SELECT name, COUNT(*) FROM Employees GROUP BY id;")),
+        std::runtime_error);
+
+    auto ok = executor.execute(
+        parser.parse("SELECT name, COUNT(*) FROM Employees GROUP BY name ORDER BY name;"));
+    ASSERT_TRUE(ok.success);
+    ASSERT_EQ(ok.rows.size(), 2U);
+}
+
 TEST(AggregatePreparedTests, MultiEquiJoinLeftDeepChain) {
     auto executor = makeExecutor("multi-join");
     Parser parser;

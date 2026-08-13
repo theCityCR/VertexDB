@@ -253,6 +253,29 @@ TEST(ParserTests, ParsesRightFullAndCrossJoins) {
     EXPECT_TRUE(cj.joins[0].rightColumn.empty());
 }
 
+TEST(ParserTests, ParsesInnerJoinAndOptionalOuterKeyword) {
+    // Desired: INNER JOIN matches bare JOIN; LEFT/RIGHT OUTER JOIN match LEFT/RIGHT JOIN.
+    Parser parser;
+
+    auto inner = parser.parse(
+        "SELECT * FROM Employees INNER JOIN Departments ON Employees.dept_id = Departments.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(inner));
+    ASSERT_EQ(std::get<Select>(inner).joins.size(), 1U);
+    EXPECT_EQ(std::get<Select>(inner).joins[0].kind, JoinKind::Inner);
+    EXPECT_EQ(std::get<Select>(inner).joins[0].table, "Departments");
+
+    auto leftOuter = parser.parse(
+        "SELECT * FROM Employees LEFT OUTER JOIN Departments ON Employees.dept_id = Departments.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(leftOuter));
+    EXPECT_EQ(std::get<Select>(leftOuter).joins[0].kind, JoinKind::LeftOuter);
+
+    auto rightOuter = parser.parse(
+        "SELECT * FROM Employees RIGHT OUTER JOIN Departments ON Employees.dept_id = "
+        "Departments.id;");
+    ASSERT_TRUE(std::holds_alternative<Select>(rightOuter));
+    EXPECT_EQ(std::get<Select>(rightOuter).joins[0].kind, JoinKind::RightOuter);
+}
+
 TEST(ParserTests, CrossJoinWithOnClauseIsRejected) {
     // Documented: CROSS JOIN has no ON; leftover ON is unexpected trailing syntax.
     Parser parser;

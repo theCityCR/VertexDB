@@ -311,4 +311,57 @@ TEST(PlannerBehaviorTests, UpdateUsesMultiIndexIntersectPath) {
     EXPECT_NE(missed.rows[0][0], Value{"hit"});
 }
 
+TEST(PlannerBehaviorTests, UpdateAndDeleteUseMultiIndexUnionPath) {
+    // Desired: UPDATE/DELETE WHERE with top-level OR use the same Union access path as SELECT.
+    Parser parser;
+    auto executor = makeExecutor("dml-union");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES "
+                        "(1, 1, 9, \"only-dept\"), (2, 9, 1, \"only-city\"), "
+                        "(3, 1, 1, \"both\"), (4, 0, 0, \"neither\");"))
+                    .success);
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN UPDATE Employees SET name = \"hit\" WHERE dept = 1 OR city = 1;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("update:"), std::string::npos);
+    EXPECT_NE(text.find("multi-index union on"), std::string::npos);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET name = \"hit\" WHERE dept = 1 OR city = 1;"))
+                    .success);
+    auto hits = executor.execute(
+        parser.parse("SELECT id FROM Employees WHERE name = \"hit\" ORDER BY id;"));
+    ASSERT_TRUE(hits.success);
+    ASSERT_EQ(hits.rows.size(), 3U);
+    EXPECT_EQ(hits.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(hits.rows[1][0], Value{static_cast<std::int64_t>(2)});
+    EXPECT_EQ(hits.rows[2][0], Value{static_cast<std::int64_t>(3)});
+
+    auto missed =
+        executor.execute(parser.parse("SELECT name FROM Employees WHERE id = 4;"));
+    ASSERT_TRUE(missed.success);
+    ASSERT_EQ(missed.rows.size(), 1U);
+    EXPECT_EQ(missed.rows[0][0], Value{"neither"});
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("DELETE FROM Employees WHERE dept = 1 OR city = 1;")).success);
+    auto remaining =
+        executor.execute(parser.parse("SELECT id, name FROM Employees ORDER BY id;"));
+    ASSERT_TRUE(remaining.success);
+    ASSERT_EQ(remaining.rows.size(), 1U);
+    EXPECT_EQ(remaining.rows[0][0], Value{static_cast<std::int64_t>(4)});
+    EXPECT_EQ(remaining.rows[0][1], Value{"neither"});
+}
+
 } // namespace VertexDB

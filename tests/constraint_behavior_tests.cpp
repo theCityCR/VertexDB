@@ -83,6 +83,26 @@ TEST(ConstraintBehaviorTests, UniqueConstraintRejectsDuplicateUpdate) {
     EXPECT_EQ(rows.rows[0][0], Value{std::string{"b@x"}});
 }
 
+TEST(ConstraintBehaviorTests, UniqueConstraintRejectsDuplicateInsert) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "uq-dup-insert");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Accounts VALUES (1, \"a@x\");")).success);
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("INSERT INTO Accounts VALUES (2, \"a@x\");")),
+        std::invalid_argument);
+    const auto rows = executor.execute(parser.parse("SELECT id, email FROM Accounts;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(rows.rows[0][1], Value{std::string{"a@x"}});
+}
+
 TEST(ConstraintBehaviorTests, MultiRowInsertRefusesDuplicateWithoutPartialWrite) {
     Parser parser;
     auto executor = makeTempExecutor("vertexdb-constraint-", "pk-batch-dup");
@@ -225,6 +245,32 @@ TEST(ConstraintBehaviorTests, PrimaryKeyAutoIndexUsedForHashEq) {
     EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
 }
 
+TEST(ConstraintBehaviorTests, UniqueAutoIndexUsedForHashEq) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "uq-hash-eq");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Accounts VALUES (1, \"a@x\");")).success);
+
+    auto table = executor.currentDatabase()->table("Accounts");
+    ASSERT_NE(table, nullptr);
+    EXPECT_TRUE(table->hasIndex("email"));
+
+    Select query{"Accounts",
+                 {},
+                 {SelectExpr::makeColumn("id")},
+                 makeComparison("email", ComparisonOperator::Equal, Value{std::string{"a@x"}}),
+                 {},
+                 {}};
+    const auto plan = QueryPlanner{}.planSelect(query, *table);
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
+    EXPECT_EQ(std::get<HashEqPlan>(plan.path).indexColumn, "email");
+}
+
 TEST(ConstraintBehaviorTests, CannotDropConstraintIndex) {
     Parser parser;
     auto executor = makeTempExecutor("vertexdb-constraint-", "pk-drop-index");
@@ -236,6 +282,21 @@ TEST(ConstraintBehaviorTests, CannotDropConstraintIndex) {
     auto table = executor.currentDatabase()->table("Accounts");
     ASSERT_NE(table, nullptr);
     EXPECT_TRUE(table->hasIndex("id"));
+}
+
+TEST(ConstraintBehaviorTests, CannotDropUniqueConstraintIndex) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "uq-drop-index");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);"))
+                    .success);
+    const auto dropped = executor.execute(parser.parse("DROP INDEX __uq_email ON Accounts;"));
+    EXPECT_FALSE(dropped.success);
+    auto table = executor.currentDatabase()->table("Accounts");
+    ASSERT_NE(table, nullptr);
+    EXPECT_TRUE(table->hasIndex("email"));
 }
 
 TEST(ConstraintBehaviorTests, SaveLoadPreservesPrimaryKey) {

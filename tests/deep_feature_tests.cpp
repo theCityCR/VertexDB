@@ -538,4 +538,173 @@ TEST(DeepFeatureTests, StorageManagerLoadsLegacyPagePayloadV3Snapshots) {
     std::filesystem::remove_all(root);
 }
 
+TEST(DeepFeatureTests, StorageManagerLoadsLegacyConstraintFlagsV5Snapshots) {
+    // v5: UNIQUE / PRIMARY KEY column flags + page/index pages; no CHECK / FOREIGN KEY sections.
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_v5_snapshot_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+
+    PageStoreSnapshot snapshot;
+    {
+        Table source{"Accounts",
+                     {{"id", ColumnType::Int, false, true, true},
+                      {"email", ColumnType::String, false, true, false}}};
+        (void)source.insert({Value{static_cast<std::int64_t>(1)}, Value{std::string{"a@x"}}});
+        snapshot = source.exportPageStore();
+        ASSERT_FALSE(snapshot.pages.empty());
+    }
+
+    {
+        std::ofstream out{root / "legacy_v5.tcrdb", std::ios::binary};
+        ASSERT_TRUE(out);
+
+        const auto writePod = [&](const auto &value) {
+            out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+        };
+        const auto writeString = [&](std::string_view value) {
+            writePod(static_cast<std::uint64_t>(value.size()));
+            out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        };
+
+        out.write("TCRDB001", 8);
+        writePod(std::uint32_t{5});
+        writeString("legacy_v5");
+        writePod(std::uint64_t{1}); // table count
+        writeString("Accounts");
+        writePod(std::uint64_t{2}); // column count
+        writeString("id");
+        writePod(std::uint8_t{0}); // INT
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint8_t{1}); // unique
+        writePod(std::uint8_t{1}); // primary key
+        writeString("email");
+        writePod(std::uint8_t{2}); // STRING
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint8_t{1}); // unique
+        writePod(std::uint8_t{0}); // not primary key
+        // v5 has no CHECK / FOREIGN KEY sections.
+        writePod(std::uint64_t{0}); // indexes (constraint indexes rebuilt on load)
+
+        writePod(static_cast<std::uint64_t>(snapshot.rowsPerPage));
+        writePod(static_cast<std::uint64_t>(snapshot.capacity));
+        writePod(static_cast<std::uint64_t>(snapshot.freeList.size()));
+        for (const auto rowId : snapshot.freeList) {
+            writePod(static_cast<std::uint64_t>(rowId));
+        }
+        writePod(static_cast<std::uint64_t>(snapshot.pages.size()));
+        for (const auto &[pageId, bytes] : snapshot.pages) {
+            writePod(static_cast<std::uint64_t>(pageId));
+            writePod(static_cast<std::uint64_t>(bytes.size()));
+            if (!bytes.empty()) {
+                out.write(reinterpret_cast<const char *>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+            }
+        }
+        writePod(std::uint64_t{0}); // index page count
+    }
+
+    StorageManager storage{root};
+    auto database = storage.loadDatabase("legacy_v5");
+    auto table = database->table("Accounts");
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->schema().size(), 2U);
+    EXPECT_TRUE(table->schema()[0].primaryKey);
+    EXPECT_TRUE(table->schema()[0].unique);
+    EXPECT_TRUE(table->schema()[1].unique);
+    EXPECT_FALSE(table->schema()[1].primaryKey);
+    EXPECT_TRUE(table->hasIndex("id"));
+    EXPECT_TRUE(table->hasIndex("email"));
+    EXPECT_EQ(table->rowCount(), 1U);
+    EXPECT_THROW(table->assertUniqueRow(
+                     {Value{static_cast<std::int64_t>(2)}, Value{std::string{"a@x"}}}),
+                 std::invalid_argument);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(DeepFeatureTests, StorageManagerLoadsLegacyCheckConstraintV6Snapshots) {
+    // v6: CHECK predicate text after column flags; no FOREIGN KEY section.
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("VertexDB_v6_snapshot_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+
+    PageStoreSnapshot snapshot;
+    {
+        Table source{"Pay",
+                     {{"id", ColumnType::Int, false, true, true},
+                      {"salary", ColumnType::Double}},
+                     {}};
+        (void)source.insert({Value{static_cast<std::int64_t>(1)}, Value{120000.0}});
+        snapshot = source.exportPageStore();
+        ASSERT_FALSE(snapshot.pages.empty());
+    }
+
+    {
+        std::ofstream out{root / "legacy_v6.tcrdb", std::ios::binary};
+        ASSERT_TRUE(out);
+
+        const auto writePod = [&](const auto &value) {
+            out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+        };
+        const auto writeString = [&](std::string_view value) {
+            writePod(static_cast<std::uint64_t>(value.size()));
+            out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        };
+
+        out.write("TCRDB001", 8);
+        writePod(std::uint32_t{6});
+        writeString("legacy_v6");
+        writePod(std::uint64_t{1}); // table count
+        writeString("Pay");
+        writePod(std::uint64_t{2}); // column count
+        writeString("id");
+        writePod(std::uint8_t{0}); // INT
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint8_t{1}); // unique
+        writePod(std::uint8_t{1}); // primary key
+        writeString("salary");
+        writePod(std::uint8_t{1}); // DOUBLE
+        writePod(std::uint8_t{0}); // not nullable
+        writePod(std::uint8_t{0}); // not unique
+        writePod(std::uint8_t{0}); // not primary key
+        writePod(std::uint64_t{1}); // one CHECK
+        writeString("salary > 0.0");
+        // v6 has no FOREIGN KEY section.
+        writePod(std::uint64_t{0}); // indexes
+
+        writePod(static_cast<std::uint64_t>(snapshot.rowsPerPage));
+        writePod(static_cast<std::uint64_t>(snapshot.capacity));
+        writePod(static_cast<std::uint64_t>(snapshot.freeList.size()));
+        for (const auto rowId : snapshot.freeList) {
+            writePod(static_cast<std::uint64_t>(rowId));
+        }
+        writePod(static_cast<std::uint64_t>(snapshot.pages.size()));
+        for (const auto &[pageId, bytes] : snapshot.pages) {
+            writePod(static_cast<std::uint64_t>(pageId));
+            writePod(static_cast<std::uint64_t>(bytes.size()));
+            if (!bytes.empty()) {
+                out.write(reinterpret_cast<const char *>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+            }
+        }
+        writePod(std::uint64_t{0}); // index page count
+    }
+
+    StorageManager storage{root};
+    auto database = storage.loadDatabase("legacy_v6");
+    auto table = database->table("Pay");
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->checkConstraints().size(), 1U);
+    EXPECT_TRUE(table->schema()[0].primaryKey);
+    EXPECT_EQ(table->rowCount(), 1U);
+    EXPECT_THROW(table->validateRow({Value{static_cast<std::int64_t>(2)}, Value{-1.0}}),
+                 std::invalid_argument);
+
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB
