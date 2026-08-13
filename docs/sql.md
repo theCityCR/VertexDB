@@ -11,6 +11,7 @@ CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE TABLE People (id INT NOT NULL, nickname STRING NULL);
 CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
 CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));
+CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));
 DROP TABLE Employees;
 RENAME TABLE Employees TO Staff;
 LIST TABLES;
@@ -195,6 +196,14 @@ Column constraints on `CREATE TABLE`:
   the full row image at `INSERT`/`UPDATE`. Rejects only when the predicate is FALSE; NULL comparisons
   are UNKNOWN and accepted (SQL CHECK semantics). Error:
   `CHECK constraint violation: <predicate>`.
+- `REFERENCES Parent(col)` or `FOREIGN KEY (col) REFERENCES Parent(col)` — single-column foreign
+  keys. Parent column must be `PRIMARY KEY` or `UNIQUE` and already exist (self-FK allowed on the
+  table being created). Optional `ON DELETE NO ACTION` / `ON UPDATE NO ACTION` (the only supported
+  actions). NULL child keys are accepted (MATCH SIMPLE). Parent existence uses the writer's
+  SI-visible snapshot. Deleting or updating a referenced parent key is rejected while visible
+  children still reference it. `DROP TABLE` / `RENAME TABLE` of a referenced parent is rejected.
+  Errors: `FOREIGN KEY constraint violation on column …` /
+  `FOREIGN KEY constraint violation: key is still referenced`.
 - VertexDB auto-creates a maintained column index (`__pk_<col>` / `__uq_<col>`) when no column index
   already exists, so equality predicates on those columns use `HashEq` without a manual
   `CREATE INDEX`.
@@ -252,18 +261,20 @@ placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST an
 re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
-page-payload + index-pages + column constraint flags + CHECK expressions format v6, extension
+page-payload + index-pages + column constraint flags + CHECK + FOREIGN KEY format v7, extension
 `.tcrdb`) under the
 executor's storage root. `SAVE` writes a temporary snapshot, durable-syncs that file (flush+fsync /
 `F_FULLFSYNC` on macOS when available; `FlushFileBuffers` on Windows), renames it into place, then
 durable-syncs the storage directory on POSIX so the directory entry survives power loss — the same
 discipline as WAL `COMMIT`. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
-flags and `CHECK` predicate text), index definitions (column or `expr:`-prefixed expression metadata),
+flags, `CHECK` predicate text, and `FOREIGN KEY` metadata), index definitions (column or
+`expr:`-prefixed expression metadata),
 `rowsPerPage`, capacity,
 free-list order, serialized page-directory payloads, durable B+ tree / hash index pages, and
 optional per-column histogram blobs so sparse IDs, page bytes, indexes, constraints, and `ANALYZE`
 stats survive checkpoints without an index rebuild.
-Older constraint-flags v5, index-pages v4, page-payload v3, sparse v2, and dense v1 snapshots remain
+Older CHECK v6, constraint-flags v5, index-pages v4, page-payload v3, sparse v2, and dense v1
+snapshots remain
 readable (v1–v3 still
 rebuild indexes after rows). `LOAD DATABASE` without a name reloads the active database when one
 exists, otherwise it loads the first saved database file.

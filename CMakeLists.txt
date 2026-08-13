@@ -67,6 +67,7 @@ add_library(VertexDB
     src/execution/subquery_runtime_cte.cpp
     src/execution/prepared_statement_catalog.cpp
     src/execution/predicate_eval.cpp
+    src/execution/foreign_key_eval.cpp
     src/execution/sql_literal.cpp
     src/execution/select_helpers.cpp
     src/execution/select_scope.cpp

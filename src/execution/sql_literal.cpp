@@ -1,6 +1,7 @@
 #include "VertexDB/execution/sql_literal.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/execution/foreign_key_eval.hpp"
 #include "VertexDB/storage/check_eval.hpp"
 
 #include <sstream>
@@ -128,6 +129,9 @@ std::string createTableSql(const CreateTable &command) {
     }
     for (const auto &check : command.checkConstraints) {
         sql << ", CHECK (" << checkConstraintLiteral(check) << ")";
+    }
+    for (const auto &fk : command.foreignKeys) {
+        sql << ", " << foreignKeyLiteral(fk);
     }
     sql << ");";
     return sql.str();

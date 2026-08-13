@@ -11,9 +11,11 @@
 namespace VertexDB {
 
 Table::Table(std::string name, std::vector<Column> schema,
-             std::vector<Predicate> checkConstraints)
+             std::vector<Predicate> checkConstraints,
+             std::vector<ForeignKeyConstraint> foreignKeys)
     : name_(std::move(name)), schema_(std::move(schema)),
-      checkConstraints_(std::move(checkConstraints)), rowStore_(makePageRowStore()) {
+      checkConstraints_(std::move(checkConstraints)), foreignKeys_(std::move(foreignKeys)),
+      rowStore_(makePageRowStore()) {
     if (name_.empty()) {
         throw std::invalid_argument("table name cannot be empty");
     }
@@ -53,6 +55,8 @@ void Table::setName(std::string name) {
 std::span<const Column> Table::schema() const noexcept { return schema_; }
 
 std::span<const Predicate> Table::checkConstraints() const noexcept { return checkConstraints_; }
+
+std::span<const ForeignKeyConstraint> Table::foreignKeys() const noexcept { return foreignKeys_; }
 
 std::optional<std::size_t> Table::columnIndex(std::string_view column) const {
     auto it =

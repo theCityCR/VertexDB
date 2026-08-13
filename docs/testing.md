@@ -27,9 +27,9 @@ VertexDB uses three levels of automated testing:
 | `planner_join_stats_tests.cpp` | Stats-driven cost/join choice, outer/`CROSS` join plans |
 | `planner_test_support.hpp` | Shared planner stubs (`StubRelationStats` / `StubIndexCatalog`) + temp executor helper |
 | `transaction_behavior_tests.cpp` | BEGIN/COMMIT/ROLLBACK (incl. invalid state), MVCC visibility (incl. UPDATE-then-DELETE), SI/SSI anomaly wedge (dirty read, watermark, mid-txn phantom, insert-phantom / empty-probe / update-into-predicate abort, write-skew / write–write abort, executor RW honesty), deferred WAL (incl. durable COMMIT before return), transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP INDEX`), `SAVE`/`LOAD` implicit commit/rollback in open txns |
-| `persistence_behavior_tests.cpp` | Page store, snapshot v4/v5/v6, page-image/physical/torn WAL, durable WAL append/`reset`, durable `SAVE` publish (flush+fsync) |
+| `persistence_behavior_tests.cpp` | Page store, snapshot v4/v5/v6/v7, page-image/physical/torn WAL, durable WAL append/`reset`, durable `SAVE` publish (flush+fsync) |
 | `aggregate_prepared_tests.cpp` | Aggregates/`GROUP BY` (incl. NULL group keys), prepared statements (AST immutability, `EXPLAIN` / `EXPLAIN ANALYZE` bind), `ANALYZE` |
-| `constraint_behavior_tests.cpp` | Single-column `PRIMARY KEY` / `UNIQUE` / `NOT NULL` / simple `CHECK` parse + DML rejection, auto HashEq indexes, DROP INDEX refusal, save/load constraint flags + CHECK |
+| `constraint_behavior_tests.cpp` | Single-column `PRIMARY KEY` / `UNIQUE` / `NOT NULL` / simple `CHECK` / `FOREIGN KEY` (`NO ACTION`) parse + DML rejection, auto HashEq indexes, DROP INDEX refusal, save/load constraints |
 | `deep_feature_tests.cpp` | Cross-cutting deep-feature coverage (incl. legacy `.tcrdb` v1–v3 load) |
 | `regression_tests.cpp` | Bug fixes and non-obvious failure modes |
 | `benchmark_shape/*` | CTE + multi-index-intersect cost-shape + markdown-table fixtures (`scripts/check_benchmark_shape.py --self-test`) |

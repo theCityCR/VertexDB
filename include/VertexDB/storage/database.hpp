@@ -19,7 +19,8 @@ class Database {
 
     [[nodiscard]] const std::string &name() const noexcept;
     [[nodiscard]] bool createTable(std::string name, std::vector<Column> schema,
-                                   std::vector<Predicate> checkConstraints = {});
+                                   std::vector<Predicate> checkConstraints = {},
+                                   std::vector<ForeignKeyConstraint> foreignKeys = {});
     [[nodiscard]] bool dropTable(std::string_view name);
     [[nodiscard]] std::shared_ptr<Table> detachTable(std::string_view name);
     [[nodiscard]] bool attachTable(std::shared_ptr<Table> table);

@@ -1,5 +1,6 @@
 #include "VertexDB/execution/catalog_engine.hpp"
 
+#include "VertexDB/execution/foreign_key_eval.hpp"
 #include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
@@ -47,8 +48,15 @@ QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
     if (!ctx_.database) {
         return messageResult(false, "no active database");
     }
-    const bool created = ctx_.database->createTable(command.name, command.columns,
-                                                    command.checkConstraints);
+    try {
+        validateForeignKeyDefinitions(*ctx_.database, command.name, command.columns,
+                                      command.foreignKeys, command.columns);
+    } catch (const std::invalid_argument &ex) {
+        return messageResult(false, ex.what());
+    }
+    const bool created =
+        ctx_.database->createTable(command.name, command.columns, command.checkConstraints,
+                                   command.foreignKeys);
     if (created) {
         auto table = ctx_.database->table(command.name);
         table->ensureConstraintIndexes();
@@ -68,6 +76,9 @@ QueryResult CatalogEngine::executeDropTable(const DropTable &command) {
     if (!ctx_.database) {
         return messageResult(false, "no active database");
     }
+    if (tableIsForeignKeyParent(*ctx_.database, command.name)) {
+        return messageResult(false, "cannot DROP TABLE: still referenced by FOREIGN KEY");
+    }
     auto retained = ctx_.database->detachTable(command.name);
     if (!retained) {
         return messageResult(false, "unknown table");
@@ -86,6 +97,9 @@ QueryResult CatalogEngine::executeDropTable(const DropTable &command) {
 QueryResult CatalogEngine::executeRenameTable(const RenameTable &command) {
     if (!ctx_.database) {
         return messageResult(false, "no active database");
+    }
+    if (tableIsForeignKeyParent(*ctx_.database, command.oldName)) {
+        return messageResult(false, "cannot RENAME TABLE: still referenced by FOREIGN KEY");
     }
     const bool renamed = ctx_.database->renameTable(command.oldName, command.newName);
     if (renamed) {

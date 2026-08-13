@@ -1,8 +1,10 @@
 #include "VertexDB/persistence/tcrdb_codec.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/execution/foreign_key_eval.hpp"
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/storage/check_eval.hpp"
+#include "VertexDB/storage/foreign_key.hpp"
 #include "tcrdb_detail.hpp"
 
 #include <cstdint>
@@ -59,6 +61,15 @@ void writeTcrdbSnapshot(std::ostream &out, const Database &database) {
             writeString(out, checkConstraintLiteral(check));
         }
 
+        writePodDb(out, static_cast<std::uint64_t>(table->foreignKeys().size()));
+        for (const auto &fk : table->foreignKeys()) {
+            writeString(out, fk.childColumn);
+            writeString(out, fk.parentTable);
+            writeString(out, fk.parentColumn);
+            writePodDb(out, static_cast<std::uint8_t>(fk.onDelete));
+            writePodDb(out, static_cast<std::uint8_t>(fk.onUpdate));
+        }
+
         const auto indexes = table->indexDefinitions();
         writePodDb(out, static_cast<std::uint64_t>(indexes.size()));
         for (const auto &definition : indexes) {
@@ -81,8 +92,9 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         throw std::runtime_error("invalid database file magic");
     }
     const auto version = readPodDb<std::uint32_t>(in);
-    if (version != kVersion && version != kVersionV5 && version != kVersionV4 &&
-        version != kVersionV3 && version != kVersionV2 && version != kVersionV1) {
+    if (version != kVersion && version != kVersionV6 && version != kVersionV5 &&
+        version != kVersionV4 && version != kVersionV3 && version != kVersionV2 &&
+        version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
@@ -107,7 +119,7 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         }
 
         std::vector<Predicate> checkConstraints;
-        if (version >= kVersion) {
+        if (version >= kVersionV6) {
             const auto checkCount = readPodDb<std::uint64_t>(in);
             checkConstraints.reserve(static_cast<std::size_t>(checkCount));
             Parser parser;
@@ -117,8 +129,24 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
             }
         }
 
-        const bool created =
-            database->createTable(tableName, std::move(schema), std::move(checkConstraints));
+        std::vector<ForeignKeyConstraint> foreignKeys;
+        if (version >= kVersion) {
+            const auto fkCount = readPodDb<std::uint64_t>(in);
+            foreignKeys.reserve(static_cast<std::size_t>(fkCount));
+            for (std::uint64_t fkIndex = 0; fkIndex < fkCount; ++fkIndex) {
+                ForeignKeyConstraint fk;
+                fk.childColumn = readString(in);
+                fk.parentTable = readString(in);
+                fk.parentColumn = readString(in);
+                fk.onDelete = static_cast<ForeignKeyAction>(readPodDb<std::uint8_t>(in));
+                fk.onUpdate = static_cast<ForeignKeyAction>(readPodDb<std::uint8_t>(in));
+                foreignKeys.push_back(std::move(fk));
+            }
+        }
+
+        const bool created = database->createTable(tableName, std::move(schema),
+                                                   std::move(checkConstraints),
+                                                   std::move(foreignKeys));
         if (!created) {
             throw std::runtime_error("duplicate table in database file");
         }
@@ -133,8 +161,7 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
             indexDefinitions.emplace_back(std::move(indexName), std::move(columnName));
         }
 
-        const bool restoreIndexPages =
-            version == kVersion || version == kVersionV5 || version == kVersionV4;
+        const bool restoreIndexPages = version >= kVersionV4;
         for (const auto &definition : indexDefinitions) {
             const auto &indexName = definition.first;
             const auto decoded = decodeIndexDefinitionColumn(definition.second);

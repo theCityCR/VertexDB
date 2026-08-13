@@ -8,6 +8,7 @@
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/indexing/index_manager.hpp"
 #include "VertexDB/parser/predicate.hpp"
+#include "VertexDB/storage/foreign_key.hpp"
 #include "VertexDB/storage/histogram.hpp"
 #include "VertexDB/storage/relation_stats.hpp"
 #include "VertexDB/storage/row.hpp"
@@ -29,13 +30,15 @@ namespace VertexDB {
 class Table : public RelationStats, public IndexCatalogView {
   public:
     Table(std::string name, std::vector<Column> schema,
-          std::vector<Predicate> checkConstraints = {});
+          std::vector<Predicate> checkConstraints = {},
+          std::vector<ForeignKeyConstraint> foreignKeys = {});
 
     // --- Identity / schema ---
     [[nodiscard]] const std::string &name() const noexcept;
     void setName(std::string name);
     [[nodiscard]] std::span<const Column> schema() const noexcept;
     [[nodiscard]] std::span<const Predicate> checkConstraints() const noexcept;
+    [[nodiscard]] std::span<const ForeignKeyConstraint> foreignKeys() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     void validateRow(const Row &row) const;
     // Reject duplicate values on UNIQUE / PRIMARY KEY columns (NULLs skipped for UNIQUE).
@@ -151,6 +154,7 @@ class Table : public RelationStats, public IndexCatalogView {
     std::string name_;
     std::vector<Column> schema_;
     std::vector<Predicate> checkConstraints_;
+    std::vector<ForeignKeyConstraint> foreignKeys_;
     std::unique_ptr<RowStore> rowStore_;
     IndexManager indexManager_;
     TableStatistics statistics_;

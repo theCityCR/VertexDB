@@ -15,10 +15,12 @@ Database::Database(std::string name) : name_(std::move(name)) {
 const std::string &Database::name() const noexcept { return name_; }
 
 bool Database::createTable(std::string name, std::vector<Column> schema,
-                           std::vector<Predicate> checkConstraints) {
+                           std::vector<Predicate> checkConstraints,
+                           std::vector<ForeignKeyConstraint> foreignKeys) {
     std::unique_lock lock{mutex_};
     auto [_, inserted] = tables_.try_emplace(
-        name, std::make_shared<Table>(name, std::move(schema), std::move(checkConstraints)));
+        name, std::make_shared<Table>(name, std::move(schema), std::move(checkConstraints),
+                                      std::move(foreignKeys)));
     return inserted;
 }
 
@@ -95,8 +97,10 @@ std::shared_ptr<Database> Database::clone() const {
         std::vector<Column> schema{sourceTable->schema().begin(), sourceTable->schema().end()};
         std::vector<Predicate> checks{sourceTable->checkConstraints().begin(),
                                       sourceTable->checkConstraints().end()};
-        const bool created =
-            copy->createTable(sourceTable->name(), std::move(schema), std::move(checks));
+        std::vector<ForeignKeyConstraint> fks{sourceTable->foreignKeys().begin(),
+                                              sourceTable->foreignKeys().end()};
+        const bool created = copy->createTable(sourceTable->name(), std::move(schema),
+                                               std::move(checks), std::move(fks));
         if (!created) {
             throw std::runtime_error("failed to clone table");
         }

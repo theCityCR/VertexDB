@@ -55,6 +55,8 @@ class Parser {
     [[nodiscard]] Predicate parseComparisonPredicate();
     [[nodiscard]] Predicate parseExistsPredicate();
     [[nodiscard]] Predicate parseCheckConstraintBody();
+    [[nodiscard]] ForeignKeyConstraint parseReferencesClause(std::string childColumn);
+    void parseForeignKeyActions(ForeignKeyConstraint &fk);
     [[nodiscard]] IndexExpression parseIndexExpression();
     [[nodiscard]] Value parseValue();
     [[nodiscard]] Select parseSubquerySelect(bool allowOuterRefs);

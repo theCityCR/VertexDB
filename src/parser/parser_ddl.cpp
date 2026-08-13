@@ -3,11 +3,13 @@
 #include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/parser/tokenizer.hpp"
 #include "VertexDB/storage/check_eval.hpp"
+#include "VertexDB/storage/foreign_key.hpp"
 #include "parse_utils.hpp"
 
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 
 namespace VertexDB {
 namespace {
@@ -86,10 +88,25 @@ CreateTable Parser::parseCreateTable() {
 
     std::vector<Column> columns;
     std::vector<Predicate> checkConstraints;
+    std::vector<ForeignKeyConstraint> foreignKeys;
     bool sawPrimaryKey = false;
     do {
         if (match(TokenType::Identifier, "CHECK")) {
             checkConstraints.push_back(parseCheckConstraintBody());
+            continue;
+        }
+        if (match(TokenType::Identifier, "FOREIGN")) {
+            expect(TokenType::Identifier, "KEY");
+            expect(TokenType::LeftParen);
+            const auto childColumn = advance();
+            if (childColumn.type != TokenType::Identifier) {
+                throw std::runtime_error("expected FOREIGN KEY column");
+            }
+            expect(TokenType::RightParen);
+            expect(TokenType::Identifier, "REFERENCES");
+            auto fk = parseReferencesClause(childColumn.lexeme);
+            parseForeignKeyActions(fk);
+            foreignKeys.push_back(std::move(fk));
             continue;
         }
         const auto columnName = advance();
@@ -143,6 +160,12 @@ CreateTable Parser::parseCreateTable() {
                 checkConstraints.push_back(parseCheckConstraintBody());
                 continue;
             }
+            if (match(TokenType::Identifier, "REFERENCES")) {
+                auto fk = parseReferencesClause(columnName.lexeme);
+                parseForeignKeyActions(fk);
+                foreignKeys.push_back(std::move(fk));
+                continue;
+            }
             break;
         }
         if (primaryKey && nullable) {
@@ -162,7 +185,49 @@ CreateTable Parser::parseCreateTable() {
     for (const auto &check : checkConstraints) {
         validateCheckColumns(check, columns);
     }
-    return {table.lexeme, std::move(columns), std::move(checkConstraints)};
+    for (const auto &fk : foreignKeys) {
+        bool found = false;
+        for (const auto &column : columns) {
+            if (column.name == fk.childColumn) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw std::runtime_error("FOREIGN KEY child column not found: " + fk.childColumn);
+        }
+    }
+    return {table.lexeme, std::move(columns), std::move(checkConstraints), std::move(foreignKeys)};
+}
+
+ForeignKeyConstraint Parser::parseReferencesClause(std::string childColumn) {
+    const auto parentTable = advance();
+    if (parentTable.type != TokenType::Identifier) {
+        throw std::runtime_error("expected REFERENCES table name");
+    }
+    expect(TokenType::LeftParen);
+    const auto parentColumn = advance();
+    if (parentColumn.type != TokenType::Identifier) {
+        throw std::runtime_error("expected REFERENCES column name");
+    }
+    expect(TokenType::RightParen);
+    return ForeignKeyConstraint{std::move(childColumn), parentTable.lexeme, parentColumn.lexeme};
+}
+
+void Parser::parseForeignKeyActions(ForeignKeyConstraint &fk) {
+    while (match(TokenType::Identifier, "ON")) {
+        const bool isDelete = match(TokenType::Identifier, "DELETE");
+        if (!isDelete) {
+            expect(TokenType::Identifier, "UPDATE");
+        }
+        expect(TokenType::Identifier, "NO");
+        expect(TokenType::Identifier, "ACTION");
+        if (isDelete) {
+            fk.onDelete = ForeignKeyAction::NoAction;
+        } else {
+            fk.onUpdate = ForeignKeyAction::NoAction;
+        }
+    }
 }
 
 DropDatabase Parser::parseDropDatabase() {

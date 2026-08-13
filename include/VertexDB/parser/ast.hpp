@@ -7,6 +7,7 @@
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/parser/predicate.hpp"
+#include "VertexDB/storage/foreign_key.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -66,6 +67,8 @@ struct CreateTable {
     std::vector<Column> columns;
     // Simple CHECK predicates (column comparisons with AND/OR; no subqueries).
     std::vector<Predicate> checkConstraints;
+    // Single-column FOREIGN KEY constraints (NO ACTION).
+    std::vector<ForeignKeyConstraint> foreignKeys;
 };
 
 struct DropTable {

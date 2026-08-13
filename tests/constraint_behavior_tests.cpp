@@ -391,4 +391,164 @@ TEST(ConstraintBehaviorTests, SaveLoadPreservesCheckConstraints) {
         executor.execute(parser.parse("INSERT INTO Pay VALUES (2, 20.0, 5.0);")).success);
 }
 
+TEST(ConstraintBehaviorTests, ParsesColumnAndTableForeignKeys) {
+    Parser parser;
+    auto query = parser.parse(
+        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id), "
+        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON DELETE NO ACTION);");
+    ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
+    const auto &table = std::get<CreateTable>(query);
+    ASSERT_EQ(table.foreignKeys.size(), 2U);
+    EXPECT_EQ(table.foreignKeys[0].childColumn, "customer_id");
+    EXPECT_EQ(table.foreignKeys[0].parentTable, "Customers");
+    EXPECT_EQ(table.foreignKeys[0].parentColumn, "id");
+    EXPECT_EQ(table.foreignKeys[1].childColumn, "customer_id");
+}
+
+TEST(ConstraintBehaviorTests, CreateForeignKeyRejectsMissingOrNonUniqueParent) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-create-reject");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    auto missing = executor.execute(parser.parse(
+        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));"));
+    EXPECT_FALSE(missing.success);
+    EXPECT_NE(missing.message.find("parent table not found"), std::string::npos);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT, name STRING);")).success);
+    auto nonUnique = executor.execute(parser.parse(
+        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));"));
+    EXPECT_FALSE(nonUnique.success);
+    EXPECT_NE(nonUnique.message.find("PRIMARY KEY or UNIQUE"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyRejectsOrphanInsertAndAllowsNull) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-insert");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT NULL "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Orders VALUES (11, NULL);")).success);
+    try {
+        (void)executor.execute(parser.parse("INSERT INTO Orders VALUES (12, 99);"));
+        FAIL() << "expected FOREIGN KEY rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("FOREIGN KEY constraint violation on column customer_id"),
+                  std::string::npos);
+    }
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyRejectsOrphanUpdate) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-update");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1), (2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("UPDATE Orders SET customer_id = 99 WHERE id = 10;")),
+        std::invalid_argument);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("UPDATE Orders SET customer_id = 2 WHERE id = 10;")).success);
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyRejectsParentDeleteAndKeyUpdate) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-parent-delete");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")),
+                 std::invalid_argument);
+    EXPECT_THROW((void)executor.execute(parser.parse("UPDATE Customers SET id = 2 WHERE id = 1;")),
+                 std::invalid_argument);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Orders WHERE id = 10;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")).success);
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyMultiRowInsertRefusesWithoutPartialWrite) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-batch");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1), (11, 99);")),
+        std::invalid_argument);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Orders;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
+}
+
+TEST(ConstraintBehaviorTests, DropParentTableRejectedWhileReferenced) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-drop-parent");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    auto dropped = executor.execute(parser.parse("DROP TABLE Customers;"));
+    EXPECT_FALSE(dropped.success);
+    EXPECT_NE(dropped.message.find("FOREIGN KEY"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, SaveLoadPreservesForeignKeys) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-save-load");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE company;")).success);
+
+    auto table = executor.currentDatabase()->table("Orders");
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->foreignKeys().size(), 1U);
+    EXPECT_EQ(table->foreignKeys()[0].parentTable, "Customers");
+
+    EXPECT_THROW((void)executor.execute(parser.parse("INSERT INTO Orders VALUES (11, 99);")),
+                 std::invalid_argument);
+    EXPECT_THROW((void)executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")),
+                 std::invalid_argument);
+}
+
 } // namespace VertexDB
