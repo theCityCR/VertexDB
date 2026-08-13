@@ -1221,4 +1221,84 @@ TEST(ConstraintBehaviorTests, SaveLoadPreservesCompositeForeignKeys) {
     EXPECT_TRUE(rows.rows.empty());
 }
 
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenIndexed) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-indexed-", "case");
+    seedEmployees(executor, parser, true, false);
+
+    auto result = executor.execute(parser.parse("ALTER TABLE Employees DROP COLUMN id;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("indexed"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenPrimaryKey) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-pk-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE Accounts (id INT PRIMARY KEY, note STRING NULL);"))
+                    .success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Accounts DROP COLUMN id;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("PRIMARY KEY"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenCheckReferencesColumn) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-check-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT, salary DOUBLE, CHECK (salary > 0.0));"))
+                    .success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Pay DROP COLUMN salary;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("CHECK"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenForeignKeyChild) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-fk-child-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Orders DROP COLUMN customer_id;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("FOREIGN KEY"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropColumnRejectedWhenForeignKeyParent) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-fk-parent-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY, name STRING NULL);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT "
+                        "REFERENCES Customers(id));"))
+                    .success);
+    auto result = executor.execute(parser.parse("ALTER TABLE Customers DROP COLUMN id;"));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.message.find("FOREIGN KEY"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, DropUnreferencedNullableColumnSucceeds) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-ok-", "case");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN note STRING NULL;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("ALTER TABLE Employees DROP COLUMN note;")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT note FROM Employees WHERE id = 1;")),
+                 std::runtime_error);
+}
+
 } // namespace VertexDB

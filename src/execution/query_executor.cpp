@@ -52,6 +52,8 @@ QueryResult QueryExecutor::executeUnlocked(const Query &query) {
                 return catalogEngine_.executeDropTable(command);
             } else if constexpr (std::is_same_v<Command, RenameTable>) {
                 return catalogEngine_.executeRenameTable(command);
+            } else if constexpr (std::is_same_v<Command, AlterTable>) {
+                return catalogEngine_.executeAlterTable(command);
             } else if constexpr (std::is_same_v<Command, ListTables>) {
                 return catalogEngine_.executeListTables();
             } else if constexpr (std::is_same_v<Command, Insert>) {

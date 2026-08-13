@@ -15,6 +15,8 @@ CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));
 CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));
 DROP TABLE Employees;
 RENAME TABLE Employees TO Staff;
+ALTER TABLE Employees ADD COLUMN nickname STRING NULL;
+ALTER TABLE Employees DROP COLUMN nickname;
 LIST TABLES;
 INSERT INTO Employees VALUES (1, "Alice", 120000.0);
 INSERT INTO People VALUES (1, "Al"), (2, NULL);
@@ -319,7 +321,8 @@ use conservative relation-membership SIREADs. There are no Postgres-style next-k
 executor holds at most one open transaction; writers are serialized by the executor `LockManager`.
 See [si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
-`CREATE INDEX`, and `DROP INDEX` are allowed: each applies immediately and pushes an undo record
+`ALTER TABLE` (`ADD`/`DROP COLUMN`), `CREATE INDEX`, and `DROP INDEX` are allowed: each applies
+immediately and pushes an undo record
 (with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `DROP DATABASE` is rejected
 while a transaction is active. `RENAME TABLE` remounts the same
 table object and rewrites open-txn undo/pending WAL table names. `CREATE DATABASE` swaps in a new
@@ -328,6 +331,23 @@ be the active database, clears the in-memory instance, deletes the on-disk `.tcr
 and appends a WAL record. `SAVE DATABASE` inside a transaction
 implicitly `COMMIT`s (flush deferred WAL) then checkpoints. `LOAD DATABASE` inside a transaction
 implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
+
+### ALTER TABLE
+
+```sql
+ALTER TABLE Employees ADD COLUMN nickname STRING NULL;
+ALTER TABLE Employees DROP COLUMN nickname;
+```
+
+- `ADD COLUMN` requires an explicit `NULL` (nullable only). No `DEFAULT`, `NOT NULL`, or inline
+  `PRIMARY KEY` / `UNIQUE` / `CHECK` / `REFERENCES` on the added column. Existing live rows and MVCC
+  version images are eagerly padded with `NULL`. `INSERT` remains full-width positional: supply
+  `NULL` (or a value) for the new trailing column.
+- `DROP COLUMN` rewrites live rows and MVCC versions. It is rejected when the column is indexed
+  (user indexes), referenced by `CHECK`, is a FOREIGN KEY child or parent, or is `PRIMARY KEY` /
+  `UNIQUE` (including composite UNIQUE/PK membership). Dropping the last column is rejected.
+- No new `.tcrdb` snapshot version: schema + page payloads are written at the current format on
+  `SAVE DATABASE`.
 
 ### ACID FAQ: SAVE / LOAD vs transactions
 

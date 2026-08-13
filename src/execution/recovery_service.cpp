@@ -56,6 +56,8 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
     case UndoKind::Delete:
     case UndoKind::CreateIndex:
     case UndoKind::DropIndex:
+    case UndoKind::AlterAddColumn:
+    case UndoKind::AlterDropColumn:
         break;
     }
 
@@ -97,6 +99,26 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
                                          : record.indexColumns);
         if (!restored) {
             throw std::runtime_error("failed to undo drop index");
+        }
+        break;
+    }
+    case UndoKind::AlterAddColumn:
+        try {
+            (void)table->dropUnreferencedColumn(record.alterColumn.name, database_.get());
+        } catch (const std::exception &ex) {
+            throw std::runtime_error(std::string{"failed to undo ADD COLUMN: "} + ex.what());
+        }
+        break;
+    case UndoKind::AlterDropColumn: {
+        Table::DroppedColumnCapture capture;
+        capture.column = record.alterColumn;
+        capture.columnIndex = record.alterColumnIndex;
+        capture.heapValues = record.alterHeapColumnValues;
+        capture.versionValues = record.alterVersionColumnValues;
+        try {
+            table->restoreDroppedColumn(capture);
+        } catch (const std::exception &ex) {
+            throw std::runtime_error(std::string{"failed to undo DROP COLUMN: "} + ex.what());
         }
         break;
     }

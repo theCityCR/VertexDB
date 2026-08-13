@@ -8,6 +8,7 @@
 #include "VertexDB/transaction/undo_log.hpp"
 
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 namespace VertexDB {
@@ -116,6 +117,55 @@ QueryResult CatalogEngine::executeRenameTable(const RenameTable &command) {
                             "RENAME TABLE " + command.oldName + " TO " + command.newName + ";");
     }
     return messageResult(renamed, renamed ? "renamed table " + command.oldName : "rename failed");
+}
+
+QueryResult CatalogEngine::executeAlterTable(const AlterTable &command) {
+    if (!ctx_.database) {
+        return messageResult(false, "no active database");
+    }
+    auto table = ctx_.database->table(command.table);
+    if (!table) {
+        return messageResult(false, "unknown table");
+    }
+    try {
+        return std::visit(
+            [&](const auto &action) -> QueryResult {
+                using T = std::decay_t<decltype(action)>;
+                if constexpr (std::is_same_v<T, AlterAddColumn>) {
+                    table->addNullableColumn(action.column);
+                    if (ctx_.session.transactionActive()) {
+                        UndoRecord undo;
+                        undo.tableName = command.table;
+                        undo.kind = UndoKind::AlterAddColumn;
+                        undo.alterColumn = action.column;
+                        ctx_.session.pushUndo(std::move(undo));
+                    }
+                    recovery_.appendWal(WalOperation::AlterTable, alterTableSql(command));
+                    return messageResult(true, "added column " + action.column.name);
+                } else {
+                    static_assert(std::is_same_v<T, AlterDropColumn>);
+                    auto capture =
+                        table->dropUnreferencedColumn(action.column, ctx_.database.get());
+                    if (ctx_.session.transactionActive()) {
+                        UndoRecord undo;
+                        undo.tableName = command.table;
+                        undo.kind = UndoKind::AlterDropColumn;
+                        undo.alterColumn = capture.column;
+                        undo.alterColumnIndex = capture.columnIndex;
+                        undo.alterHeapColumnValues = std::move(capture.heapValues);
+                        undo.alterVersionColumnValues = std::move(capture.versionValues);
+                        ctx_.session.pushUndo(std::move(undo));
+                    }
+                    recovery_.appendWal(WalOperation::AlterTable, alterTableSql(command));
+                    return messageResult(true, "dropped column " + action.column);
+                }
+            },
+            command.action);
+    } catch (const std::invalid_argument &ex) {
+        return messageResult(false, ex.what());
+    } catch (const std::runtime_error &ex) {
+        return messageResult(false, ex.what());
+    }
 }
 
 QueryResult CatalogEngine::executeListTables() {

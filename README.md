@@ -117,7 +117,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 368 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 382 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -149,7 +149,8 @@ Or feed an example script:
   so `COMMIT` / autocommit durability is not left in the OS page cache. Trailing torn WAL records
   are ignored so recovery replays the durable prefix. `SAVE DATABASE` durable-syncs the temp
   `.tcrdb` before rename and syncs the storage directory on POSIX (Windows: file sync only)
-- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE`/`DROP INDEX`)
+- Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `ALTER TABLE`
+  ADD/DROP COLUMN, `CREATE`/`DROP INDEX`)
   and `DROP DATABASE` / `SAVE`/`LOAD` follow documented txn rules: most catalog DDL is allowed with
   undo + deferred WAL; `DROP DATABASE` is rejected while a transaction is active; `SAVE`/`LOAD`
   implicitly commit / roll back
@@ -184,7 +185,8 @@ aggregates and multi-join, histograms / multi-index AND and top-level OR union (
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
 inside `IN`/`EXISTS`, CTE join targets, `WITH RECURSIVE` (`UNION` / `UNION ALL`), parse diagnostics with source
 positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`DELETE` access paths,
-transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
+transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `ALTER TABLE`
+ADD/DROP COLUMN, `CREATE DATABASE`,
 `DROP DATABASE`), same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for
 `UPDATE`/`DELETE`/`INSERT`, `EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging with
 row-level SSI write-skew / write–write aborts and insert-phantom SSI (predicate SIREAD), composite
@@ -200,7 +202,8 @@ single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guara
 crash-injection durability cut points, composite indexes and multi-column `PRIMARY KEY` / `UNIQUE`
 (snapshot v8), FK `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL`, Phase 4 atomicity packaging
 (catalog+DML failure matrix + SAVE/LOAD ACID FAQ), planner composite-index `HashEq` for
-multi-equality `AND`, multi-column `FOREIGN KEY` (snapshot v9), and a dated
+multi-equality `AND`, multi-column `FOREIGN KEY` (snapshot v9), `ALTER TABLE ADD COLUMN … NULL` /
+`DROP COLUMN` (eager rewrite; dependency rejection; transactional WAL), and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

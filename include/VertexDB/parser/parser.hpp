@@ -33,6 +33,7 @@ class Parser {
     [[nodiscard]] DropTable parseDropTable();
     [[nodiscard]] DropIndex parseDropIndex();
     [[nodiscard]] RenameTable parseRenameTable();
+    [[nodiscard]] AlterTable parseAlterTable();
     [[nodiscard]] CreateIndex parseCreateIndex();
     [[nodiscard]] Insert parseInsert();
     [[nodiscard]] Select parseSelect();

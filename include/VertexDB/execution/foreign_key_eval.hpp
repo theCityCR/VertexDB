@@ -58,6 +58,9 @@ void assertNoActionParentKeyNotReferenced(std::span<const ForeignKeyChildHit> re
                                           bool forUpdate);
 
 [[nodiscard]] bool tableIsForeignKeyParent(const Database &database, std::string_view tableName);
+[[nodiscard]] bool columnIsForeignKeyParent(const Database &database, std::string_view tableName,
+                                              std::string_view columnName);
+[[nodiscard]] bool columnIsForeignKeyChild(const Table &table, std::string_view columnName);
 
 [[nodiscard]] std::string foreignKeyLiteral(const ForeignKeyConstraint &fk);
 

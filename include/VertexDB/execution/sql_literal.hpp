@@ -20,5 +20,6 @@ namespace VertexDB {
 [[nodiscard]] std::string deleteSql(const Delete &command);
 [[nodiscard]] std::string createIndexSql(const CreateIndex &command);
 [[nodiscard]] std::string dropIndexSql(const DropIndex &command);
+[[nodiscard]] std::string alterTableSql(const AlterTable &command);
 
 } // namespace VertexDB

@@ -83,6 +83,21 @@ struct RenameTable {
     std::string newName;
 };
 
+struct AlterAddColumn {
+    Column column;
+};
+
+struct AlterDropColumn {
+    std::string column;
+};
+
+using AlterTableAction = std::variant<AlterAddColumn, AlterDropColumn>;
+
+struct AlterTable {
+    std::string table;
+    AlterTableAction action;
+};
+
 struct ListTables {};
 
 struct Insert {
@@ -278,9 +293,9 @@ struct Analyze {
 struct Exit {};
 
 using Query =
-    std::variant<CreateDatabase, DropDatabase, CreateTable, DropTable, RenameTable, ListTables,
-                 Insert, Select, Update, Delete, CreateIndex, DropIndex, SaveDatabase, LoadDatabase,
-                 BeginTransaction, CommitTransaction, RollbackTransaction, PrepareStatement,
-                 ExecutePrepared, ExplainQuery, Analyze, Exit>;
+    std::variant<CreateDatabase, DropDatabase, CreateTable, DropTable, RenameTable, AlterTable,
+                 ListTables, Insert, Select, Update, Delete, CreateIndex, DropIndex, SaveDatabase,
+                 LoadDatabase, BeginTransaction, CommitTransaction, RollbackTransaction,
+                 PrepareStatement, ExecutePrepared, ExplainQuery, Analyze, Exit>;
 
 } // namespace VertexDB

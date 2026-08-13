@@ -46,6 +46,9 @@ Query Parser::parse(std::span<const Token> tokens) {
     if (match(TokenType::Identifier, "RENAME")) {
         return finish(parseRenameTable());
     }
+    if (match(TokenType::Identifier, "ALTER")) {
+        return finish(parseAlterTable());
+    }
     if (match(TokenType::Identifier, "LIST")) {
         expect(TokenType::Identifier, "TABLES");
         return finish(ListTables{});
