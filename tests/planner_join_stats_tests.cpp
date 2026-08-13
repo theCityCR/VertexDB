@@ -37,7 +37,7 @@ using planner_test::StubRelationStats;
 
 } // namespace
 
-TEST(PlannerBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality) {
+TEST(PlannerJoinStatsTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality) {
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"salary", ColumnType::Double}}};
     for (int i = 1; i <= 100; ++i) {
@@ -61,7 +61,7 @@ TEST(PlannerBehaviorTests, StatsDrivenPlannerPrefersSelectiveEqualityOverLowCard
     EXPECT_EQ(std::get<ComparisonPred>(*plan.residual()).column, "dept");
 }
 
-TEST(PlannerBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
+TEST(PlannerJoinStatsTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
     for (int i = 1; i <= 90; ++i) {
         table.insert({Value{i}, Value{i % 3}});
@@ -79,7 +79,7 @@ TEST(PlannerBehaviorTests, StatsDrivenInLookupCostsScaleWithDistinctKeys) {
     EXPECT_LT(plan.estimates.estimatedCost, 3.0);
 }
 
-TEST(PlannerBehaviorTests, StatsDrivenJoinChoosesNestedLoopIndexProbe) {
+TEST(PlannerJoinStatsTests, StatsDrivenJoinChoosesNestedLoopIndexProbe) {
     Parser parser;
     auto executor = makeExecutor("stats-join-nl");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -122,7 +122,7 @@ TEST(PlannerBehaviorTests, StatsDrivenJoinChoosesNestedLoopIndexProbe) {
     EXPECT_EQ(result.rows[1][1], Value{"D20"});
 }
 
-TEST(PlannerBehaviorTests, StatsDrivenJoinKeepsHashWhenNeitherSideIndexed) {
+TEST(PlannerJoinStatsTests, StatsDrivenJoinKeepsHashWhenNeitherSideIndexed) {
     Table left{"Employees", {{"id", ColumnType::Int}, {"dept_id", ColumnType::Int}}};
     Table right{"Departments", {{"id", ColumnType::Int}, {"dept", ColumnType::String}}};
     left.insert({Value{1}, Value{10}});
@@ -134,7 +134,7 @@ TEST(PlannerBehaviorTests, StatsDrivenJoinKeepsHashWhenNeitherSideIndexed) {
     EXPECT_NE(plan.explanation.find("hash join"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, OuterAndCrossJoinsPreferNestedLoop) {
+TEST(PlannerJoinStatsTests, OuterAndCrossJoinsPreferNestedLoop) {
     Table left{"Employees", {{"id", ColumnType::Int}, {"dept_id", ColumnType::Int}}};
     Table right{"Departments", {{"id", ColumnType::Int}, {"dept", ColumnType::String}}};
     left.insert({Value{1}, Value{10}});

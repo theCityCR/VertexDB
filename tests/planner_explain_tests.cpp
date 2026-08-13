@@ -37,7 +37,7 @@ using planner_test::StubRelationStats;
 
 } // namespace
 
-TEST(PlannerBehaviorTests, ExplainReportsJoinPlanFromCostModel) {
+TEST(PlannerExplainTests, ExplainReportsJoinPlanFromCostModel) {
     Parser parser;
     auto executor = makeExecutor("explain-join");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -62,7 +62,7 @@ TEST(PlannerBehaviorTests, ExplainReportsJoinPlanFromCostModel) {
     EXPECT_NE(text.find("cost="), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, ExplainAnalyzeReportsActualRowsMatchingCardinality) {
+TEST(PlannerExplainTests, ExplainAnalyzeReportsActualRowsMatchingCardinality) {
     Parser parser;
     auto executor = makeExecutor("explain-analyze-eq");
     seedEmployees(executor, parser, true, false);
@@ -90,7 +90,7 @@ TEST(PlannerBehaviorTests, ExplainAnalyzeReportsActualRowsMatchingCardinality) {
     EXPECT_EQ(select.rows.size(), 1U);
 }
 
-TEST(PlannerBehaviorTests, ExplainAnalyzeReportsCandidatesWhenResidualDropsRows) {
+TEST(PlannerExplainTests, ExplainAnalyzeReportsCandidatesWhenResidualDropsRows) {
     Parser parser;
     auto executor = makeExecutor("explain-analyze-residual");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -115,7 +115,7 @@ TEST(PlannerBehaviorTests, ExplainAnalyzeReportsCandidatesWhenResidualDropsRows)
     EXPECT_NE(text.find("actual_time_ms="), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, ExplainAnalyzeJoinReportsActualRowsPerStep) {
+TEST(PlannerExplainTests, ExplainAnalyzeJoinReportsActualRowsPerStep) {
     Parser parser;
     auto executor = makeExecutor("explain-analyze-join");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -145,7 +145,7 @@ TEST(PlannerBehaviorTests, ExplainAnalyzeJoinReportsActualRowsPerStep) {
     EXPECT_NE(text.find("actual_time_ms="), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, ExplainAnalyzeReportsActualRowsAfterAggregation) {
+TEST(PlannerExplainTests, ExplainAnalyzeReportsActualRowsAfterAggregation) {
     // Desired (docs/sql.md): with aggregates/GROUP BY, actual_rows is the post-aggregation
     // cardinality, and the aggregation marker still appears.
     Parser parser;
@@ -182,7 +182,7 @@ TEST(PlannerBehaviorTests, ExplainAnalyzeReportsActualRowsAfterAggregation) {
     EXPECT_NE(countStar.rows.front().front().toString().find("actual_rows=1"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, ExplainAnalyzeActualRowsIgnoreLimit) {
+TEST(PlannerExplainTests, ExplainAnalyzeActualRowsIgnoreLimit) {
     // Desired (docs/sql.md): actual_rows is pre-ORDER BY / LIMIT cardinality.
     Parser parser;
     auto executor = makeExecutor("explain-analyze-limit");
@@ -201,7 +201,7 @@ TEST(PlannerBehaviorTests, ExplainAnalyzeActualRowsIgnoreLimit) {
     EXPECT_EQ(limited.rows.size(), 1U);
 }
 
-TEST(PlannerBehaviorTests, ExplainAnalyzeWithReportsActuals) {
+TEST(PlannerExplainTests, ExplainAnalyzeWithReportsActuals) {
     // Desired: EXPLAIN ANALYZE WITH … uses the same single-pass execute path as SELECT.
     // Inlined CTE keeps the body salary filter as a residual over the outer id probe.
     Parser parser;

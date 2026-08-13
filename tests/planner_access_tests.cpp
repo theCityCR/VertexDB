@@ -37,7 +37,7 @@ using planner_test::StubRelationStats;
 
 } // namespace
 
-TEST(PlannerBehaviorTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) {
+TEST(PlannerAccessTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) {
     Select query{"Employees", {},
                  {SelectExpr::makeStar()},
                  makeComparison("id", ComparisonOperator::Equal, Value{42}),
@@ -52,7 +52,7 @@ TEST(PlannerBehaviorTests, SelectPlanningUsesAbstractStatisticsAndIndexCatalog) 
     EXPECT_EQ(plan.estimates.estimatedRows, 1U);
 }
 
-TEST(PlannerBehaviorTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConjuncts) {
+TEST(PlannerAccessTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConjuncts) {
     Parser parser;
     auto executor = makeExecutor("residual-reject");
     seedEmployees(executor, parser, true, false);
@@ -71,7 +71,7 @@ TEST(PlannerBehaviorTests, ResidualFilterRejectsIndexedHitsThatFailRemainingConj
     EXPECT_NE(text.find("residual: yes"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
+TEST(PlannerAccessTests, PlannerAndExplainUseOrderedIndexForLessThan) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"salary", ColumnType::Double}}};
     table.insert({Value{1}, Value{120000.0}});
     table.insert({Value{2}, Value{90000.0}});
@@ -103,7 +103,7 @@ TEST(PlannerBehaviorTests, PlannerAndExplainUseOrderedIndexForLessThan) {
     EXPECT_EQ(result.rows[0][0], Value{"Bob"});
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesHashIn) {
+TEST(PlannerAccessTests, TopLevelOrSameColumnEqualityUsesHashIn) {
     Table table{"Employees", {{"id", ColumnType::Int}}};
     table.insert({Value{1}});
     table.insert({Value{2}});
@@ -132,7 +132,7 @@ TEST(PlannerBehaviorTests, TopLevelOrSameColumnEqualityUsesHashIn) {
     EXPECT_NE(explain.rows.front().front().toString().find("residual: no"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, InSubqueryFallsBackToScanWhenOuterColumnUnindexed) {
+TEST(PlannerAccessTests, InSubqueryFallsBackToScanWhenOuterColumnUnindexed) {
     Parser parser;
     auto executor = makeExecutor("in-unindexed");
     seedEmployees(executor, parser, false, true);
@@ -152,7 +152,7 @@ TEST(PlannerBehaviorTests, InSubqueryFallsBackToScanWhenOuterColumnUnindexed) {
     EXPECT_EQ(result.rows[1][0], Value{"Cara"});
 }
 
-TEST(PlannerBehaviorTests, IndexPreferredOverFullScanWhenCostsAreTied) {
+TEST(PlannerAccessTests, IndexPreferredOverFullScanWhenCostsAreTied) {
     Table table{"Employees", {{"id", ColumnType::Int}}};
     table.insert({Value{1}});
     ASSERT_TRUE(table.createIndex("idx_id", "id"));
@@ -165,7 +165,7 @@ TEST(PlannerBehaviorTests, IndexPreferredOverFullScanWhenCostsAreTied) {
     EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
 }
 
-TEST(PlannerBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidualTree) {
+TEST(PlannerAccessTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidualTree) {
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"salary", ColumnType::Double}}};
     table.insert({Value{1}, Value{10}, Value{120000.0}});
@@ -187,7 +187,7 @@ TEST(PlannerBehaviorTests, MultiConjunctAndPicksCheapestIndexableAndKeepsResidua
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::And);
 }
 
-TEST(PlannerBehaviorTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
+TEST(PlannerAccessTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
     Parser parser;
     auto executor = makeExecutor("residual-no");
     seedEmployees(executor, parser, true, false);
@@ -200,7 +200,7 @@ TEST(PlannerBehaviorTests, ExplainReportsNoResidualForPureEqualityIndexLookup) {
     EXPECT_NE(text.find("residual: no"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, ExpressionSameColumnOrRewritesToHashIn) {
+TEST(PlannerAccessTests, ExpressionSameColumnOrRewritesToHashIn) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"salary", ColumnType::Double}}};
     for (int i = 1; i <= 10; ++i) {
         table.insert({Value{i}, Value{100000.0 + i}});
@@ -222,7 +222,7 @@ TEST(PlannerBehaviorTests, ExpressionSameColumnOrRewritesToHashIn) {
     EXPECT_FALSE(plan.residual().has_value());
 }
 
-TEST(PlannerBehaviorTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) {
+TEST(PlannerAccessTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"score", ColumnType::Int}}};
     for (int i = 1; i <= 90; ++i) {
         table.insert({Value{i}, Value{i}});
@@ -243,7 +243,7 @@ TEST(PlannerBehaviorTests, HistogramAwareRangeCostBeatsDefaultOneThirdEstimate) 
     EXPECT_LE(after.estimates.estimatedCost, 15.0);
 }
 
-TEST(PlannerBehaviorTests, ExpressionIndexSubtractEqualityLookup) {
+TEST(PlannerAccessTests, ExpressionIndexSubtractEqualityLookup) {
     auto executor = makeExecutor("expr-subtract");
     Parser parser;
     seedEmployees(executor, parser, false, false);
@@ -262,7 +262,7 @@ TEST(PlannerBehaviorTests, ExpressionIndexSubtractEqualityLookup) {
     EXPECT_EQ(result.rows[0][0], Value{std::string{"Alice"}});
 }
 
-TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
+TEST(PlannerAccessTests, DoubleExpressionIndexAndHistogramLessRange) {
     auto executor = makeExecutor("double-expr-hist");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -304,7 +304,7 @@ TEST(PlannerBehaviorTests, DoubleExpressionIndexAndHistogramLessRange) {
     EXPECT_LT(plan.estimates.estimatedCost, 64.0 / 3.0);
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
+TEST(PlannerAccessTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
     // Desired: nested OR under AND with *no* equality-indexable arms stays an AND residual
     // while another conjunct uses an index. Partially indexable nested OR uses composite
     // Intersect∪Union + complementary residual (see NestedOrUnderAndPartialOrUsesComplementaryScan).
@@ -341,7 +341,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndRemainsResidualWhenDisjunctsDiffer) {
     EXPECT_NE(text_plan.find("residual: yes"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, SameColumnNestedOrUnderAndRewritesToHashIn) {
+TEST(PlannerAccessTests, SameColumnNestedOrUnderAndRewritesToHashIn) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
     for (int i = 1; i <= 20; ++i) {
         table.insert({Value{i}, Value{i % 3}});
@@ -379,7 +379,7 @@ TEST(PlannerBehaviorTests, SameColumnNestedOrUnderAndRewritesToHashIn) {
     EXPECT_EQ(rows.rows[1][0], Value{"Cara"});
 }
 
-TEST(PlannerBehaviorTests, SameColumnNestedOrUnderAndWithSelectiveEquality) {
+TEST(PlannerAccessTests, SameColumnNestedOrUnderAndWithSelectiveEquality) {
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 100; ++i) {
@@ -401,7 +401,7 @@ TEST(PlannerBehaviorTests, SameColumnNestedOrUnderAndWithSelectiveEquality) {
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::InList);
 }
 
-TEST(PlannerBehaviorTests, RegexPredicateUsesResidualFullScan) {
+TEST(PlannerAccessTests, RegexPredicateUsesResidualFullScan) {
     // Documented: col ~ pattern is always a residual full-scan filter (sql.md).
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
     table.insert({Value{1}, Value{std::string{"Alice"}}});
@@ -435,7 +435,7 @@ TEST(PlannerBehaviorTests, RegexPredicateUsesResidualFullScan) {
     EXPECT_NE(text.find("residual: yes"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, PrefixLikeUsesOrderedIndexAccessPath) {
+TEST(PlannerAccessTests, PrefixLikeUsesOrderedIndexAccessPath) {
     Parser parser;
     auto executor = makeExecutor("prefix-like-plan");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -466,7 +466,7 @@ TEST(PlannerBehaviorTests, PrefixLikeUsesOrderedIndexAccessPath) {
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
 }
 
-TEST(PlannerBehaviorTests, TrigramSubstringLikeUsesIntersectAccessPath) {
+TEST(PlannerAccessTests, TrigramSubstringLikeUsesIntersectAccessPath) {
     Parser parser;
     auto executor = makeExecutor("trigram-like-plan");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -502,7 +502,7 @@ TEST(PlannerBehaviorTests, TrigramSubstringLikeUsesIntersectAccessPath) {
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
 }
 
-TEST(PlannerBehaviorTests, PrefixLikeRequiresWildcardFreeLiteral) {
+TEST(PlannerAccessTests, PrefixLikeRequiresWildcardFreeLiteral) {
     // Documented: only lit% with no other wildcards uses ordered prefix LIKE.
     Parser parser;
     auto executor = makeExecutor("prefix-like-wildcards");
@@ -539,7 +539,7 @@ TEST(PlannerBehaviorTests, PrefixLikeRequiresWildcardFreeLiteral) {
     EXPECT_EQ(predicateKind(*plan.residual()), PredicateKind::Like);
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrWithNoIndexableDisjunctUsesFullScan) {
+TEST(PlannerAccessTests, TopLevelOrWithNoIndexableDisjunctUsesFullScan) {
     // Documented: when no disjunct is indexable, the planner keeps a full scan.
     // Same-column equality OR rewrites to IN first; without an index that is still a full scan.
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};

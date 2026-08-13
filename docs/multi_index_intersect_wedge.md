@@ -32,13 +32,14 @@ keeps only the intersection.
 Do not rebuild these:
 
 1. `tryPlanAndIntersect` picks ≥2 equality (or expression-equality) index probes when estimated
-   intersection cost beats the best single-index path (`src/planner/query_planner_access.cpp`).
-2. Executor intersects sorted `RowId` lists (`src/execution/select_engine_scan.cpp`).
+   intersection cost beats the best single-index path (`src/planner/query_planner_and_intersect.cpp`).
+2. Executor intersects sorted `RowId` lists (`src/execution/select_engine_bitmap.cpp` +
+   `select_engine_scan.cpp`).
 3. `EXPLAIN` surfaces `multi-index intersect on …`.
 4. Focused tests in `tests/planner_intersect_union_tests.cpp`:
-   - `MultiIndexIntersectChosenWhenCheaperThanSingleIndexResidual`
-   - `MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes`
-   - `MultiIndexIntersectIncludesExpressionEquality`
+   - `IntersectChosenWhenCheaperThanSingleIndexResidual`
+   - `IntersectReturnsOnlyRowsMatchingAllProbes`
+   - `IntersectIncludesExpressionEquality`
    - `StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality` (intersect *not* chosen when
      one probe is near-unique)
 5. Semantics documented in `docs/sql.md`, `docs/design.md`, and `docs/deep_features.md`.
@@ -59,7 +60,7 @@ Shipped as [`examples/multi_index_intersect_win.sql`](../examples/multi_index_in
 
 ### 2. Scaled regression test — done
 
-`PlannerBehaviorTests::ScaledMultiIndexIntersectUsesBothIndexes` seeds 10k employees via
+`PlannerIntersectUnionTests::ScaledIntersectUsesBothIndexes` seeds 10k employees via
 `Table::insert`, then asserts `EXPLAIN` still chooses multi-index intersect (not a full scan) and
 that `SELECT` returns only rows matching both predicates.
 
@@ -133,7 +134,7 @@ Postgres expresses the same idea with `BitmapAnd` + Bitmap Heap Scan. VertexDB�
 | Artifact | Role |
 |----------|------|
 | [`examples/multi_index_intersect_win.sql`](../examples/multi_index_intersect_win.sql) | Runnable demo |
-| `PlannerBehaviorTests::ScaledMultiIndexIntersectUsesBothIndexes` | Scaled plan regression |
+| `PlannerIntersectUnionTests::ScaledIntersectUsesBothIndexes` | Scaled plan regression |
 | `BM_MultiIndexIntersectSelect` / `BM_SingleIndexResidualSelect` | Cost shape at 1k/100k |
 | [`scripts/run-benchmarks.sh --check-shape`](../scripts/run-benchmarks.sh) | CI gate: residual ≫ intersect; residual grows; intersect growth bounded |
 | [`scripts/compare_bitmap_and.sh`](../scripts/compare_bitmap_and.sh) | Live Postgres/VertexDB plans |

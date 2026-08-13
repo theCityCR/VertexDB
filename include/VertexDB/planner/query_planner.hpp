@@ -5,9 +5,10 @@
 // AccessPath names match *Plan structs (HashEq ↔ HashEqPlan, …). Older docs may
 // say HashIndexLookup / OrderedIndexRange / HashIndexInLookup / MultiIndex*.
 // IntersectPlan / UnionPlan hold recursive IndexBitmapNode trees (composite
-// Intersect∪Union). Sibling TUs: query_planner_select.cpp, query_planner_access.cpp
-// (OR-union / AND-intersect / finalize), query_planner_predicate.cpp,
-// query_planner_join.cpp, query_planner_format.cpp; shared helpers in
+// Intersect∪Union). Sibling TUs: query_planner_select.cpp; access strategies in
+// query_planner_access.hpp (+ or_union / composite_eq / and_intersect / finalize);
+// query_planner_predicate.cpp, query_planner_join.cpp, query_planner_format.cpp;
+// shared helpers in
 // src/planner/planner_detail.hpp.
 
 #include "VertexDB/parser/ast.hpp"

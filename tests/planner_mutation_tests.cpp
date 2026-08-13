@@ -37,7 +37,7 @@ using planner_test::StubRelationStats;
 
 } // namespace
 
-TEST(PlannerBehaviorTests, UpdateAndDeleteWherePlansHashIndexWhenPredicateColumnIndexed) {
+TEST(PlannerMutationTests, UpdateAndDeleteWherePlansHashIndexWhenPredicateColumnIndexed) {
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
     for (int i = 1; i <= 3; ++i) {
@@ -62,7 +62,7 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteWherePlansHashIndexWhenPredicateColumn
     EXPECT_EQ(deletePlan.accessPath(), AccessPath::HashEq);
 }
 
-TEST(PlannerBehaviorTests, UpdateAndDeleteUseIndexAccessForEqualityPredicate) {
+TEST(PlannerMutationTests, UpdateAndDeleteUseIndexAccessForEqualityPredicate) {
     Parser parser;
     auto executor = makeExecutor("dml-index");
     seedEmployees(executor, parser, true, false);
@@ -84,7 +84,7 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseIndexAccessForEqualityPredicate) {
     EXPECT_EQ(remaining.rows[1][0], Value{static_cast<std::int64_t>(3)});
 }
 
-TEST(PlannerBehaviorTests, ExplainUpdateDeleteAndInsertDoNotMutate) {
+TEST(PlannerMutationTests, ExplainUpdateDeleteAndInsertDoNotMutate) {
     Parser parser;
     auto executor = makeExecutor("explain-mutation");
     seedEmployees(executor, parser, true, false);
@@ -120,7 +120,7 @@ TEST(PlannerBehaviorTests, ExplainUpdateDeleteAndInsertDoNotMutate) {
     EXPECT_EQ(stillThere.rows.size(), 3U);
 }
 
-TEST(PlannerBehaviorTests, UpdateUsesIndexProbeWithResidualAndFilter) {
+TEST(PlannerMutationTests, UpdateUsesIndexProbeWithResidualAndFilter) {
     Parser parser;
     auto executor = makeExecutor("dml-residual");
     seedEmployees(executor, parser, true, false);
@@ -145,7 +145,7 @@ TEST(PlannerBehaviorTests, UpdateUsesIndexProbeWithResidualAndFilter) {
     EXPECT_EQ(bob.rows[0][0], Value{90000.0});
 }
 
-TEST(PlannerBehaviorTests, DeleteUsesOrderedRangeWhenSalaryIndexed) {
+TEST(PlannerMutationTests, DeleteUsesOrderedRangeWhenSalaryIndexed) {
     Parser parser;
     auto executor = makeExecutor("dml-range");
     seedEmployees(executor, parser, false, true);
@@ -173,7 +173,7 @@ TEST(PlannerBehaviorTests, DeleteUsesOrderedRangeWhenSalaryIndexed) {
     EXPECT_EQ(remaining.rows[0][0], Value{"Bob"});
 }
 
-TEST(PlannerBehaviorTests, UpdateWithoutWhereStillMutatesAllVisibleRows) {
+TEST(PlannerMutationTests, UpdateWithoutWhereStillMutatesAllVisibleRows) {
     Parser parser;
     auto executor = makeExecutor("dml-no-where");
     seedEmployees(executor, parser, true, false);
@@ -187,7 +187,7 @@ TEST(PlannerBehaviorTests, UpdateWithoutWhereStillMutatesAllVisibleRows) {
     }
 }
 
-TEST(PlannerBehaviorTests, UpdateAndDeleteUseHashInForInListPredicate) {
+TEST(PlannerMutationTests, UpdateAndDeleteUseHashInForInListPredicate) {
     Parser parser;
     auto executor = makeExecutor("dml-hashin");
     seedEmployees(executor, parser, true, false);
@@ -229,7 +229,7 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseHashInForInListPredicate) {
     }
 }
 
-TEST(PlannerBehaviorTests, DeleteUsesPrefixLikeWhenNameIndexed) {
+TEST(PlannerMutationTests, DeleteUsesPrefixLikeWhenNameIndexed) {
     Parser parser;
     auto executor = makeExecutor("dml-prefix-like");
     seedEmployees(executor, parser, false, false);
@@ -253,7 +253,7 @@ TEST(PlannerBehaviorTests, DeleteUsesPrefixLikeWhenNameIndexed) {
     EXPECT_EQ(remaining.rows[1][0], Value{"Cara"});
 }
 
-TEST(PlannerBehaviorTests, UpdateIndexedColumnViaIndexProbeCollectsTargetsFirst) {
+TEST(PlannerMutationTests, UpdateIndexedColumnViaIndexProbeCollectsTargetsFirst) {
     // Collect-then-mutate: changing the indexed probe column must not skip/double-hit rows.
     Parser parser;
     auto executor = makeExecutor("dml-collect-first");
@@ -270,7 +270,7 @@ TEST(PlannerBehaviorTests, UpdateIndexedColumnViaIndexProbeCollectsTargetsFirst)
     EXPECT_EQ(rows.rows[2][0], Value{static_cast<std::int64_t>(3)});
 }
 
-TEST(PlannerBehaviorTests, UpdateUsesMultiIndexIntersectPath) {
+TEST(PlannerMutationTests, UpdateUsesIntersectPath) {
     Parser parser;
     auto executor = makeExecutor("dml-intersect");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -311,7 +311,7 @@ TEST(PlannerBehaviorTests, UpdateUsesMultiIndexIntersectPath) {
     EXPECT_NE(missed.rows[0][0], Value{"hit"});
 }
 
-TEST(PlannerBehaviorTests, UpdateAndDeleteUseMultiIndexUnionPath) {
+TEST(PlannerMutationTests, UpdateAndDeleteUseUnionPath) {
     // Desired: UPDATE/DELETE WHERE with top-level OR use the same Union access path as SELECT.
     Parser parser;
     auto executor = makeExecutor("dml-union");
@@ -364,7 +364,7 @@ TEST(PlannerBehaviorTests, UpdateAndDeleteUseMultiIndexUnionPath) {
     EXPECT_EQ(remaining.rows[0][1], Value{"neither"});
 }
 
-TEST(PlannerBehaviorTests, UpdateUsesCompositeHashEqPath) {
+TEST(PlannerMutationTests, UpdateUsesCompositeHashEqPath) {
     // Desired: UPDATE/DELETE WHERE multi-equality on a composite PK uses HashEq like SELECT.
     Parser parser;
     auto executor = makeExecutor("dml-composite-hash-eq");
@@ -412,7 +412,7 @@ TEST(PlannerBehaviorTests, UpdateUsesCompositeHashEqPath) {
     EXPECT_TRUE(gone.rows.empty());
 }
 
-TEST(PlannerBehaviorTests, DeleteUsesTrigramSubstringLikePath) {
+TEST(PlannerMutationTests, DeleteUsesTrigramSubstringLikePath) {
     // Desired: DELETE WHERE substring LIKE uses the same trigram intersect path as SELECT.
     Parser parser;
     auto executor = makeExecutor("dml-trigram");
@@ -445,7 +445,7 @@ TEST(PlannerBehaviorTests, DeleteUsesTrigramSubstringLikePath) {
     EXPECT_EQ(remaining.rows[0][0], Value{"Bob"});
 }
 
-TEST(PlannerBehaviorTests, UpdateUsesNestedOrCompositeIntersectUnionPath) {
+TEST(PlannerMutationTests, UpdateUsesNestedOrCompositeIntersectUnionPath) {
     // Desired: UPDATE WHERE nested OR under AND uses Intersect∪Union like SELECT.
     Parser parser;
     auto executor = makeExecutor("dml-nested-or-iu");

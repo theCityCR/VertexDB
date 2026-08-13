@@ -37,7 +37,7 @@ using planner_test::StubRelationStats;
 
 } // namespace
 
-TEST(PlannerBehaviorTests, MultiIndexIntersectChosenWhenCheaperThanSingleIndexResidual) {
+TEST(PlannerIntersectUnionTests, IntersectChosenWhenCheaperThanSingleIndexResidual) {
     Parser parser;
     auto executor = makeExecutor("multi-index-intersect");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -72,7 +72,7 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectChosenWhenCheaperThanSingleIndexRe
 }
 
 // Desired: multi-equality AND on a composite index uses one HashEq probe (not a full scan).
-TEST(PlannerBehaviorTests, CompositeHashEqChosenForMultiEqualityAnd) {
+TEST(PlannerIntersectUnionTests, CompositeHashEqChosenForMultiEqualityAnd) {
     Parser parser;
     auto executor = makeExecutor("composite-hash-eq");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -125,7 +125,7 @@ TEST(PlannerBehaviorTests, CompositeHashEqChosenForMultiEqualityAnd) {
 
 // Desired: when both a composite index and single-column indexes cover the AND, prefer
 // one composite HashEq probe over multi-index Intersect.
-TEST(PlannerBehaviorTests, CompositeHashEqPreferredOverMultiIndexIntersect) {
+TEST(PlannerIntersectUnionTests, CompositeHashEqPreferredOverIntersect) {
     Parser parser;
     auto executor = makeExecutor("composite-over-intersect");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -165,7 +165,7 @@ TEST(PlannerBehaviorTests, CompositeHashEqPreferredOverMultiIndexIntersect) {
 }
 
 // Desired: composite HashEq absorbs only covered equalities; extra AND leaves stay residual.
-TEST(PlannerBehaviorTests, CompositeHashEqKeepsResidualForUncoveredConjunct) {
+TEST(PlannerIntersectUnionTests, CompositeHashEqKeepsResidualForUncoveredConjunct) {
     Parser parser;
     auto executor = makeExecutor("composite-residual");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -204,7 +204,7 @@ TEST(PlannerBehaviorTests, CompositeHashEqKeepsResidualForUncoveredConjunct) {
     EXPECT_EQ(result.rows[0][0], Value{"keep"});
 }
 
-TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
+TEST(PlannerIntersectUnionTests, IntersectIncludesExpressionEquality) {
     Table table{"Employees", {{"a", ColumnType::Int}, {"b", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 100; ++i) {
         table.insert({Value{i % 2}, Value{i % 2}, Value{"n" + std::to_string(i)}});
@@ -230,7 +230,7 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
     EXPECT_NE(plan.estimates.explanation.find("b"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrIndexUnionAcrossColumns) {
+TEST(PlannerIntersectUnionTests, TopLevelOrIndexUnionAcrossColumns) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"dept", ColumnType::Int}}};
     for (int i = 1; i <= 20; ++i) {
         table.insert({Value{i}, Value{i % 2}});
@@ -251,7 +251,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionAcrossColumns) {
     EXPECT_FALSE(plan.residual().has_value());
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrIndexUnionReturnsRowsMatchingAnyProbe) {
+TEST(PlannerIntersectUnionTests, TopLevelOrIndexUnionReturnsRowsMatchingAnyProbe) {
     auto executor = makeExecutor("multi-index-union-result");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -285,7 +285,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionReturnsRowsMatchingAnyProbe) {
     EXPECT_EQ(result.rows[2][0], Value{std::string{"only-dept"}});
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctUsesPartialUnion) {
+TEST(PlannerIntersectUnionTests, TopLevelOrWithNonIndexableDisjunctUsesPartialUnion) {
     Table table{"Employees", {{"id", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 10; ++i) {
         table.insert({Value{i}, Value{"n" + std::to_string(i)}});
@@ -308,7 +308,7 @@ TEST(PlannerBehaviorTests, TopLevelOrWithNonIndexableDisjunctUsesPartialUnion) {
     EXPECT_NE(plan.estimates.notes.front().find("residual OR"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrPartialUnionReturnsIndexableAndResidualRows) {
+TEST(PlannerIntersectUnionTests, TopLevelOrPartialUnionReturnsIndexableAndResidualRows) {
     auto executor = makeExecutor("partial-or-union-result");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -339,7 +339,7 @@ TEST(PlannerBehaviorTests, TopLevelOrPartialUnionReturnsIndexableAndResidualRows
     EXPECT_EQ(result.rows[1][0], Value{std::string{"bob"}});
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrPartialUnionDoesNotDropIndexOnlyMatches) {
+TEST(PlannerIntersectUnionTests, TopLevelOrPartialUnionDoesNotDropIndexOnlyMatches) {
     // Residual must be complementary (OR), not an AND filter on index hits.
     auto executor = makeExecutor("partial-or-complementary");
     Parser parser;
@@ -361,7 +361,7 @@ TEST(PlannerBehaviorTests, TopLevelOrPartialUnionDoesNotDropIndexOnlyMatches) {
     EXPECT_EQ(result.rows[1][0], Value{std::string{"residual"}});
 }
 
-TEST(PlannerBehaviorTests, TopLevelOrIndexUnionIncludesExpressionEquality) {
+TEST(PlannerIntersectUnionTests, TopLevelOrIndexUnionIncludesExpressionEquality) {
     Table table{"Employees", {{"a", ColumnType::Int}, {"b", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 100; ++i) {
         table.insert({Value{i % 10}, Value{i % 10}, Value{"n" + std::to_string(i)}});
@@ -383,7 +383,7 @@ TEST(PlannerBehaviorTests, TopLevelOrIndexUnionIncludesExpressionEquality) {
     EXPECT_NE(plan.estimates.explanation.find("multi-index union on"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes) {
+TEST(PlannerIntersectUnionTests, IntersectReturnsOnlyRowsMatchingAllProbes) {
     auto executor = makeExecutor("multi-index-result");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -414,7 +414,7 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectReturnsOnlyRowsMatchingAllProbes) 
     EXPECT_EQ(result.rows[1][0], Value{std::string{"both-b"}});
 }
 
-TEST(PlannerBehaviorTests, ScaledMultiIndexIntersectUsesBothIndexes) {
+TEST(PlannerIntersectUnionTests, ScaledIntersectUsesBothIndexes) {
     // Medium-cardinality dept/city so neither probe is near-unique and intersect stays cheaper
     // than a single index + residual. Seed via Table::insert for CI speed; EXPLAIN/SELECT still
     // go through the full planner/executor path. 10k matches the CTE scaled-wedge lower bound.
@@ -467,7 +467,7 @@ TEST(PlannerBehaviorTests, ScaledMultiIndexIntersectUsesBothIndexes) {
     EXPECT_EQ(result.rows.size(), static_cast<std::size_t>(kRowCount / 100));
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndUsesCompositeIntersectUnion) {
+TEST(PlannerIntersectUnionTests, NestedOrUnderAndUsesCompositeIntersectUnion) {
     // Medium-cardinality equality on the AND side so Intersect∪Union beats HashEq + residual.
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"dept", ColumnType::Int}, {"city", ColumnType::Int}}};
@@ -500,7 +500,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndUsesCompositeIntersectUnion) {
     EXPECT_NE(plan.estimates.notes.front().find("composite Intersect"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndCompositeReturnsCorrectRows) {
+TEST(PlannerIntersectUnionTests, NestedOrUnderAndCompositeReturnsCorrectRows) {
     auto executor = makeExecutor("nested-or-intersect-union");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -534,7 +534,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndCompositeReturnsCorrectRows) {
     EXPECT_EQ(result.rows[1][0], Value{std::string{"id-dept"}});
 }
 
-TEST(PlannerBehaviorTests, TwoOrsUnderAndUsesIntersectOfUnions) {
+TEST(PlannerIntersectUnionTests, TwoOrsUnderAndUsesIntersectOfUnions) {
     Table table{"T",
                 {{"a", ColumnType::Int},
                  {"b", ColumnType::Int},
@@ -565,7 +565,7 @@ TEST(PlannerBehaviorTests, TwoOrsUnderAndUsesIntersectOfUnions) {
     EXPECT_NE(plan.estimates.explanation.find("union("), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrUsesComplementaryScan) {
+TEST(PlannerIntersectUnionTests, NestedOrUnderAndPartialOrUsesComplementaryScan) {
     // Medium-cardinality AND equality so Intersect∪Union beats HashEq + whole-OR residual.
     Table table{"Employees",
                 {{"id", ColumnType::Int},
@@ -604,7 +604,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrUsesComplementaryScan) {
     EXPECT_NE(plan.estimates.notes[1].find("partial nested OR"), std::string::npos);
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrReturnsIndexableAndResidualRows) {
+TEST(PlannerIntersectUnionTests, NestedOrUnderAndPartialOrReturnsIndexableAndResidualRows) {
     auto executor = makeExecutor("partial-nested-or-result");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
@@ -638,7 +638,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrReturnsIndexableAndResidualR
     EXPECT_EQ(result.rows[1][0], Value{std::string{"id-flag"}});
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrDoesNotDropIndexOnlyMatches) {
+TEST(PlannerIntersectUnionTests, NestedOrUnderAndPartialOrDoesNotDropIndexOnlyMatches) {
     // Complementary must add residual-OR rows under the outer AND without filtering
     // index Intersect∪Union hits as if the residual were an AND conjunct.
     auto executor = makeExecutor("partial-nested-or-complementary");
@@ -665,7 +665,7 @@ TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrDoesNotDropIndexOnlyMatches)
     EXPECT_EQ(result.rows[1][0], Value{std::string{"residual"}});
 }
 
-TEST(PlannerBehaviorTests, NestedOrUnderAndPartialOrWithAndResidualFilter) {
+TEST(PlannerIntersectUnionTests, NestedOrUnderAndPartialOrWithAndResidualFilter) {
     auto executor = makeExecutor("partial-nested-or-and-residual");
     Parser parser;
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
