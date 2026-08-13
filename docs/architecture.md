@@ -29,7 +29,7 @@ CLI
  |
  +-- Persistence Layer
  |   +-- StorageManager (path / open / rename)
- |   +-- TcrdbCodec (.tcrdb v1–v4 orchestrator)
+ |   +-- TcrdbCodec (.tcrdb v1–v9 orchestrator)
  |       +-- Value, table, and index codecs
  |   +-- WriteAheadLog
  |
@@ -83,17 +83,18 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   orchestration, `select_engine_scan.cpp`, `select_engine_join.cpp`). `DmlEngine` owns
   INSERT/UPDATE/DELETE with undo and page-image WAL redo; UPDATE/DELETE reuse
   `QueryPlanner::planSelect` plus `SelectEngine::collectVisibleEntries` so mutation `WHERE`
-  clauses use the same index access paths as SELECT. `CatalogEngine` owns CREATE/DROP/RENAME
-  DATABASE/TABLE, `ALTER TABLE` ADD/DROP COLUMN, `LIST TABLES`, `CREATE INDEX` / `DROP INDEX`,
-  `ANALYZE`, and `SAVE`/`LOAD` (with WAL append and snapshot coordination). `SubqueryRuntime` owns
+  clauses use the same index access paths as SELECT. `CatalogEngine` owns `CREATE`/`DROP` DATABASE,
+  `CREATE`/`DROP`/`RENAME` TABLE, `ALTER TABLE` ADD/DROP COLUMN, `LIST TABLES`,
+  `CREATE INDEX` / `DROP INDEX`, `ANALYZE`, and `SAVE`/`LOAD` (with WAL append and snapshot
+  coordination). `SubqueryRuntime` owns
   CTE/`IN`/`EXISTS` preparation and evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`,
   `subquery_runtime_cte.cpp`),
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
   `RecoveryService` owns WAL replay, redo/undo application, and WAL flushing. `predicate_eval`,
-  `select_helpers` / `select_scope` / `select_aggregate`, `prepared_bind`, and `sql_literal`
-  provide shared execution helpers.
+  `foreign_key_eval`, `select_helpers` / `select_scope` / `select_aggregate`, `prepared_bind`, and
+  `sql_literal` provide shared execution helpers.
 - `indexing`: `IndexManager` owns index definitions plus hash/B+ tree stores and performs index
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
   forwards its public index API while holding the appropriate lock. `BTreeIndex` is split across

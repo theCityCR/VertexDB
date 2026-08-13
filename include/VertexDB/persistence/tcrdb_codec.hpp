@@ -1,6 +1,6 @@
 #pragma once
 
-// Versioned .tcrdb snapshot encode/decode (v1–v4). StorageManager owns paths and
+// Versioned .tcrdb snapshot encode/decode (v1–v9). StorageManager owns paths and
 // open/rename orchestration; this codec owns the on-disk layout.
 
 #include "VertexDB/storage/database.hpp"

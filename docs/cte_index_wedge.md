@@ -136,7 +136,7 @@ inline path so nested SQL does not silently drop indexes. Details:
 
 ### Limitations (honest)
 
-- Correlation deeper than four outer frames is unsupported; `WITH` nesting depth up to 3 is
+- Correlation deeper than eight outer frames is unsupported; `WITH` nesting depth up to 6 is
   supported. CTE/derived bodies may include left-deep join chains. `WITH RECURSIVE` is
   supported with documented safety caps.
 - Cost-based access paths using live row counts, index distinct keys, and optional `ANALYZE`
@@ -167,7 +167,7 @@ Items **1–5** are done. The one-liner:
 - Mixed/non-indexable top-level `OR` partial indexing is an engine feature outside this wedge demo.
   Multi-index **AND** intersect packaging lives in
   [multi_index_intersect_wedge.md](multi_index_intersect_wedge.md).
-- Correlation deeper than four outer frames (engine limit; not specific to this wedge).
+- Correlation deeper than eight outer frames (engine limit; not specific to this wedge).
 - Winning only because VertexDB always picks hash lookup when Postgres sometimes does not—that is
   a heuristic quirk, not a product story.
 

@@ -221,7 +221,7 @@ TEST(NestedSqlTests, ThreeLevelCorrelationBindsOutermost) {
 }
 
 TEST(NestedSqlTests, FourLevelCorrelationBindsOutermost) {
-    // Documented max: up to four outer FROM frames may correlate.
+    // Four nested EXISTS levels still bind the outermost frame (within the eight-frame cap).
     Parser parser;
     auto executor = makeExecutor("four-level-exists");
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);

@@ -49,8 +49,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   tests; SI/SSI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
 - Transactions: commit-aware MVCC snapshot isolation (dirty reads / SI watermark / mid-txn phantoms
   prevented) plus SSI commit aborts for write skew, write–write conflicts, and insert phantoms
-  (predicate SIREAD vs insert/update images), undo-log DML rollback, transaction-batched page-image
-  WAL flush+fsync on `COMMIT`
+  (predicate SIREAD vs insert/update images), undo-log rollback for DML and transactional catalog
+  DDL (incl. `ALTER TABLE`), transaction-batched page-image WAL flush+fsync on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, composite Intersect∪Union for nested OR under AND including partial nested
   OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
