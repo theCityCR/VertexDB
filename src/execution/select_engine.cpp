@@ -339,11 +339,6 @@ QueryResult SelectEngine::finalizeSelectResult(const Select &command,
     return projectWithLimit(std::move(rows), projection, std::move(projectedColumns), command.limit);
 }
 
-bool SelectEngine::matches(const Row &row, const Table &table, const Predicate &predicate,
-                           std::string_view scopeName) const {
-    return ctx_.subquery->matches(row, table, predicate, scopeName);
-}
-
 QueryPlan SelectEngine::planPreparedSelect(const Select &command, const Table &table,
                                            const RewriteResult &rewrite) const {
     auto plan = ctx_.planner.planSelect(command, table);

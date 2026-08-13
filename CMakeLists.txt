@@ -62,6 +62,8 @@ add_library(VertexDB
     src/execution/catalog_engine.cpp
     src/execution/select_engine.cpp
     src/execution/select_engine_scan.cpp
+    src/execution/select_engine_ssi.cpp
+    src/execution/select_engine_bitmap.cpp
     src/execution/select_engine_join.cpp
     src/execution/txn_session.cpp
     src/execution/recovery_service.cpp

@@ -4,7 +4,7 @@
 // Implementation: predicate_eval.cpp.
 // evalPredicate throws on IN-subquery and EXISTS arms — those need outer binding.
 // Full entry point (including correlated IN/EXISTS): SubqueryRuntime::matches
-// (SelectEngine::matches forwards there for scan/join call sites).
+// (scan/join call it via ExecutionContext::subquery).
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/common/value.hpp"

@@ -1,258 +1,24 @@
 #include "VertexDB/execution/select_engine.hpp"
 
+#include "select_engine_scan_detail.hpp"
+
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
-#include "VertexDB/parser/predicate.hpp"
-#include "VertexDB/transaction/transaction_manager.hpp"
+#include "VertexDB/execution/subquery_runtime.hpp"
 
-#include <algorithm>
-#include <iterator>
-#include <optional>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace VertexDB {
-namespace {
-
-std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table);
-
-// Column SIREAD leaves: comparisons, IN lists, LIKE, and AND/OR of those.
-// Regex / subquery / expression / column-column comparisons still need relation membership.
-[[nodiscard]] bool canRecordColumnSireads(const Predicate &predicate) {
-    return std::visit(
-        [](const auto &node) -> bool {
-            using T = std::decay_t<decltype(node)>;
-            if constexpr (std::is_same_v<T, ComparisonPred>) {
-                return !node.rhsColumn && !node.expression;
-            } else if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
-                return canRecordColumnSireads(*node.left) && canRecordColumnSireads(*node.right);
-            } else if constexpr (std::is_same_v<T, InListPred>) {
-                return !node.expression;
-            } else if constexpr (std::is_same_v<T, LikePred>) {
-                return true;
-            } else {
-                // RegexPred / InSubqueryPred / ExistsPred
-                return false;
-            }
-        },
-        predicate);
-}
-
-void recordSsiPredicateFromTree(TransactionManager &txns, TransactionId id,
-                                std::string_view relation, const Predicate &predicate) {
-    std::visit(
-        [&](const auto &node) {
-            using T = std::decay_t<decltype(node)>;
-            if constexpr (std::is_same_v<T, ComparisonPred>) {
-                if (node.rhsColumn || node.expression) {
-                    txns.recordRelationRead(id, relation);
-                    return;
-                }
-                txns.recordPredicateRead(
-                    id, SsiPredicate{std::string{relation}, node.column, node.op, node.value,
-                                     std::nullopt});
-            } else if constexpr (std::is_same_v<T, AndPred>) {
-                recordSsiPredicateFromTree(txns, id, relation, *node.left);
-                recordSsiPredicateFromTree(txns, id, relation, *node.right);
-            } else if constexpr (std::is_same_v<T, OrPred>) {
-                // OR of column leaves: record each arm (insert matching any arm conflicts).
-                // Mixed with regex/subquery/expression → whole OR falls back to membership.
-                if (!canRecordColumnSireads(predicate)) {
-                    txns.recordRelationRead(id, relation);
-                    return;
-                }
-                recordSsiPredicateFromTree(txns, id, relation, *node.left);
-                recordSsiPredicateFromTree(txns, id, relation, *node.right);
-            } else if constexpr (std::is_same_v<T, InListPred>) {
-                if (node.expression) {
-                    txns.recordRelationRead(id, relation);
-                    return;
-                }
-                for (const auto &value : node.inValues) {
-                    txns.recordPredicateRead(
-                        id, SsiPredicate{std::string{relation}, node.column,
-                                         ComparisonOperator::Equal, value, std::nullopt});
-                }
-            } else if constexpr (std::is_same_v<T, LikePred>) {
-                txns.recordPredicateRead(
-                    id, SsiPredicate{std::string{relation}, node.column, std::nullopt, std::nullopt,
-                                     node.pattern});
-            } else {
-                // Regex / subquery: conservative relation membership.
-                txns.recordRelationRead(id, relation);
-            }
-        },
-        predicate);
-}
-
-void recordSsiProbe(TransactionManager &txns, TransactionId id, std::string_view relation,
-                    const IndexEqualityProbe &probe) {
-    if (probe.expression) {
-        txns.recordRelationRead(id, relation);
-        return;
-    }
-    txns.recordPredicateRead(
-        id, SsiPredicate{std::string{relation}, probe.column, ComparisonOperator::Equal,
-                         probe.value});
-}
-
-void recordSsiBitmapNode(TransactionManager &txns, TransactionId id, std::string_view relation,
-                         const IndexBitmapNode &node) {
-    if (node.kind == IndexBitmapNode::Kind::Probe) {
-        recordSsiProbe(txns, id, relation, node.probe);
-        return;
-    }
-    for (const auto &child : node.children) {
-        recordSsiBitmapNode(txns, id, relation, child);
-    }
-}
-
-void recordSsiScanPredicates(TransactionManager &txns, TransactionId id, const Table &table,
-                             const Select &command, const QueryPlan &plan) {
-    const std::string_view relation = table.name();
-    std::visit(
-        [&](const auto &path) {
-            using T = std::decay_t<decltype(path)>;
-            if constexpr (std::is_same_v<T, HashEqPlan>) {
-                if (path.indexExpression) {
-                    txns.recordRelationRead(id, relation);
-                } else if (!path.indexColumns.empty()) {
-                    const auto &parts = path.indexValue.compositeParts();
-                    const std::size_t n =
-                        std::min(path.indexColumns.size(), parts.size());
-                    for (std::size_t i = 0; i < n; ++i) {
-                        txns.recordPredicateRead(
-                            id, SsiPredicate{std::string{relation}, path.indexColumns[i],
-                                             ComparisonOperator::Equal, parts[i]});
-                    }
-                } else {
-                    txns.recordPredicateRead(
-                        id, SsiPredicate{std::string{relation}, path.indexColumn,
-                                         ComparisonOperator::Equal, path.indexValue});
-                }
-            } else if constexpr (std::is_same_v<T, OrderedRangePlan>) {
-                if (path.indexExpression) {
-                    txns.recordRelationRead(id, relation);
-                } else {
-                    txns.recordPredicateRead(
-                        id, SsiPredicate{std::string{relation}, path.indexColumn, path.indexOp,
-                                         path.indexValue});
-                }
-            } else if constexpr (std::is_same_v<T, HashInPlan>) {
-                if (path.indexExpression) {
-                    txns.recordRelationRead(id, relation);
-                } else {
-                    for (const auto &value : path.indexValues) {
-                        txns.recordPredicateRead(
-                            id, SsiPredicate{std::string{relation}, path.indexColumn,
-                                             ComparisonOperator::Equal, value});
-                    }
-                }
-            } else if constexpr (std::is_same_v<T, IntersectPlan> || std::is_same_v<T, UnionPlan>) {
-                for (const auto &child : path.children) {
-                    recordSsiBitmapNode(txns, id, relation, child);
-                }
-            } else if constexpr (std::is_same_v<T, PrefixLikePlan>) {
-                // Prefix LIKE always keeps the LikePred as residual; that residual records a
-                // column LIKE SIREAD. Do not also take relation membership here.
-            } else {
-                // FullScanPlan
-                if (command.where) {
-                    recordSsiPredicateFromTree(txns, id, relation, *command.where);
-                } else {
-                    txns.recordRelationRead(id, relation);
-                }
-            }
-        },
-        plan.path);
-    if (plan.residual()) {
-        recordSsiPredicateFromTree(txns, id, relation, *plan.residual());
-    }
-    if (plan.complementaryResidual()) {
-        recordSsiPredicateFromTree(txns, id, relation, *plan.complementaryResidual());
-    }
-}
-
-std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table);
-
-// Combine children under Intersect or Union without allocating a wrapper node.
-std::vector<RowId> evalBitmapChildren(IndexBitmapNode::Kind op,
-                                      const std::vector<IndexBitmapNode> &children,
-                                      const Table &table) {
-    if (children.empty()) {
-        return {};
-    }
-
-    std::optional<std::vector<RowId>> combined;
-    for (const auto &child : children) {
-        auto childIds = evalBitmapNode(child, table);
-        if (op == IndexBitmapNode::Kind::Intersect) {
-            if (childIds.empty()) {
-                return {};
-            }
-            if (!combined) {
-                combined = std::move(childIds);
-                continue;
-            }
-            std::vector<RowId> next;
-            next.reserve(std::min(combined->size(), childIds.size()));
-            std::set_intersection(combined->begin(), combined->end(), childIds.begin(),
-                                  childIds.end(), std::back_inserter(next));
-            combined = std::move(next);
-            if (combined->empty()) {
-                return {};
-            }
-        } else {
-            // Union
-            if (childIds.empty()) {
-                continue;
-            }
-            if (!combined) {
-                combined = std::move(childIds);
-                continue;
-            }
-            std::vector<RowId> next;
-            next.reserve(combined->size() + childIds.size());
-            std::set_union(combined->begin(), combined->end(), childIds.begin(), childIds.end(),
-                           std::back_inserter(next));
-            combined = std::move(next);
-        }
-    }
-    return combined ? std::move(*combined) : std::vector<RowId>{};
-}
-
-std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table) {
-    if (node.kind == IndexBitmapNode::Kind::Probe) {
-        auto rowIds = node.probe.expression
-                          ? table.indexedLookup(*node.probe.expression, node.probe.value)
-                          : table.indexedLookup(node.probe.column, node.probe.value);
-        if (!rowIds) {
-            return {};
-        }
-        std::sort(rowIds->begin(), rowIds->end());
-        return std::move(*rowIds);
-    }
-
-    return evalBitmapChildren(node.kind, node.children, table);
-}
-
-std::vector<RowId> evalIntersectPlan(const IntersectPlan &path, const Table &table) {
-    return evalBitmapChildren(IndexBitmapNode::Kind::Intersect, path.children, table);
-}
-
-std::vector<RowId> evalUnionPlan(const UnionPlan &path, const Table &table) {
-    return evalBitmapChildren(IndexBitmapNode::Kind::Union, path.children, table);
-}
-
-} // namespace
 
 std::vector<std::pair<RowId, Row>>
 SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                                     const QueryPlan &plan, ExplainAnalyzeStats *stats) const {
     const auto snap = ctx_.readSnapshot();
-    recordSsiScanPredicates(ctx_.session.transactionManager(), snap.self, table, command, plan);
+    select_scan_detail::recordSsiScanPredicates(ctx_.session.transactionManager(), snap.self, table,
+                                                command, plan);
 
     const std::string_view scope = selectScopeName(command);
     auto applyResidual = [&](std::vector<std::pair<RowId, Row>> entries) {
@@ -265,7 +31,7 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
         std::vector<std::pair<RowId, Row>> filtered;
         filtered.reserve(entries.size());
         for (auto &entry : entries) {
-            if (matches(entry.second, table, *plan.residual(), scope)) {
+            if (ctx_.subquery->matches(entry.second, table, *plan.residual(), scope)) {
                 filtered.push_back(std::move(entry));
             }
         }
@@ -313,7 +79,7 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                 }
                 return applyResidual(entriesByIdForRead(table, combined));
             } else if constexpr (std::is_same_v<T, IntersectPlan>) {
-                auto intersection = evalIntersectPlan(path, table);
+                auto intersection = select_scan_detail::evalIntersectPlan(path, table);
                 if (intersection.empty() && !plan.complementaryResidual()) {
                     return {};
                 }
@@ -337,13 +103,13 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                     if (seen.contains(rowId)) {
                         continue;
                     }
-                    if (matches(row, table, *plan.complementaryResidual(), scope)) {
+                    if (ctx_.subquery->matches(row, table, *plan.complementaryResidual(), scope)) {
                         out.emplace_back(rowId, row);
                     }
                 }
                 return out;
             } else if constexpr (std::is_same_v<T, UnionPlan>) {
-                auto ids = evalUnionPlan(path, table);
+                auto ids = select_scan_detail::evalUnionPlan(path, table);
                 if (!plan.residual()) {
                     return ids.empty() ? std::vector<std::pair<RowId, Row>>{}
                                        : entriesByIdForRead(table, ids);
@@ -360,7 +126,7 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                     if (seen.contains(rowId)) {
                         continue;
                     }
-                    if (matches(row, table, *plan.residual(), scope)) {
+                    if (ctx_.subquery->matches(row, table, *plan.residual(), scope)) {
                         out.emplace_back(rowId, row);
                     }
                 }
@@ -368,7 +134,8 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
             } else {
                 std::vector<std::pair<RowId, Row>> scanned;
                 for (const auto &[rowId, row] : visibleEntriesForRead(table)) {
-                    if (!command.where || matches(row, table, *command.where, scope)) {
+                    if (!command.where ||
+                        ctx_.subquery->matches(row, table, *command.where, scope)) {
                         scanned.emplace_back(rowId, row);
                     }
                 }
