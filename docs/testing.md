@@ -41,7 +41,7 @@ transactions, indexing, recovery, or concurrency, prefer branch-oriented tests o
 line coverage.
 
 The current suite contains 302 discovered GoogleTest cases across the files above.
-The latest local coverage run reported 85.19% line coverage.
+The latest local coverage run reported 86.43% line coverage.
 
 `scripts/run-coverage.sh` enforces the 85% default threshold after running the coverage-instrumented
 test binary. Override it for local experiments with:

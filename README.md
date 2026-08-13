@@ -122,7 +122,7 @@ Or feed an example script:
   (`PRIMARY KEY` / `UNIQUE` / `NOT NULL` / `CHECK` / `FOREIGN KEY`), deep features, and regressions (see [docs/testing.md](docs/testing.md)
   for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
-  85.19%)
+  86.43%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
 - Benchmarks cover inserts, indexed and non-indexed filtered selects, CTE index-win vs full-scan
   and MATERIALIZED baselines, multi-index intersect vs single-index residual, page vs vector
