@@ -2,11 +2,13 @@
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/parser/predicate.hpp"
 #include "VertexDB/transaction/transaction_manager.hpp"
 
 #include <algorithm>
 #include <iterator>
 #include <optional>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -15,6 +17,28 @@ namespace VertexDB {
 namespace {
 
 std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table);
+
+// Column SIREAD leaves: comparisons, IN lists, LIKE, and AND/OR of those.
+// Regex / subquery / expression / column-column comparisons still need relation membership.
+[[nodiscard]] bool canRecordColumnSireads(const Predicate &predicate) {
+    return std::visit(
+        [](const auto &node) -> bool {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, ComparisonPred>) {
+                return !node.rhsColumn && !node.expression;
+            } else if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                return canRecordColumnSireads(*node.left) && canRecordColumnSireads(*node.right);
+            } else if constexpr (std::is_same_v<T, InListPred>) {
+                return !node.expression;
+            } else if constexpr (std::is_same_v<T, LikePred>) {
+                return true;
+            } else {
+                // RegexPred / InSubqueryPred / ExistsPred
+                return false;
+            }
+        },
+        predicate);
+}
 
 void recordSsiPredicateFromTree(TransactionManager &txns, TransactionId id,
                                 std::string_view relation, const Predicate &predicate) {
@@ -27,8 +51,18 @@ void recordSsiPredicateFromTree(TransactionManager &txns, TransactionId id,
                     return;
                 }
                 txns.recordPredicateRead(
-                    id, SsiPredicate{std::string{relation}, node.column, node.op, node.value});
+                    id, SsiPredicate{std::string{relation}, node.column, node.op, node.value,
+                                     std::nullopt});
             } else if constexpr (std::is_same_v<T, AndPred>) {
+                recordSsiPredicateFromTree(txns, id, relation, *node.left);
+                recordSsiPredicateFromTree(txns, id, relation, *node.right);
+            } else if constexpr (std::is_same_v<T, OrPred>) {
+                // OR of column leaves: record each arm (insert matching any arm conflicts).
+                // Mixed with regex/subquery/expression → whole OR falls back to membership.
+                if (!canRecordColumnSireads(predicate)) {
+                    txns.recordRelationRead(id, relation);
+                    return;
+                }
                 recordSsiPredicateFromTree(txns, id, relation, *node.left);
                 recordSsiPredicateFromTree(txns, id, relation, *node.right);
             } else if constexpr (std::is_same_v<T, InListPred>) {
@@ -39,10 +73,14 @@ void recordSsiPredicateFromTree(TransactionManager &txns, TransactionId id,
                 for (const auto &value : node.inValues) {
                     txns.recordPredicateRead(
                         id, SsiPredicate{std::string{relation}, node.column,
-                                         ComparisonOperator::Equal, value});
+                                         ComparisonOperator::Equal, value, std::nullopt});
                 }
+            } else if constexpr (std::is_same_v<T, LikePred>) {
+                txns.recordPredicateRead(
+                    id, SsiPredicate{std::string{relation}, node.column, std::nullopt, std::nullopt,
+                                     node.pattern});
             } else {
-                // OR / LIKE / regex / subquery: conservative relation membership.
+                // Regex / subquery: conservative relation membership.
                 txns.recordRelationRead(id, relation);
             }
         },
@@ -108,7 +146,8 @@ void recordSsiScanPredicates(TransactionManager &txns, TransactionId id, const T
                     recordSsiBitmapNode(txns, id, relation, child);
                 }
             } else if constexpr (std::is_same_v<T, PrefixLikePlan>) {
-                txns.recordRelationRead(id, relation);
+                // Prefix LIKE always keeps the LikePred as residual; that residual records a
+                // column LIKE SIREAD. Do not also take relation membership here.
             } else {
                 // FullScanPlan
                 if (command.where) {

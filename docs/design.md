@@ -63,8 +63,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Snapshot isolation prevents dirty reads and hides commits after `BEGIN`. SSI aborts a later
   committer on overlapping row read/write sets (write skew / write–write) or on insert-phantom
   conflicts (predicate SIREAD summaries vs inserted or update-produced row images). There are no
-  row/page locks or Postgres-style next-key locks; OR/LIKE/subquery scans use conservative
-  relation-membership SIREADs. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
+  row/page locks or Postgres-style next-key locks. Regex / subquery / expression-index probes use
+  conservative relation-membership SIREADs; OR of column comparisons/`IN`/`LIKE` and column `LIKE`
+  record real column predicates. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
 - Integrity constraints: single-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL` (default columns;
   explicit keyword supported), simple `CHECK` (column comparisons with `AND`/`OR`), and
   single-column `FOREIGN KEY` (`REFERENCES` / `FOREIGN KEY … REFERENCES`, `ON DELETE`/`UPDATE`
@@ -117,12 +118,14 @@ insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, 
 append/`reset`), single-column `PRIMARY KEY` / `UNIQUE` (snapshot v5 constraint flags), and
 first-class `NOT NULL` Consistency messaging/tests, durable `SAVE DATABASE` snapshot publish
 (fsync temp + POSIX directory sync), simple `CHECK` constraints (column comparisons with
-`AND`/`OR`; snapshot v6), and single-column `FOREIGN KEY` (`NO ACTION`; snapshot v7).
+`AND`/`OR`; snapshot v6), single-column `FOREIGN KEY` (`NO ACTION`; snapshot v7), and richer
+predicate SIREAD for OR of column leaves and column `LIKE` (regex / subquery / expression-index
+probes still relation-membership).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- **ACID alignment** — see [ACID Plan](#acid-plan) below (I polish / crash-injection;
-  CASCADE/SET NULL FK actions)
+- **ACID alignment** — see [ACID Plan](#acid-plan) below (crash-injection; CASCADE/SET NULL FK
+  actions; optional richer predicate SIREAD for remaining regex/subquery/expression fallbacks)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
@@ -150,7 +153,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | --- | --- | --- | --- |
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
 | **C** Consistency | Strong (educational) | Typed schema; `NOT NULL` (default) / `NULL`; single-column `PRIMARY KEY` / `UNIQUE`; simple `CHECK`; single-column `FOREIGN KEY` (`NO ACTION`) | No multi-column uniqueness; no FK CASCADE/SET NULL |
-| **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD); executor `LockManager` | One open SQL txn per executor; OR/LIKE/subquery use relation-membership SIREAD fallbacks; no next-key / gap locks |
+| **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD including OR of column leaves and column LIKE); executor `LockManager` | One open SQL txn per executor; regex / subquery / expression-index probes use relation-membership SIREAD fallbacks; no next-key / gap locks |
 | **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
 
 ### Principles
@@ -182,7 +185,7 @@ Already covered for the portfolio wedge in [si_anomaly_wedge.md](si_anomaly_wedg
 
 | Slice | Scope | Notes |
 | --- | --- | --- |
-| **2a. Richer predicate SIREAD** | Replace relation-membership fallbacks for a documented subset of OR/LIKE with real column predicates | Keep honesty about what still falls back |
+| **2a. Richer predicate SIREAD** | Replace relation-membership fallbacks for a documented subset of OR/LIKE with real column predicates | **Done** — OR of column comparisons/`IN`/`LIKE` records each arm; column `LIKE` matches via `matchLikePattern`; regex / subquery / expression-index probes still fall back |
 | **2b. Multi-txn SQL demos** | Still one txn per `QueryExecutor`; keep interleaving tests at `Table` + `TransactionManager` unless a multi-session façade is explicitly desired | Do not pretend the CLI is multi-writer concurrent |
 
 Non-goal unless product direction changes: full 2PL, Postgres next-key locks, or true multi-master concurrency.
@@ -206,7 +209,7 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 ### Suggested order of attack
 
-1. Phase **2a** / **3c** when packaging a deeper concurrency or recovery story.
+1. Phase **3c** when packaging a deeper recovery story.
 2. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
 3. FK `CASCADE` / `SET NULL` only if teaching referential actions is the focus.
 

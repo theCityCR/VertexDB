@@ -56,13 +56,16 @@ struct ReadSnapshot {
 // Opaque (relation, row) key for SSI read/write sets.
 using ConflictKey = std::string;
 
-// Educational SIREAD-style predicate summary (column op literal), or relation-wide when
-// `column` is empty (any insert into the relation conflicts).
+// Educational SIREAD-style predicate summary:
+// - `column` empty => relation membership (any insert into the relation conflicts)
+// - `likePattern` set => column LIKE pattern (match via matchLikePattern)
+// - otherwise => column ComparisonOperator literal
 struct SsiPredicate {
     std::string relation;
     std::string column; // empty => relation membership
     std::optional<ComparisonOperator> op;
     std::optional<Value> value;
+    std::optional<std::string> likePattern;
 };
 
 // Inserted (or update-produced) row image for predicate matching at commit.

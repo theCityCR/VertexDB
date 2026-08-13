@@ -86,10 +86,11 @@ row-image redo remains replayable.
 | Insert phantom / empty probe | Aborted at commit (predicate SIREAD vs insert/update images) |
 
 SSI records relation+row read/write sets on `Table` snapshot/DML paths, plus predicate summaries from
-`SelectEngine` scans (`recordPredicateRead` / relation-membership fallback) and insert images on
-`INSERT`/`UPDATE`. Committed predicate reads and inserts are retained until concurrent snapshots can
-no longer conflict (same prune rule as write sets). Executor writers are exclusive (`LockManager`);
-multi-txn interleaving tests share `Table` + `TransactionManager`. Full wedge:
+`SelectEngine` scans (`recordPredicateRead` for column comparisons / `IN` / OR of column leaves /
+column `LIKE`; relation-membership fallback for regex / subquery / expression-index probes) and
+insert images on `INSERT`/`UPDATE`. Committed predicate reads and inserts are retained until concurrent
+snapshots can no longer conflict (same prune rule as write sets). Executor writers are exclusive
+(`LockManager`); multi-txn interleaving tests share `Table` + `TransactionManager`. Full wedge:
 [si_anomaly_wedge.md](si_anomaly_wedge.md).
 
 ## Buffer Pool

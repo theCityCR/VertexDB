@@ -296,10 +296,11 @@ same database instance and drops deferred WAL.
 Snapshot isolation **prevents** dirty reads, non-repeatable reads, and mid-txn phantoms under a held
 snapshot. SSI **aborts** a later `COMMIT` on overlapping row read/write sets (write skew /
 write–write) or on insert-phantom conflicts (predicate SIREAD summaries from SELECT/UPDATE/DELETE
-scans vs inserted or update-produced row images). OR/LIKE/subquery shapes use conservative
-relation-membership SIREADs; there are no Postgres-style next-key locks. One executor holds at most
-one open transaction; writers are serialized by the executor `LockManager`. See
-[si_anomaly_wedge.md](si_anomaly_wedge.md).
+scans vs inserted or update-produced row images). Column comparisons, `IN` lists, OR of those
+column leaves, and column `LIKE` record real predicates; regex / subquery / expression-index probes
+use conservative relation-membership SIREADs. There are no Postgres-style next-key locks. One
+executor holds at most one open transaction; writers are serialized by the executor `LockManager`.
+See [si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
 `CREATE INDEX`, and `DROP INDEX` are allowed: each applies immediately and pushes an undo record
 (with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `DROP DATABASE` is rejected

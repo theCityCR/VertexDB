@@ -1,5 +1,7 @@
 #include "VertexDB/transaction/transaction_manager.hpp"
 
+#include "VertexDB/common/string_pattern.hpp"
+
 #include <algorithm>
 #include <string>
 
@@ -38,13 +40,23 @@ bool insertMatchesPredicate(const SsiInsert &insert, const SsiPredicate &predica
     if (insert.relation != predicate.relation) {
         return false;
     }
-    if (predicate.column.empty() || !predicate.op || !predicate.value) {
+    if (predicate.column.empty()) {
         return true; // relation-wide membership
     }
     for (const auto &[name, value] : insert.columns) {
-        if (name == predicate.column) {
-            return compareCell(value, *predicate.op, *predicate.value);
+        if (name != predicate.column) {
+            continue;
         }
+        if (predicate.likePattern) {
+            if (value.isNull() || value.type() != ColumnType::String) {
+                return false;
+            }
+            return matchLikePattern(std::get<std::string>(value.data()), *predicate.likePattern);
+        }
+        if (!predicate.op || !predicate.value) {
+            return true; // column present but incomplete comparison → treat as membership
+        }
+        return compareCell(value, *predicate.op, *predicate.value);
     }
     return false;
 }
@@ -264,7 +276,8 @@ void TransactionManager::recordPredicateRead(TransactionId id, SsiPredicate pred
 }
 
 void TransactionManager::recordRelationRead(TransactionId id, std::string_view relation) {
-    recordPredicateRead(id, SsiPredicate{std::string{relation}, {}, std::nullopt, std::nullopt});
+    recordPredicateRead(id, SsiPredicate{std::string{relation}, {}, std::nullopt, std::nullopt,
+                                         std::nullopt});
 }
 
 void TransactionManager::recordInsert(TransactionId id, SsiInsert insert) {

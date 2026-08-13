@@ -1,8 +1,11 @@
 #include "test_support.hpp"
 
 #include "VertexDB/concurrency/lock_manager.hpp"
+#include "VertexDB/execution/execution_context.hpp"
 #include "VertexDB/execution/query_executor.hpp"
+#include "VertexDB/execution/select_engine.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
+#include "VertexDB/execution/subquery_runtime.hpp"
 #include "VertexDB/execution/txn_session.hpp"
 #include "VertexDB/indexing/btree_index.hpp"
 #include "VertexDB/parser/parser.hpp"
@@ -925,10 +928,86 @@ TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteSkew) {
         << "SSI aborts the second committer; one doctor remains on-call";
 }
 
-TEST(TransactionBehaviorTests, OrLikePredicateReadsUseRelationMembershipSiread) {
-    // Documented limitation (docs/sql.md, docs/design.md): OR / LIKE / subquery scans use
-    // conservative relation-membership SIREADs rather than column predicates. Any concurrent
-    // insert into the relation conflicts — even a row that would not match the predicate.
+TEST(TransactionBehaviorTests, OrPredicateSireadAbortsMatchingInsertOnly) {
+    // Phase 2a: OR of column comparisons records each arm as a column SIREAD (not relation
+    // membership). A concurrent insert matching any arm aborts; a non-matching insert does not.
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted(), &transactions);
+
+    // SELECT … WHERE salary > 100000 OR id = 99 — record both arms.
+    const auto readerMatch = transactions.begin();
+    transactions.recordPredicateRead(
+        readerMatch.id,
+        SsiPredicate{"Employees", "salary", ComparisonOperator::Greater, Value{100000.0},
+                     std::nullopt});
+    transactions.recordPredicateRead(
+        readerMatch.id, SsiPredicate{"Employees", "id", ComparisonOperator::Equal,
+                                     Value{static_cast<std::int64_t>(99)}, std::nullopt});
+
+    const auto matchingWriter = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Bob"}, Value{110000.0}},
+                 matchingWriter.id, &transactions);
+    transactions.commit(matchingWriter.id);
+    EXPECT_THROW(transactions.commit(readerMatch.id), SerializationFailure)
+        << "OR SIREAD must abort when an insert matches any arm";
+
+    const auto readerOk = transactions.begin();
+    transactions.recordPredicateRead(
+        readerOk.id, SsiPredicate{"Employees", "salary", ComparisonOperator::Greater,
+                                  Value{100000.0}, std::nullopt});
+    transactions.recordPredicateRead(
+        readerOk.id, SsiPredicate{"Employees", "id", ComparisonOperator::Equal,
+                                  Value{static_cast<std::int64_t>(99)}, std::nullopt});
+
+    const auto nonMatchingWriter = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(3)}, Value{"Zed"}, Value{50000.0}},
+                 nonMatchingWriter.id, &transactions);
+    transactions.commit(nonMatchingWriter.id);
+    EXPECT_NO_THROW(transactions.commit(readerOk.id))
+        << "OR SIREAD must not conflict with inserts outside every arm";
+}
+
+TEST(TransactionBehaviorTests, LikePredicateSireadAbortsMatchingInsertOnly) {
+    // Phase 2a: column LIKE records a LIKE SIREAD. Matching inserts abort; non-matching do not.
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted(), &transactions);
+
+    const auto readerMatch = transactions.begin();
+    transactions.recordPredicateRead(
+        readerMatch.id,
+        SsiPredicate{"Employees", "name", std::nullopt, std::nullopt, std::string{"Al%"}});
+
+    const auto matchingWriter = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Albert"}, Value{90000.0}},
+                 matchingWriter.id, &transactions);
+    transactions.commit(matchingWriter.id);
+    EXPECT_THROW(transactions.commit(readerMatch.id), SerializationFailure)
+        << "LIKE SIREAD must abort on a pattern-matching insert";
+
+    const auto readerOk = transactions.begin();
+    transactions.recordPredicateRead(
+        readerOk.id,
+        SsiPredicate{"Employees", "name", std::nullopt, std::nullopt, std::string{"Al%"}});
+
+    const auto nonMatchingWriter = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(3)}, Value{"Zed"}, Value{50000.0}},
+                 nonMatchingWriter.id, &transactions);
+    transactions.commit(nonMatchingWriter.id);
+    EXPECT_NO_THROW(transactions.commit(readerOk.id))
+        << "LIKE SIREAD must not conflict with inserts outside the pattern";
+}
+
+TEST(TransactionBehaviorTests, RegexSubqueryPredicateReadsUseRelationMembershipSiread) {
+    // Documented limitation: regex / subquery scans still take relation-membership SIREADs.
+    // Any concurrent insert into the relation conflicts — even a row that would not match.
     TransactionManager transactions;
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
@@ -937,7 +1016,6 @@ TEST(TransactionBehaviorTests, OrLikePredicateReadsUseRelationMembershipSiread) 
                  transactions.beginCommitted(), &transactions);
 
     const auto t1 = transactions.begin();
-    // SelectEngine records relation membership for OR/LIKE residual full scans (and prefix LIKE).
     transactions.recordRelationRead(t1.id, "Employees");
 
     const auto t2 = transactions.begin();
@@ -946,6 +1024,49 @@ TEST(TransactionBehaviorTests, OrLikePredicateReadsUseRelationMembershipSiread) 
     transactions.commit(t2.id);
     EXPECT_THROW(transactions.commit(t1.id), SerializationFailure)
         << "relation-membership SIREAD must conflict with any insert into the relation";
+}
+
+TEST(TransactionBehaviorTests, SelectEngineOrLikeScanRecordsColumnSireads) {
+    // End-to-end: SelectEngine scan recording for OR / LIKE uses column SIREADs so a
+    // non-matching concurrent insert does not abort the reader.
+    auto database = std::make_shared<Database>("company");
+    database->createTable(
+        "Employees",
+        {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}});
+    auto &table = *database->table("Employees");
+
+    TxnSession session;
+    QueryPlanner planner;
+    ExecutionContext ctx{database, planner, session};
+    SelectEngine selectEngine{ctx};
+    SubqueryRuntime subqueryRuntime{ctx};
+    ctx.select = &selectEngine;
+    ctx.subquery = &subqueryRuntime;
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 session.transactionManager().beginCommitted(), &session.transactionManager());
+
+    Parser parser;
+    ASSERT_TRUE(session.begin().success);
+
+    auto orSelect = std::get<Select>(
+        parser.parse("SELECT id FROM Employees WHERE salary > 100000.0 OR id = 99;"));
+    auto orPlan = planner.planSelect(orSelect, table);
+    (void)selectEngine.collectVisibleEntries(orSelect, table, orPlan);
+
+    auto likeSelect =
+        std::get<Select>(parser.parse("SELECT id FROM Employees WHERE name LIKE \"Al%\";"));
+    auto likePlan = planner.planSelect(likeSelect, table);
+    (void)selectEngine.collectVisibleEntries(likeSelect, table, likePlan);
+
+    const auto writer = session.transactionManager().begin();
+    table.insert({Value{static_cast<std::int64_t>(3)}, Value{"Zed"}, Value{50000.0}}, writer.id,
+                 &session.transactionManager());
+    session.transactionManager().commit(writer.id);
+    const auto commit = session.commit();
+    EXPECT_TRUE(commit.success) << commit.message
+                                << " — SelectEngine OR/LIKE SIREADs must not conflict with a "
+                                   "non-matching insert";
 }
 
 TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteWriteConflict) {

@@ -7,13 +7,15 @@ Package VertexDB’s commit-seq MVCC **snapshot isolation** plus **Serializable 
 
 > Under SI, VertexDB prevents dirty reads and hides commits after `BEGIN`. SSI adds
 > first-committer-wins abort on overlapping row read/write sets (write skew / write–write) and on
-> insert-phantom conflicts: predicate SIREAD summaries vs inserted or update-produced row images.
-> Executor writers are serialized — true multi-txn interleaving is demonstrated at the `Table` +
-> `TransactionManager` layer.
+> insert-phantom conflicts: predicate SIREAD summaries vs inserted or update-produced row images
+> (column comparisons, `IN` lists, OR of those leaves, and column `LIKE`; relation membership for
+> regex / subquery / expression-index probes). Executor writers are serialized — true multi-txn
+> interleaving is demonstrated at the `Table` + `TransactionManager` layer.
 
 This is a **demo wedge**, not a claim of production concurrency control. Full Postgres-style
 next-key / gap locks are out of scope; predicate coverage is educational (simple column comparisons,
-`IN` lists, and conservative relation membership for OR/LIKE/subquery shapes).
+`IN` lists, OR of column leaves, column `LIKE`, and conservative relation membership for
+regex/subquery/expression shapes).
 
 ## Sync model (honest)
 
@@ -91,9 +93,10 @@ cases above (they share `TransactionManager` across two logical txns).
 ## Limitations (honest)
 
 - No row/page locks, deadlock detection, or buffer-pool latches.
-- Predicate SSI covers simple column comparisons and `IN` lists; OR / LIKE / regex / subquery
-  scans take a conservative relation-membership SIREAD (any insert into the table conflicts).
-  Expression-index probes likewise fall back to relation membership.
+- Predicate SSI covers simple column comparisons, `IN` lists, OR of those column leaves, and
+  column `LIKE` (pattern match via `matchLikePattern`). Regex / subquery / expression-index
+  probes (including trigram) still take a conservative relation-membership SIREAD (any insert into
+  the table conflicts).
 - No `FOR UPDATE`; no multi-`QueryExecutor` shared session/`TransactionManager` redesign.
 - Concurrent SQL writers on one executor are serialized by `LockManager` — that is intentional for
   this educational engine, not an SI bug.
@@ -111,6 +114,10 @@ cases above (they share `TransactionManager` across two logical txns).
 | `SerializableSnapshotIsolationAbortsUpdateIntoPredicate` | Update-into-range treated as insert image |
 | `SerializableSnapshotIsolationAbortsWriteSkew` | Write skew aborted under row-level SSI |
 | `SerializableSnapshotIsolationAbortsWriteWriteConflict` | Same-row WW aborted |
+| `OrPredicateSireadAbortsMatchingInsertOnly` | OR column SIREADs (matching abort / non-match ok) |
+| `LikePredicateSireadAbortsMatchingInsertOnly` | LIKE column SIREAD (matching abort / non-match ok) |
+| `SelectEngineOrLikeScanRecordsColumnSireads` | SelectEngine records OR/LIKE column SIREADs |
+| `RegexSubqueryPredicateReadsUseRelationMembershipSiread` | Documented membership fallback |
 | `ExecutorAllowsConcurrentReadersAndWriterExcludesReaders` | Executor RW honesty |
 
 ## Definition of done

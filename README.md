@@ -115,7 +115,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 337 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 340 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -138,8 +138,9 @@ Or feed an example script:
   transaction-atomic page-image WAL (DML deferred until `COMMIT` as one batch, dropped on
   `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; SSI aborts later committers
   on overlapping read/write sets (write skew / write–write) and on insert phantoms (predicate
-  SIREAD vs insert/update images; OR/LIKE use relation-membership fallbacks). One executor holds at
-  most one open transaction; writers are serialized by `LockManager`
+  SIREAD vs insert/update images; OR of column leaves and column `LIKE` use real predicates;
+  regex / subquery / expression-index probes use relation-membership fallbacks). One executor holds
+  at most one open transaction; writers are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Every successful WAL append/`reset` flush+fsyncs (and syncs
   the parent directory on create on POSIX; Windows uses `FlushFileBuffers` on the WAL file only)
@@ -193,7 +194,7 @@ complementary residual), multiple independent recursive CTEs, mutual recursion a
 `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync),
 single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guarantees, durable
 `SAVE DATABASE` snapshot publish, simple `CHECK` constraints, single-column `FOREIGN KEY`
-(`NO ACTION`), and a dated
+(`NO ACTION`), richer predicate SIREAD for OR of column leaves and column `LIKE`, and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

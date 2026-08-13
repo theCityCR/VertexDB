@@ -173,7 +173,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
   `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped
   on `ROLLBACK`. `SAVE DATABASE` in an open transaction implicitly commits then checkpoints;
   `LOAD DATABASE` implicitly rolls back then loads. SSI aborts write skew / write–write overlap and
-  insert phantoms (predicate SIREAD); there are no row/page locks or Postgres next-key locks.
+  insert phantoms (predicate SIREAD, including OR of column leaves and column `LIKE`; regex /
+  subquery / expression-index probes still use relation membership); there are no row/page locks or
+  Postgres next-key locks.
 
 ## Current Data Flow
 
