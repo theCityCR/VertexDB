@@ -503,6 +503,101 @@ TEST(TransactionBehaviorTests, DropIndexCommitFlushesWalAndRecovers) {
     std::filesystem::remove_all(root);
 }
 
+// Phase 4a checklist: DROP TABLE commit must leave a durable catalog change after restart.
+TEST(TransactionBehaviorTests, DropTableCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-drop-table";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Other (id INT);"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("DROP TABLE Other;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto listed = recovered.execute(parser.parse("LIST TABLES;"));
+    ASSERT_TRUE(listed.success);
+    ASSERT_EQ(listed.rows.size(), 1U);
+    EXPECT_EQ(listed.rows[0][0], Value{"Employees"});
+    std::filesystem::remove_all(root);
+}
+
+// Phase 4a checklist: RENAME TABLE commit remounts under the new name after WAL recovery.
+TEST(TransactionBehaviorTests, RenameTableCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-rename-table";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);"))
+                        .success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", 120000.0);"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("RENAME TABLE Employees TO Staff;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto listed = recovered.execute(parser.parse("LIST TABLES;"));
+    ASSERT_TRUE(listed.success);
+    ASSERT_EQ(listed.rows.size(), 1U);
+    EXPECT_EQ(listed.rows[0][0], Value{"Staff"});
+    auto rows = recovered.execute(parser.parse("SELECT name FROM Staff WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{"Alice"});
+    std::filesystem::remove_all(root);
+}
+
+// Phase 4a checklist: mixed catalog DDL + DML in one txn is one atomic commit batch.
+TEST(TransactionBehaviorTests, CatalogAndDmlMixedCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-catalog-dml-mixed";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Items (id INT, label STRING);"))
+                        .success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Items VALUES (1, \"mixed\");")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto rows = recovered.execute(parser.parse("SELECT id, label FROM Items;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(rows.rows[0][1], Value{"mixed"});
+    std::filesystem::remove_all(root);
+}
+
 TEST(TransactionBehaviorTests, BeginCommitRollbackRejectInvalidTxnState) {
     Parser parser;
     auto executor = makeExecutor("txn-state");

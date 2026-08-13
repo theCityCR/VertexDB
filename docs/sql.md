@@ -324,6 +324,17 @@ and appends a WAL record. `SAVE DATABASE` inside a transaction
 implicitly `COMMIT`s (flush deferred WAL) then checkpoints. `LOAD DATABASE` inside a transaction
 implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
 
+### ACID FAQ: SAVE / LOAD vs transactions
+
+These commands are **not** nested transactions and do **not** create savepoints.
+
+| Question | Answer |
+| --- | --- |
+| Does `SAVE DATABASE` nest inside an open transaction? | No. It implicitly `COMMIT`s (flush deferred WAL as one durable batch), then writes a snapshot and checkpoints the WAL. After a successful `SAVE` in a txn, there is no open transaction left to `COMMIT`/`ROLLBACK`. |
+| Does `LOAD DATABASE` keep uncommitted work? | No. It implicitly `ROLLBACK`s first (undo LIFO + drop deferred WAL), then replaces the in-memory database from the `.tcrdb` snapshot. Uncommitted DML/DDL from that txn never becomes durable. |
+| Why not reject `SAVE`/`LOAD` while a transaction is active? | Teaching clarity: checkpoint and reload are session-level operations. Implicit commit/rollback matches “make durable then snapshot” / “discard then reload” without inventing nested-txn syntax. |
+| Where is the full catalog+DML atomicity checklist? | [design.md Phase 4 matrix](design.md#phase-4--atomicity-edge-polish). |
+
 ## Types
 
 - `INT`: stored as signed 64-bit integer.

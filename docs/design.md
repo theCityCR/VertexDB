@@ -125,10 +125,14 @@ commit mark, plus before WAL sync), composite indexes plus multi-column `PRIMARY
 `UNIQUE` (snapshot v8 table-level constraints + `cols:…` index metadata), and FK
 `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL` (with `NO ACTION` still the default).
 
+Shipped (Phase 4): catalog + DML [atomicity matrix](#phase-4--atomicity-edge-polish) with named
+test checklist; [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions) for implicit `SAVE`/`LOAD`
+(not nested transactions).
+
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - **ACID alignment** — see [ACID Plan](#acid-plan) below (optional group-commit sync policy;
-  atomicity edge polish; multi-column FK)
+  multi-column FK)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
@@ -155,7 +159,7 @@ with desired-behavior tests over vague “more ACID” churn.
 
 | Property | Status | What exists | Main gap |
 | --- | --- | --- | --- |
-| **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
+| **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL; catalog+DML [failure matrix](#phase-4--atomicity-edge-polish) + SAVE/LOAD [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions) | Crash mid-`SAVE` rename remains an educational durability edge (POSIX dir sync after rename); not a nested-txn story |
 | **C** Consistency | Strong (educational) | Typed schema; `NOT NULL` (default) / `NULL`; single- and multi-column `PRIMARY KEY` / `UNIQUE` (composite indexes); simple `CHECK`; single-column `FOREIGN KEY` (`NO ACTION` / `CASCADE` / `SET NULL`) | Multi-column FK not yet |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD including OR of column leaves and column LIKE); executor `LockManager` | One open SQL txn per executor; regex / subquery / expression-index probes use relation-membership SIREAD fallbacks; no next-key / gap locks |
 | **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay; crash-injection at COMMIT cut points | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
@@ -207,16 +211,33 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 #### Phase 4 — Atomicity edge polish
 
-| Slice | Scope |
-| --- | --- |
-| **4a. Catalog + DML failure matrix** | Table of which DDL/DML combinations are atomic across crash vs `ROLLBACK` (already mostly true; make it a doc + test checklist) |
-| **4b. `SAVE` / `LOAD` vs open txn** | Keep implicit commit/rollback; add a short ACID FAQ so users do not read them as nested transactions |
+| Slice | Scope | Done when |
+| --- | --- | --- |
+| **4a. Catalog + DML failure matrix** | Table of which DDL/DML combinations are atomic across crash vs `ROLLBACK` (already mostly true; make it a doc + test checklist) | **Done** — matrix below; checklist tests named in the Test column |
+| **4b. `SAVE` / `LOAD` vs open txn** | Keep implicit commit/rollback; add a short ACID FAQ so users do not read them as nested transactions | **Done** — [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions); `SaveDatabaseInTransactionCommitsThenCheckpoints` / `LoadDatabaseInTransactionRollsBackThenLoads` |
+
+**Catalog + DML atomicity matrix** (educational contract; one open SQL txn per executor):
+
+| Operation | In open txn? | On `ROLLBACK` | After `COMMIT` + restart (WAL) | Primary tests |
+| --- | --- | --- | --- | --- |
+| `INSERT` / `UPDATE` / `DELETE` | Yes (deferred page-image redo) | Undo LIFO; deferred WAL dropped | Batch replayed | `RollbackDropsDeferredWalRecords`, `CommitReturnsOnlyAfterDeferredWalIsDurable`, crash-injection pair |
+| Invalid multi-row `INSERT` | Autocommit or in txn | No partial row write / no DML WAL | n/a (refused) | `InvalidMultiRowInsertIsAtomicAndDoesNotWriteWalRecord` (+ constraint multi-row refusals) |
+| `CREATE TABLE` | Yes | Table removed | Logical SQL replayed | `CreateTableRollbackRemovesTable`, `CreateTableCommitFlushesWalAndRecovers` |
+| `DROP TABLE` | Yes | Table + rows + indexes restored | Logical SQL replayed | `DropTableRollbackRestoresTableAndRows`, `DropTableCommitFlushesWalAndRecovers` |
+| `RENAME TABLE` | Yes | Prior name restored; undo/pending WAL remounted | Logical SQL replayed | `RenameTableRollbackRestoresNameAndPendingDml`, `RenameTableCommitFlushesWalAndRecovers` |
+| `CREATE INDEX` / `DROP INDEX` | Yes | Index removed / restored | Logical SQL replayed | `CreateIndexRollbackRemovesIndex`, `DropIndexRollbackRestoresIndex`, matching `*CommitFlushesWalAndRecovers` |
+| `CREATE DATABASE` | Yes (swaps instance) | Prior database restored | Autocommit path also durable | `CreateDatabaseRollbackRestoresPriorDatabase` |
+| `DROP DATABASE` | **Rejected** | n/a | Autocommit only; WAL + snapshot delete | `DropDatabaseClearsActiveAndDeletesSnapshot` (in-txn reject), `DropDatabaseWalRecoversWithoutActiveDatabase` |
+| Mixed catalog + DML in one txn | Yes | Both undone | Both durable after commit | `CreateIndexWithInsertRollbackRestoresBoth`, `CatalogAndDmlMixedCommitFlushesWalAndRecovers` |
+| `SAVE DATABASE` | Implicit `COMMIT` then checkpoint | n/a (txn already closed) | Snapshot + WAL checkpoint | `SaveDatabaseInTransactionCommitsThenCheckpoints` |
+| `LOAD DATABASE` | Implicit `ROLLBACK` then load | Uncommitted work discarded | Loads snapshot (not nested txn) | `LoadDatabaseInTransactionRollsBackThenLoads` |
+
+Crash cut points for DML `COMMIT`: after WAL sync / before in-memory commit mark → durable; before WAL sync → not durable (`RecoverSurvivesCrashAfterWalSyncBeforeCommitMark`, `CrashBeforeWalSyncDoesNotDurableCommit`).
 
 ### Suggested order of attack
 
-1. Phase **4** atomicity FAQ / failure-matrix docs when packaging catalog+DML edge cases.
-2. Optional planner preference for composite indexes on multi-equality `AND`.
-3. Multi-column `FOREIGN KEY` only if teaching composite referential integrity is the focus.
+1. Optional planner preference for composite indexes on multi-equality `AND`.
+2. Multi-column `FOREIGN KEY` only if teaching composite referential integrity is the focus.
 
 ### Explicit non-goals (for now)
 
