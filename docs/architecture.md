@@ -99,7 +99,7 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   `btree_index_{lookup,mutate,snapshot}.cpp`.
 - `persistence`: `StorageManager` orchestrates snapshot paths with durable publish (shared
   `durable_sync` file/directory helpers also used by `WriteAheadLog`); the slim `tcrdb_codec`
-  orchestrates `.tcrdb` v1–v8 encode/decode across focused value, table, and index codec translation
+  orchestrates `.tcrdb` v1–v9 encode/decode across focused value, table, and index codec translation
   units. WAL recovery uses page-image redo plus legacy physical/logical records.
   `WriteAheadLog::append` and `reset` flush+fsync for durable COMMIT / autocommit; `SAVE` fsyncs the
   temp snapshot before rename and syncs the storage directory on POSIX.

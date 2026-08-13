@@ -20,13 +20,14 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree indexes with incremental leaf/internal split/merge
 - Versioned binary persistence (page-payload + index-pages + constraint flags + CHECK + FOREIGN KEY
-  v7 `.tcrdb` snapshots; CHECK v6, constraint flags v5, index-pages v4, page-payload v3, sparse v2,
-  and dense v1 still loadable), page-image WAL redo for
+  v9 `.tcrdb` snapshots; composite UNIQUE/PK v8, FK v7, CHECK v6, constraint flags v5, index-pages
+  v4, page-payload v3, sparse v2, and dense v1 still loadable), page-image WAL redo for
   DML with flush+fsync on append (durable `COMMIT` / autocommit), save checkpoints, and startup
   recovery
 - Single- and multi-column `PRIMARY KEY` / `UNIQUE` constraints with auto-maintained (composite)
   indexes and duplicate `INSERT`/`UPDATE` rejection; simple `CHECK` constraints (column comparisons with
-  `AND`/`OR`); single-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION` / `CASCADE` / `SET NULL`)
+  `AND`/`OR`); single- and multi-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION` / `CASCADE` /
+  `SET NULL`)
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
   rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`, then
   durable-synced)
@@ -66,8 +67,8 @@ ROLLBACK;
 ```
 
 Also supported: nullable columns and explicit `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`,
-simple `CHECK` (column comparisons with `AND`/`OR`), single-column `FOREIGN KEY` (`NO ACTION` /
-`CASCADE` / `SET NULL`),
+simple `CHECK` (column comparisons with `AND`/`OR`), single- and multi-column `FOREIGN KEY`
+(`NO ACTION` / `CASCADE` / `SET NULL`),
 compound predicates
 (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
@@ -116,7 +117,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 362 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 368 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -169,15 +170,15 @@ Or feed an example script:
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
-- Single- and multi-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL`, simple `CHECK`, and single-column
-  `FOREIGN KEY` (`NO ACTION` / `CASCADE` / `SET NULL`) are enforced; multi-column FK is not yet
-  implemented (see [ACID Plan](docs/design.md#acid-plan))
+- Single- and multi-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL`, simple `CHECK`, and single- and
+  multi-column `FOREIGN KEY` (`NO ACTION` / `CASCADE` / `SET NULL`; MATCH SIMPLE; exact parent
+  UNIQUE/PK) are enforced (see [ACID Plan](docs/design.md#acid-plan))
 
 ## Roadmap
 
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps and
 [ACID Plan](docs/design.md#acid-plan)). Shipped milestones
-include snapshot v8 composite UNIQUE/PK + v7 FOREIGN KEY + v6 CHECK + v5 constraint flags + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
+include snapshot v9 multi-column FK + v8 composite UNIQUE/PK + v7 FOREIGN KEY + v6 CHECK + v5 constraint flags + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
 `WITH` nesting depth up to 6 and correlation through eight outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
@@ -199,7 +200,7 @@ single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guara
 crash-injection durability cut points, composite indexes and multi-column `PRIMARY KEY` / `UNIQUE`
 (snapshot v8), FK `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL`, Phase 4 atomicity packaging
 (catalog+DML failure matrix + SAVE/LOAD ACID FAQ), planner composite-index `HashEq` for
-multi-equality `AND`, and a dated
+multi-equality `AND`, multi-column `FOREIGN KEY` (snapshot v9), and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

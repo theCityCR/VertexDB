@@ -1,10 +1,12 @@
 #pragma once
 
-// Single-column FOREIGN KEY metadata (NO ACTION / CASCADE / SET NULL).
+// FOREIGN KEY metadata (single- or multi-column; NO ACTION / CASCADE / SET NULL).
 
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace VertexDB {
 
@@ -15,11 +17,22 @@ enum class ForeignKeyAction : std::uint8_t {
 };
 
 struct ForeignKeyConstraint {
-    std::string childColumn;
+    std::vector<std::string> childColumns;
     std::string parentTable;
-    std::string parentColumn;
+    std::vector<std::string> parentColumns;
     ForeignKeyAction onDelete{ForeignKeyAction::NoAction};
     ForeignKeyAction onUpdate{ForeignKeyAction::NoAction};
+
+    ForeignKeyConstraint() = default;
+
+    // Single-column convenience (column REFERENCES / tests).
+    ForeignKeyConstraint(std::string childColumn, std::string parentTableName,
+                         std::string parentColumn,
+                         ForeignKeyAction onDeleteAction = ForeignKeyAction::NoAction,
+                         ForeignKeyAction onUpdateAction = ForeignKeyAction::NoAction)
+        : childColumns{std::move(childColumn)}, parentTable{std::move(parentTableName)},
+          parentColumns{std::move(parentColumn)}, onDelete{onDeleteAction},
+          onUpdate{onUpdateAction} {}
 };
 
 [[nodiscard]] inline std::string_view foreignKeyActionName(ForeignKeyAction action) {
@@ -32,6 +45,17 @@ struct ForeignKeyConstraint {
         return "SET NULL";
     }
     return "NO ACTION";
+}
+
+[[nodiscard]] inline std::string foreignKeyColumnsLabel(const std::vector<std::string> &columns) {
+    std::string label;
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (i > 0) {
+            label += ", ";
+        }
+        label += columns[i];
+    }
+    return label;
 }
 
 } // namespace VertexDB

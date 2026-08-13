@@ -470,10 +470,12 @@ TEST(ConstraintBehaviorTests, ParsesColumnAndTableForeignKeys) {
     ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
     const auto &table = std::get<CreateTable>(query);
     ASSERT_EQ(table.foreignKeys.size(), 2U);
-    EXPECT_EQ(table.foreignKeys[0].childColumn, "customer_id");
+    EXPECT_EQ(table.foreignKeys[0].childColumns.size(), 1U);
+    EXPECT_EQ(table.foreignKeys[0].childColumns[0], "customer_id");
     EXPECT_EQ(table.foreignKeys[0].parentTable, "Customers");
-    EXPECT_EQ(table.foreignKeys[0].parentColumn, "id");
-    EXPECT_EQ(table.foreignKeys[1].childColumn, "customer_id");
+    EXPECT_EQ(table.foreignKeys[0].parentColumns.size(), 1U);
+    EXPECT_EQ(table.foreignKeys[0].parentColumns[0], "id");
+    EXPECT_EQ(table.foreignKeys[1].childColumns[0], "customer_id");
 }
 
 TEST(ConstraintBehaviorTests, CreateForeignKeyRejectsMissingOrNonUniqueParent) {
@@ -1060,6 +1062,161 @@ TEST(ConstraintBehaviorTests, ForeignKeyCascadeDeleteSurvivesSaveLoad) {
     ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE;")).success);
     ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")).success);
     const auto rows = executor.execute(parser.parse("SELECT id FROM Orders;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
+}
+
+TEST(ConstraintBehaviorTests, ParsesCompositeForeignKey) {
+    Parser parser;
+    const auto query = parser.parse(
+        "CREATE TABLE LineItems (order_id INT NULL, item_id INT NULL, qty INT, "
+        "FOREIGN KEY (order_id, item_id) REFERENCES Catalog(order_id, item_id) "
+        "ON DELETE CASCADE ON UPDATE SET NULL);");
+    ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
+    const auto &table = std::get<CreateTable>(query);
+    ASSERT_EQ(table.foreignKeys.size(), 1U);
+    ASSERT_EQ(table.foreignKeys[0].childColumns.size(), 2U);
+    EXPECT_EQ(table.foreignKeys[0].childColumns[0], "order_id");
+    EXPECT_EQ(table.foreignKeys[0].childColumns[1], "item_id");
+    ASSERT_EQ(table.foreignKeys[0].parentColumns.size(), 2U);
+    EXPECT_EQ(table.foreignKeys[0].parentColumns[0], "order_id");
+    EXPECT_EQ(table.foreignKeys[0].parentColumns[1], "item_id");
+    EXPECT_EQ(table.foreignKeys[0].onDelete, ForeignKeyAction::Cascade);
+    EXPECT_EQ(table.foreignKeys[0].onUpdate, ForeignKeyAction::SetNull);
+    const auto sql = foreignKeyLiteral(table.foreignKeys[0]);
+    EXPECT_NE(sql.find("FOREIGN KEY (order_id, item_id) REFERENCES Catalog(order_id, item_id)"),
+              std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, CreateCompositeForeignKeyRejectsCountMismatchAndNonExactUnique) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-composite-reject");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Catalog (a INT, b INT, c INT, PRIMARY KEY (a, b, c));"))
+                    .success);
+    EXPECT_THROW(
+        (void)parser.parse(
+            "CREATE TABLE Child (a INT, b INT, FOREIGN KEY (a, b) REFERENCES Catalog(a));"),
+        std::runtime_error);
+
+    auto subset = executor.execute(parser.parse(
+        "CREATE TABLE Child2 (a INT, b INT, FOREIGN KEY (a, b) REFERENCES Catalog(a, b));"));
+    EXPECT_FALSE(subset.success);
+    EXPECT_NE(subset.message.find("PRIMARY KEY or UNIQUE"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, CompositeForeignKeyEnforcesInsertAndMatchSimpleNulls) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-composite-insert");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Catalog (a INT, b INT, PRIMARY KEY (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Child (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "FOREIGN KEY (a, b) REFERENCES Catalog(a, b));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Catalog VALUES (1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Child VALUES (10, 1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Child VALUES (11, 1, NULL);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Child VALUES (12, NULL, 2);")).success);
+    try {
+        (void)executor.execute(parser.parse("INSERT INTO Child VALUES (13, 9, 9);"));
+        FAIL() << "expected FOREIGN KEY rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("FOREIGN KEY constraint violation on column a, b"),
+                  std::string::npos);
+    }
+}
+
+TEST(ConstraintBehaviorTests, CompositeForeignKeyOnDeleteCascadeAndSetNull) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-composite-actions");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Catalog (a INT, b INT, PRIMARY KEY (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Cascaded (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "FOREIGN KEY (a, b) REFERENCES Catalog(a, b) ON DELETE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Nullable (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "FOREIGN KEY (a, b) REFERENCES Catalog(a, b) ON DELETE SET NULL);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Catalog VALUES (1, 2), (3, 4);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Cascaded VALUES (10, 1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Nullable VALUES (20, 3, 4);")).success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Catalog WHERE a = 1;")).success);
+    auto cascaded = executor.execute(parser.parse("SELECT id FROM Cascaded;"));
+    ASSERT_TRUE(cascaded.success);
+    EXPECT_TRUE(cascaded.rows.empty());
+
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Catalog WHERE a = 3;")).success);
+    auto nullable = executor.execute(parser.parse("SELECT a, b FROM Nullable WHERE id = 20;"));
+    ASSERT_TRUE(nullable.success);
+    ASSERT_EQ(nullable.rows.size(), 1U);
+    EXPECT_TRUE(nullable.rows[0][0].isNull());
+    EXPECT_TRUE(nullable.rows[0][1].isNull());
+}
+
+TEST(ConstraintBehaviorTests, CompositeForeignKeyOnUpdateCascadePropagatesMappedColumn) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-composite-update");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Catalog (a INT, b INT, PRIMARY KEY (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Child (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "FOREIGN KEY (a, b) REFERENCES Catalog(a, b) ON UPDATE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Catalog VALUES (1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Child VALUES (10, 1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("UPDATE Catalog SET a = 9 WHERE a = 1;")).success);
+    auto rows = executor.execute(parser.parse("SELECT a, b FROM Child WHERE id = 10;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{9});
+    EXPECT_EQ(rows.rows[0][1], Value{2});
+}
+
+TEST(ConstraintBehaviorTests, SaveLoadPreservesCompositeForeignKeys) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-composite-save");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Catalog (a INT, b INT, PRIMARY KEY (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Child (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "FOREIGN KEY (a, b) REFERENCES Catalog(a, b) ON DELETE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Catalog VALUES (1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Child VALUES (10, 1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE;")).success);
+
+    auto table = executor.currentDatabase()->table("Child");
+    ASSERT_TRUE(table);
+    ASSERT_EQ(table->foreignKeys().size(), 1U);
+    ASSERT_EQ(table->foreignKeys()[0].childColumns.size(), 2U);
+    EXPECT_EQ(table->foreignKeys()[0].onDelete, ForeignKeyAction::Cascade);
+
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Catalog WHERE a = 1;")).success);
+    auto rows = executor.execute(parser.parse("SELECT id FROM Child;"));
     ASSERT_TRUE(rows.success);
     EXPECT_TRUE(rows.rows.empty());
 }

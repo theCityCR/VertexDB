@@ -42,6 +42,8 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::span<const Predicate> checkConstraints() const noexcept;
     [[nodiscard]] std::span<const ForeignKeyConstraint> foreignKeys() const noexcept;
     [[nodiscard]] std::span<const UniqueConstraint> uniqueConstraints() const noexcept;
+    // Column-level UNIQUE/PK flags merged with table-level constraints (ordered column lists).
+    [[nodiscard]] std::vector<UniqueConstraint> allUniqueConstraints() const;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     void validateRow(const Row &row) const;
     // Reject duplicate values on UNIQUE / PRIMARY KEY (NULLs skipped for UNIQUE).
@@ -166,7 +168,6 @@ class Table : public RelationStats, public IndexCatalogView {
     void enforceUniqueConstraintsUnlocked(const Row &row,
                                           std::optional<RowId> excludeRowId) const;
     void enforceCheckConstraints(const Row &row) const;
-    [[nodiscard]] std::vector<UniqueConstraint> allUniqueConstraints() const;
     [[nodiscard]] static std::string constraintIndexName(const UniqueConstraint &constraint);
     [[nodiscard]] static std::string formatUniqueColumns(const UniqueConstraint &constraint);
     [[nodiscard]] Value uniqueKeyForRow(const UniqueConstraint &constraint, const Row &row) const;

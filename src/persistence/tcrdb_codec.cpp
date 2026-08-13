@@ -64,9 +64,15 @@ void writeTcrdbSnapshot(std::ostream &out, const Database &database) {
 
         writePodDb(out, static_cast<std::uint64_t>(table->foreignKeys().size()));
         for (const auto &fk : table->foreignKeys()) {
-            writeString(out, fk.childColumn);
+            writePodDb(out, static_cast<std::uint64_t>(fk.childColumns.size()));
+            for (const auto &column : fk.childColumns) {
+                writeString(out, column);
+            }
             writeString(out, fk.parentTable);
-            writeString(out, fk.parentColumn);
+            writePodDb(out, static_cast<std::uint64_t>(fk.parentColumns.size()));
+            for (const auto &column : fk.parentColumns) {
+                writeString(out, column);
+            }
             writePodDb(out, static_cast<std::uint8_t>(fk.onDelete));
             writePodDb(out, static_cast<std::uint8_t>(fk.onUpdate));
         }
@@ -102,9 +108,9 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         throw std::runtime_error("invalid database file magic");
     }
     const auto version = readPodDb<std::uint32_t>(in);
-    if (version != kVersion && version != kVersionV7 && version != kVersionV6 &&
-        version != kVersionV5 && version != kVersionV4 && version != kVersionV3 &&
-        version != kVersionV2 && version != kVersionV1) {
+    if (version != kVersion && version != kVersionV8 && version != kVersionV7 &&
+        version != kVersionV6 && version != kVersionV5 && version != kVersionV4 &&
+        version != kVersionV3 && version != kVersionV2 && version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
@@ -145,9 +151,23 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
             foreignKeys.reserve(static_cast<std::size_t>(fkCount));
             for (std::uint64_t fkIndex = 0; fkIndex < fkCount; ++fkIndex) {
                 ForeignKeyConstraint fk;
-                fk.childColumn = readString(in);
-                fk.parentTable = readString(in);
-                fk.parentColumn = readString(in);
+                if (version >= kVersion) {
+                    const auto childCount = readPodDb<std::uint64_t>(in);
+                    fk.childColumns.reserve(static_cast<std::size_t>(childCount));
+                    for (std::uint64_t i = 0; i < childCount; ++i) {
+                        fk.childColumns.push_back(readString(in));
+                    }
+                    fk.parentTable = readString(in);
+                    const auto parentCount = readPodDb<std::uint64_t>(in);
+                    fk.parentColumns.reserve(static_cast<std::size_t>(parentCount));
+                    for (std::uint64_t i = 0; i < parentCount; ++i) {
+                        fk.parentColumns.push_back(readString(in));
+                    }
+                } else {
+                    fk.childColumns = {readString(in)};
+                    fk.parentTable = readString(in);
+                    fk.parentColumns = {readString(in)};
+                }
                 fk.onDelete = static_cast<ForeignKeyAction>(readPodDb<std::uint8_t>(in));
                 fk.onUpdate = static_cast<ForeignKeyAction>(readPodDb<std::uint8_t>(in));
                 foreignKeys.push_back(std::move(fk));
@@ -155,7 +175,7 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         }
 
         std::vector<UniqueConstraint> uniqueConstraints;
-        if (version >= kVersion) {
+        if (version >= kVersionV8) {
             const auto uniqueCount = readPodDb<std::uint64_t>(in);
             uniqueConstraints.reserve(static_cast<std::size_t>(uniqueCount));
             for (std::uint64_t uniqueIndex = 0; uniqueIndex < uniqueCount; ++uniqueIndex) {
