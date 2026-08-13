@@ -35,6 +35,8 @@ class IndexManager {
     [[nodiscard]] std::optional<std::size_t>
     indexDistinctCount(std::string_view column, std::span<const Column> schema) const;
     [[nodiscard]] std::optional<std::size_t>
+    indexDistinctCount(std::span<const std::string> columns, std::span<const Column> schema) const;
+    [[nodiscard]] std::optional<std::size_t>
     indexDistinctCount(const IndexExpression &expression) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
     indexedLookup(std::string_view column, const Value &value,

@@ -12,6 +12,11 @@ std::optional<std::size_t> Table::indexDistinctCount(std::string_view column) co
     return indexManager_.indexDistinctCount(column, schema_);
 }
 
+std::optional<std::size_t> Table::indexDistinctCount(std::span<const std::string> columns) const {
+    std::shared_lock lock{mutex_};
+    return indexManager_.indexDistinctCount(columns, schema_);
+}
+
 std::optional<std::size_t> Table::indexDistinctCount(const IndexExpression &expression) const {
     std::shared_lock lock{mutex_};
     return indexManager_.indexDistinctCount(expression);
@@ -56,6 +61,17 @@ bool Table::hasIndex(std::string_view column) const {
 bool Table::hasIndex(std::span<const std::string> columns) const {
     std::shared_lock lock{mutex_};
     return indexManager_.hasIndex(columns, schema_);
+}
+
+std::vector<std::vector<std::string>> Table::compositeIndexColumnLists() const {
+    std::shared_lock lock{mutex_};
+    std::vector<std::vector<std::string>> out;
+    for (const auto &definition : indexManager_.indexDefinitions(schema_)) {
+        if (!definition.expression && definition.columns.size() >= 2) {
+            out.push_back(definition.columns);
+        }
+    }
+    return out;
 }
 
 bool Table::hasExpressionIndex(const IndexExpression &expression) const {

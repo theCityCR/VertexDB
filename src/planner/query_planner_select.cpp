@@ -51,6 +51,10 @@ QueryPlan QueryPlanner::planSelect(const Select &query, const RelationStats &sta
     const auto choice = chooseBestConjunctPath(conjuncts, stats, indexes, plan.estimates.estimatedCost,
                                                plan.estimates.estimatedRows);
 
+    if (tryPlanCompositeHashEq(conjuncts, stats, indexes, choice.bestCost, plan)) {
+        return plan;
+    }
+
     if (tryPlanAndIntersect(conjuncts, stats, indexes, choice.bestCost, plan)) {
         return plan;
     }

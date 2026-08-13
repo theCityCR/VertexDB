@@ -61,6 +61,21 @@ IndexManager::indexDistinctCount(std::string_view column,
 }
 
 std::optional<std::size_t>
+IndexManager::indexDistinctCount(std::span<const std::string> columns,
+                                 std::span<const Column> schema) const {
+    if (columns.size() == 1) {
+        return indexDistinctCount(columns.front(), schema);
+    }
+    for (const auto &[indexName, columnIndexes] : indexColumns_) {
+        if (!indexExpressions_.contains(indexName) &&
+            columnsMatch(columnIndexes, columns, schema)) {
+            return indexes_.at(indexName).size();
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::size_t>
 IndexManager::indexDistinctCount(const IndexExpression &expression) const {
     for (const auto &[indexName, stored] : indexExpressions_) {
         if (stored == expression) {

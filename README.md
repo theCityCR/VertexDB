@@ -116,7 +116,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 359 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 362 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -198,7 +198,8 @@ single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guara
 (`NO ACTION` / `CASCADE` / `SET NULL`), richer predicate SIREAD for OR of column leaves and column `LIKE`, COMMIT
 crash-injection durability cut points, composite indexes and multi-column `PRIMARY KEY` / `UNIQUE`
 (snapshot v8), FK `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL`, Phase 4 atomicity packaging
-(catalog+DML failure matrix + SAVE/LOAD ACID FAQ), and a dated
+(catalog+DML failure matrix + SAVE/LOAD ACID FAQ), planner composite-index `HashEq` for
+multi-equality `AND`, and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

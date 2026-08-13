@@ -96,6 +96,10 @@ struct HashEqPlan {
     std::string indexColumn;
     std::optional<IndexExpression> indexExpression;
     Value indexValue;
+    // When size >= 2, equality probe uses a composite index on these columns (in order);
+    // indexColumn is columns.front() and indexValue is Value::composite(parts).
+    // Empty means single-column / expression HashEq via indexColumn / indexExpression.
+    std::vector<std::string> indexColumns;
 };
 
 struct OrderedRangePlan {
