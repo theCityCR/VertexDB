@@ -40,8 +40,8 @@ Do not rebuild these:
    - `IntersectChosenWhenCheaperThanSingleIndexResidual`
    - `IntersectReturnsOnlyRowsMatchingAllProbes`
    - `IntersectIncludesExpressionEquality`
-   - `StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality` (intersect *not* chosen when
-     one probe is near-unique)
+   - `PlannerJoinStatsTests::StatsDrivenPlannerPrefersSelectiveEqualityOverLowCardinality`
+     (intersect *not* chosen when one probe is near-unique)
 5. Semantics documented in `docs/sql.md`, `docs/design.md`, and `docs/deep_features.md`.
 
 ## What to build

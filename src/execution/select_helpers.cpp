@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 namespace VertexDB {

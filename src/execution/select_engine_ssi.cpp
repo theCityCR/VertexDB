@@ -65,7 +65,7 @@ void recordSsiPredicateFromTree(TransactionManager &txns, TransactionId id,
                 for (const auto &value : node.inValues) {
                     txns.recordPredicateRead(
                         id, SsiPredicate{std::string{relation}, node.column,
-                                         ComparisonOperator::equal, value, std::nullopt});
+                                         ComparisonOperator::Equal, value, std::nullopt});
                 }
             } else if constexpr (std::is_same_v<T, LikePred>) {
                 txns.recordPredicateRead(
@@ -86,7 +86,7 @@ void recordSsiProbe(TransactionManager &txns, TransactionId id, std::string_view
         return;
     }
     txns.recordPredicateRead(
-        id, SsiPredicate{std::string{relation}, probe.column, ComparisonOperator::equal,
+        id, SsiPredicate{std::string{relation}, probe.column, ComparisonOperator::Equal,
                          probe.value});
 }
 
@@ -119,12 +119,12 @@ void recordSsiScanPredicates(TransactionManager &txns, TransactionId id, const T
                     for (std::size_t i = 0; i < n; ++i) {
                         txns.recordPredicateRead(
                             id, SsiPredicate{std::string{relation}, path.indexColumns[i],
-                                             ComparisonOperator::equal, parts[i]});
+                                             ComparisonOperator::Equal, parts[i]});
                     }
                 } else {
                     txns.recordPredicateRead(
                         id, SsiPredicate{std::string{relation}, path.indexColumn,
-                                         ComparisonOperator::equal, path.indexValue});
+                                         ComparisonOperator::Equal, path.indexValue});
                 }
             } else if constexpr (std::is_same_v<T, OrderedRangePlan>) {
                 if (path.indexExpression) {
@@ -141,7 +141,7 @@ void recordSsiScanPredicates(TransactionManager &txns, TransactionId id, const T
                     for (const auto &value : path.indexValues) {
                         txns.recordPredicateRead(
                             id, SsiPredicate{std::string{relation}, path.indexColumn,
-                                             ComparisonOperator::equal, value});
+                                             ComparisonOperator::Equal, value});
                     }
                 }
             } else if constexpr (std::is_same_v<T, IntersectPlan> || std::is_same_v<T, UnionPlan>) {
