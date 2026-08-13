@@ -40,8 +40,9 @@ class WriteAheadLog {
     explicit WriteAheadLog(std::filesystem::path path);
 
     // Appends a complete record, then flushes and fsyncs the WAL file (and the
-    // parent directory when the file is newly created). Returns only after the
-    // record is durable from the engine's perspective.
+    // parent directory when the file is newly created on POSIX). On Windows, only
+    // the file is FlushFileBuffers'd — directory sync is not portable there.
+    // Returns only after the record is durable from the engine's perspective.
     [[nodiscard]] std::uint64_t append(WalOperation operation, std::string payload);
     [[nodiscard]] std::vector<WalRecord> readAll() const;
     // Truncates the WAL and durable-syncs the empty file (SAVE checkpoint).

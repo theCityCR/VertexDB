@@ -130,8 +130,9 @@ Or feed an example script:
   most one open transaction; writers are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Every successful WAL append/`reset` flush+fsyncs (and syncs
-  the parent directory on create) so `COMMIT` / autocommit durability is not left in the OS page
-  cache. Trailing torn WAL records are ignored so recovery replays the durable prefix
+  the parent directory on create on POSIX; Windows uses `FlushFileBuffers` on the WAL file only)
+  so `COMMIT` / autocommit durability is not left in the OS page cache. Trailing torn WAL records
+  are ignored so recovery replays the durable prefix
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE`/`DROP INDEX`)
   and `DROP DATABASE` / `SAVE`/`LOAD` follow documented txn rules: most catalog DDL is allowed with
   undo + deferred WAL; `DROP DATABASE` is rejected while a transaction is active; `SAVE`/`LOAD`

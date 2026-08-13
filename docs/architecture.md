@@ -156,7 +156,8 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
   logical DML remain replayable. Trailing torn WAL records are skipped. Successful WAL
-  `append`/`reset` flush and `fsync` (plus parent-directory sync on create) so committed redo is
+  `append`/`reset` flush and `fsync` (plus parent-directory sync on create on POSIX; Windows uses
+  `FlushFileBuffers` on the WAL file only) so committed redo is
   durable before `COMMIT` returns.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
   DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,

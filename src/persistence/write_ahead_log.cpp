@@ -49,20 +49,10 @@ void syncFileContents(const std::filesystem::path &path) {
 }
 
 void syncDirectory(const std::filesystem::path &dir) {
-    if (dir.empty()) {
-        return;
-    }
-    const HANDLE handle =
-        CreateFileW(dir.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) {
-        throwSyncFailure(dir, "failed to open WAL directory for durable sync");
-    }
-    const BOOL ok = FlushFileBuffers(handle);
-    CloseHandle(handle);
-    if (!ok) {
-        throwSyncFailure(dir, "failed to durable-sync WAL directory");
-    }
+    // Windows has no reliable FlushFileBuffers for ordinary directories (returns false on
+    // GitHub Actions runners). File FlushFileBuffers above is the durable COMMIT contract
+    // on Win32; POSIX still fsyncs the parent dir when the WAL file is newly created.
+    (void)dir;
 }
 
 #else

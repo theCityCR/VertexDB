@@ -140,7 +140,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
 | **C** Consistency | Weak | Typed schema, nullability checks | No `PRIMARY KEY` / `UNIQUE` / `FOREIGN KEY` / `CHECK`; “consistent” mostly means “well-typed rows” |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD); executor `LockManager` | One open SQL txn per executor; OR/LIKE/subquery use relation-membership SIREAD fallbacks; no next-key / gap locks |
-| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; torn trailing record ignored; startup replay | Snapshot `.tcrdb` publish is rename-based without directory fsync; power-loss models are not exhaustive |
+| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; torn trailing record ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); snapshot `.tcrdb` publish is rename-based without directory fsync; power-loss models are not exhaustive |
 
 ### Principles
 

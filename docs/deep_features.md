@@ -29,7 +29,8 @@ executor DML writes `PageImageRedo` payloads. Inside an open transaction, those 
 in the executor and flushed on `COMMIT` as a single batch record (dropped on `ROLLBACK`) so a torn
 commit cannot partially apply the transaction. Each successful `WriteAheadLog::append` (and
 `reset`) flushes userspace buffers and `fsync`s the WAL file — on macOS via `F_FULLFSYNC` when
-available — and `fsync`s the parent directory when the file is newly created, so `COMMIT` and
+available — and `fsync`s the parent directory when the file is newly created (POSIX only;
+Windows relies on `FlushFileBuffers` of the WAL file), so `COMMIT` and
 autocommit WAL writes are durable before the API returns. Autocommit DML and DDL still append
 immediately. Startup recovery loads the latest saved snapshot, then replays WAL records after the
 last save checkpoint. `readAll` returns only complete records and ignores a truncated trailing write
