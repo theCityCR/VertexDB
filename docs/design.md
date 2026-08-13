@@ -9,9 +9,10 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 ## What Exists Today
 
 - Repository foundation: CMake targets, CLI, library target, GitHub Actions CI, and documentation
-- Storage engine: typed columns, nullable values, schema validation, table/database ownership,
-  page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index maintenance, MVCC version
-  recording, and stable row IDs with tombstones plus free-list reuse
+- Storage engine: typed columns, nullable values, single-column `PRIMARY KEY` / `UNIQUE`
+  constraints (auto hash/B+ indexes; duplicate `INSERT`/`UPDATE` rejected), schema validation,
+  table/database ownership, page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index
+  maintenance, MVCC version recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
   predicates (including `LIKE` and regex `~`), ordering, limits, left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` `[OUTER]` and `CROSS`
   joins with `ON col op col` (`=`, `<`, `>`; none for `CROSS`) and optional join-table aliases, aggregates/`GROUP BY`,
@@ -34,8 +35,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
   and range lookup (column and expression keys), hash index `IN` multi-lookup, ordered prefix
   `LIKE`, and hash trigram indexes for substring `LIKE`
-- Persistence: versioned binary snapshots (current page-payload + index-pages v4; page-payload v3,
-  sparse v2, and dense v1 still readable) under `.tcrdb` files, with `tcrdb_codec` owning the layout
+- Persistence: versioned binary snapshots (current page-payload + index-pages + column constraint
+  flags v5; index-pages v4, page-payload v3, sparse v2, and dense v1 still readable) under `.tcrdb`
+  files, with `tcrdb_codec` owning the layout
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
   still replayable), logical SQL for DDL, flush+fsync on every successful append/`reset` (durable
   `COMMIT` / autocommit), truncated-trailing-record tolerance, startup replay, save checkpoints,
@@ -61,8 +63,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   conflicts (predicate SIREAD summaries vs inserted or update-produced row images). There are no
   row/page locks or Postgres-style next-key locks; OR/LIKE/subquery scans use conservative
   relation-membership SIREADs. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
-- Integrity constraints beyond typed/nullable columns are not implemented yet; the path to stronger
-  ACID **C** (and optional I/D polish) is in [ACID Plan](#acid-plan).
+- Integrity constraints: single-column `PRIMARY KEY` / `UNIQUE` are enforced (PK ⇒ `NOT NULL` +
+  unique; UNIQUE allows multiple `NULL`s). `CHECK` / `FOREIGN KEY` / multi-column uniqueness are
+  not implemented yet; see [ACID Plan](#acid-plan).
 - `SAVE DATABASE` in an open transaction implicitly commits then checkpoints; `LOAD DATABASE`
   implicitly rolls back then loads.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
@@ -106,12 +109,13 @@ arms + complementary residual), multiple independent recursive CTEs, `INTERSECT 
 `EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` binding
 for the recursive arm, row-level SSI commit aborts for write skew / write–write conflicts,
 insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, raised
-`WITH`/correlation caps (6 / 8), `EXPLAIN INSERT`, and durable WAL `COMMIT` (flush+fsync on
-append/`reset`).
+`WITH`/correlation caps (6 / 8), `EXPLAIN INSERT`, durable WAL `COMMIT` (flush+fsync on
+append/`reset`), and single-column `PRIMARY KEY` / `UNIQUE` (snapshot v5 constraint flags).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- **ACID alignment** — see [ACID Plan](#acid-plan) below (constraints first; then optional deeper I/D)
+- **ACID alignment** — see [ACID Plan](#acid-plan) below (`NOT NULL` docs/tests, then `CHECK`,
+  durable `SAVE`, optional FK / I polish)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
@@ -138,7 +142,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | Property | Status | What exists | Main gap |
 | --- | --- | --- | --- |
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
-| **C** Consistency | Weak | Typed schema, nullability checks | No `PRIMARY KEY` / `UNIQUE` / `FOREIGN KEY` / `CHECK`; “consistent” mostly means “well-typed rows” |
+| **C** Consistency | Improving | Typed schema, nullability, single-column `PRIMARY KEY` / `UNIQUE` (auto indexes; DML reject) | No `CHECK` / `FOREIGN KEY` / multi-column uniqueness; “consistent” still not full SQL integrity |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD); executor `LockManager` | One open SQL txn per executor; OR/LIKE/subquery use relation-membership SIREAD fallbacks; no next-key / gap locks |
 | **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; torn trailing record ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); snapshot `.tcrdb` publish is rename-based without directory fsync; power-loss models are not exhaustive |
 
@@ -158,7 +162,7 @@ Ship integrity constraints so `C` is engine-enforced, not only application conve
 
 | Slice | Scope | Touch points | Done when |
 | --- | --- | --- | --- |
-| **1a. `PRIMARY KEY` / `UNIQUE`** | Column or simple column-list uniqueness; reject duplicate `INSERT`/`UPDATE`; optional unique hash/B+ index maintenance | Parser DDL, `Table` / `IndexManager`, DML engine, `.tcrdb` schema metadata, SQL docs | Desired tests: duplicate insert/update aborted; unique index used for equality; save/load preserves constraint |
+| **1a. `PRIMARY KEY` / `UNIQUE`** | Column uniqueness; reject duplicate `INSERT`/`UPDATE`; auto `__pk_`/`__uq_` hash/B+ indexes; snapshot v5 flags | Parser DDL, `Table` / `IndexManager`, DML engine, `.tcrdb` schema metadata, SQL docs | **Done** — duplicate insert/update aborted; unique index used for equality; save/load preserves constraint |
 | **1b. `NOT NULL` as first-class constraint story** | Already partially present via nullable columns — document and test as an ACID-`C` guarantee; align error messages | Docs + any missing DML rejection tests | Explicit tests named for null-rejection on non-nullable columns (insert/update) |
 | **1c. `CHECK` (simple)** | Boolean predicate on row image at insert/update (column comparisons / AND / OR; no subqueries v1) | Parser, DML validate path, snapshot metadata | Rejecting insert/update tests; `EXPLAIN` optional |
 | **1d. `FOREIGN KEY` (optional later)** | Same-database parent lookup on insert/update; restrict or reject delete of referenced parent | Catalog + DML; careful interaction with SI visibility | Only after 1a; document ON DELETE/UPDATE policy (start with `NO ACTION` / reject) |
@@ -195,11 +199,11 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 ### Suggested order of attack
 
-1. Phase **1a** (`PRIMARY KEY` / `UNIQUE`) — largest `C` gap, natural index tie-in.
-2. Phase **1b** docs/tests for `NOT NULL` as an explicit consistency guarantee.
-3. Phase **3a** durable snapshot publish — pairs well with the recent WAL fsync work.
-4. Phase **1c** simple `CHECK` if constraint teaching is still the focus.
-5. Phase **2a** / **3c** only when packaging a deeper concurrency or recovery story.
+1. Phase **1b** docs/tests for `NOT NULL` as an explicit consistency guarantee.
+2. Phase **3a** durable snapshot publish — pairs well with the recent WAL fsync work.
+3. Phase **1c** simple `CHECK` if constraint teaching is still the focus.
+4. Phase **2a** / **3c** only when packaging a deeper concurrency or recovery story.
+5. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
 
 ### Explicit non-goals (for now)
 

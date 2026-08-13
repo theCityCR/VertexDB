@@ -164,6 +164,7 @@ if(VERTEXDB_BUILD_TESTS)
         tests/transaction_behavior_tests.cpp
         tests/persistence_behavior_tests.cpp
         tests/aggregate_prepared_tests.cpp
+        tests/constraint_behavior_tests.cpp
         tests/regression_tests.cpp
     )
     target_link_libraries(VertexDB_tests PRIVATE VertexDB::VertexDB GTest::gtest_main)

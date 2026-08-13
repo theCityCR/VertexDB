@@ -19,9 +19,12 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   directory as source of truth with an LRU buffer-pool access cache), and stable row IDs via
   tombstones with free-list reuse (persisted across save/load)
 - Maintained hash indexes and ordered B+ tree indexes with incremental leaf/internal split/merge
-- Versioned binary persistence (page-payload + index-pages v4 `.tcrdb` snapshots; page-payload v3,
-  sparse v2, and dense v1 still loadable), page-image WAL redo for DML with flush+fsync on append
-  (durable `COMMIT` / autocommit), save checkpoints, and startup recovery
+- Versioned binary persistence (page-payload + index-pages + constraint flags v5 `.tcrdb` snapshots;
+  index-pages v4, page-payload v3, sparse v2, and dense v1 still loadable), page-image WAL redo for
+  DML with flush+fsync on append (durable `COMMIT` / autocommit), save checkpoints, and startup
+  recovery
+- Single-column `PRIMARY KEY` / `UNIQUE` constraints with auto-maintained indexes and duplicate
+  `INSERT`/`UPDATE` rejection
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
   rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`, then
   durable-synced)
@@ -45,6 +48,7 @@ likewise split by concern.
 CREATE DATABASE company;
 DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
+CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
 CREATE INDEX idx_salary ON Employees(salary);
 INSERT INTO Employees VALUES (1, "Alice", 120000.0), (2, "Bob", 90000.0);
 SELECT name FROM Employees WHERE salary > 100000.0 ORDER BY salary DESC LIMIT 10;
@@ -57,7 +61,8 @@ COMMIT;
 ROLLBACK;
 ```
 
-Also supported: nullable columns, compound predicates (`AND`/`OR`, `LIKE`, regex `~`), left-deep
+Also supported: nullable columns, single-column `PRIMARY KEY` / `UNIQUE`, compound predicates
+(`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
 depth up to 6; `WITH RECURSIVE` with `UNION` / `UNION ALL`, including multiple independent or mutually
@@ -104,11 +109,12 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 287 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 297 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
-  join-stats), transactions, persistence/WAL, aggregates/prepared statements, deep features, and
-  regressions (see [docs/testing.md](docs/testing.md) for file ownership)
+  join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
+  (`PRIMARY KEY` / `UNIQUE`), deep features, and regressions (see [docs/testing.md](docs/testing.md)
+  for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   85.19%)
 - Sanitizer script runs AddressSanitizer and UndefinedBehaviorSanitizer on supported platforms
@@ -154,12 +160,14 @@ Or feed an example script:
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
+- Single-column `PRIMARY KEY` / `UNIQUE` are enforced; `CHECK`, `FOREIGN KEY`, and multi-column
+  uniqueness are not yet implemented (see [ACID Plan](docs/design.md#acid-plan))
 
 ## Roadmap
 
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps and
 [ACID Plan](docs/design.md#acid-plan)). Shipped milestones
-include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
+include snapshot v5 constraint flags + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
 `WITH` nesting depth up to 6 and correlation through eight outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
@@ -174,9 +182,9 @@ Intersect∪Union for fully indexable nested
 CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` /
 `EXCEPT ALL`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
 complementary residual), multiple independent recursive CTEs, mutual recursion among
-`WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync), and a
-dated absolute-time benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report`
-artifact).
+`WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync),
+single-column `PRIMARY KEY` / `UNIQUE`, and a dated absolute-time benchmark summary (last refreshed
+2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 [materialize vs inline comparison](docs/cte_materialize_comparison.md),

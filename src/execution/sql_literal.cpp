@@ -111,9 +111,15 @@ std::string createTableSql(const CreateTable &command) {
         if (i != 0) {
             sql << ", ";
         }
-        sql << command.columns[i].name << " " << toString(command.columns[i].type);
-        if (command.columns[i].nullable) {
+        const auto &column = command.columns[i];
+        sql << column.name << " " << toString(column.type);
+        if (column.nullable) {
             sql << " NULL";
+        }
+        if (column.primaryKey) {
+            sql << " PRIMARY KEY";
+        } else if (column.unique) {
+            sql << " UNIQUE";
         }
     }
     sql << ");";

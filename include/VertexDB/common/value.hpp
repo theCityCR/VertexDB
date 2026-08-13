@@ -57,6 +57,9 @@ struct Column {
     std::string name;
     ColumnType type;
     bool nullable{false};
+    // ACID Consistency: column uniqueness. PRIMARY KEY also sets unique and clears nullable.
+    bool unique{false};
+    bool primaryKey{false};
 };
 
 std::ostream &operator<<(std::ostream &os, const Value &value);

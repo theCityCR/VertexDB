@@ -18,6 +18,8 @@ TEST(ParserTests, ParsesCreateTable) {
     EXPECT_EQ(command.columns[0].type, ColumnType::Int);
     EXPECT_EQ(command.columns[1].type, ColumnType::String);
     EXPECT_EQ(command.columns[2].type, ColumnType::Double);
+    EXPECT_FALSE(command.columns[0].unique);
+    EXPECT_FALSE(command.columns[0].primaryKey);
 }
 
 TEST(ParserTests, ParsesSelectWithPredicateAndLimit) {
