@@ -207,12 +207,14 @@ Column constraints on `CREATE TABLE`:
 - `REFERENCES Parent(col)` or `FOREIGN KEY (col) REFERENCES Parent(col)` — single-column foreign
   keys. Parent column must be `PRIMARY KEY` or `UNIQUE` and already exist (self-FK allowed on the
   table being created). Composite parent keys are not yet referenceable as a multi-column FK.
-  Optional `ON DELETE NO ACTION` / `ON UPDATE NO ACTION` (the only supported
-  actions). NULL child keys are accepted (MATCH SIMPLE). Parent existence uses the writer's
-  SI-visible snapshot. Deleting or updating a referenced parent key is rejected while visible
-  children still reference it. `DROP TABLE` / `RENAME TABLE` of a referenced parent is rejected.
-  Errors: `FOREIGN KEY constraint violation on column …` /
-  `FOREIGN KEY constraint violation: key is still referenced`.
+  Optional `ON DELETE` / `ON UPDATE` actions: `NO ACTION` (default; reject parent delete/key update
+  while children reference it), `CASCADE` (delete children / update child FK to the new parent key),
+  or `SET NULL` (null the child FK; child column must be `NULL`-able). Depth of cascaded deletes is
+  capped (`kMaxReferentialActionDepth`). NULL child keys are accepted (MATCH SIMPLE). Parent
+  existence uses the writer's SI-visible snapshot. `DROP TABLE` / `RENAME TABLE` of a referenced
+  parent is rejected (schema-level; not row CASCADE). Errors: `FOREIGN KEY constraint violation on
+  column …` / `FOREIGN KEY constraint violation: key is still referenced` /
+  `FOREIGN KEY SET NULL requires nullable child column: …`.
 - VertexDB auto-creates a maintained index (`__pk_<cols>` / `__uq_<cols>`) when no matching
   column/composite index already exists, so equality probes on those keys use `HashEq` without a
   manual `CREATE INDEX`.

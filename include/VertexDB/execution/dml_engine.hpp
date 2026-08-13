@@ -7,12 +7,15 @@
 #include "VertexDB/execution/query_result.hpp"
 #include "VertexDB/execution/recovery_service.hpp"
 #include "VertexDB/parser/ast.hpp"
+#include "VertexDB/storage/row.hpp"
+#include "VertexDB/storage/table.hpp"
 
+#include <cstddef>
 #include <string>
+#include <unordered_set>
+#include <utility>
 
 namespace VertexDB {
-
-class Table;
 
 class DmlEngine {
   public:
@@ -24,6 +27,10 @@ class DmlEngine {
 
   private:
     void appendPageImageRedo(Table &table, std::string tableName);
+    void eraseRowWithReferentialActions(Table &table, std::string tableName, RowId rowId, Row row,
+                                        std::size_t depth,
+                                        std::unordered_set<std::string> &visiting,
+                                        std::unordered_set<std::string> &deleted);
 
     ExecutionContext &ctx_;
     RecoveryService &recovery_;

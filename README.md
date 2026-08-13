@@ -26,7 +26,7 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   recovery
 - Single- and multi-column `PRIMARY KEY` / `UNIQUE` constraints with auto-maintained (composite)
   indexes and duplicate `INSERT`/`UPDATE` rejection; simple `CHECK` constraints (column comparisons with
-  `AND`/`OR`); single-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION`)
+  `AND`/`OR`); single-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION` / `CASCADE` / `SET NULL`)
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
   rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`, then
   durable-synced)
@@ -66,7 +66,8 @@ ROLLBACK;
 ```
 
 Also supported: nullable columns and explicit `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`,
-simple `CHECK` (column comparisons with `AND`/`OR`), single-column `FOREIGN KEY` (`NO ACTION`),
+simple `CHECK` (column comparisons with `AND`/`OR`), single-column `FOREIGN KEY` (`NO ACTION` /
+`CASCADE` / `SET NULL`),
 compound predicates
 (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
@@ -169,8 +170,8 @@ Or feed an example script:
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
 - Single- and multi-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL`, simple `CHECK`, and single-column
-  `FOREIGN KEY` (`NO ACTION`) are enforced; FK CASCADE/SET NULL are not yet implemented (see
-  [ACID Plan](docs/design.md#acid-plan))
+  `FOREIGN KEY` (`NO ACTION` / `CASCADE` / `SET NULL`) are enforced; multi-column FK is not yet
+  implemented (see [ACID Plan](docs/design.md#acid-plan))
 
 ## Roadmap
 
@@ -194,9 +195,9 @@ complementary residual), multiple independent recursive CTEs, mutual recursion a
 `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync),
 single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guarantees, durable
 `SAVE DATABASE` snapshot publish, simple `CHECK` constraints, single-column `FOREIGN KEY`
-(`NO ACTION`), richer predicate SIREAD for OR of column leaves and column `LIKE`, COMMIT
+(`NO ACTION` / `CASCADE` / `SET NULL`), richer predicate SIREAD for OR of column leaves and column `LIKE`, COMMIT
 crash-injection durability cut points, composite indexes and multi-column `PRIMARY KEY` / `UNIQUE`
-(snapshot v8), and a dated
+(snapshot v8), FK `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL`, and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

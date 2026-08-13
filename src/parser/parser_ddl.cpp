@@ -304,12 +304,22 @@ void Parser::parseForeignKeyActions(ForeignKeyConstraint &fk) {
         if (!isDelete) {
             expect(TokenType::Identifier, "UPDATE");
         }
-        expect(TokenType::Identifier, "NO");
-        expect(TokenType::Identifier, "ACTION");
-        if (isDelete) {
-            fk.onDelete = ForeignKeyAction::NoAction;
+        ForeignKeyAction action = ForeignKeyAction::NoAction;
+        if (match(TokenType::Identifier, "NO")) {
+            expect(TokenType::Identifier, "ACTION");
+            action = ForeignKeyAction::NoAction;
+        } else if (match(TokenType::Identifier, "CASCADE")) {
+            action = ForeignKeyAction::Cascade;
+        } else if (match(TokenType::Identifier, "SET")) {
+            expect(TokenType::Identifier, "NULL");
+            action = ForeignKeyAction::SetNull;
         } else {
-            fk.onUpdate = ForeignKeyAction::NoAction;
+            throw std::runtime_error("expected NO ACTION, CASCADE, or SET NULL");
+        }
+        if (isDelete) {
+            fk.onDelete = action;
+        } else {
+            fk.onUpdate = action;
         }
     }
 }

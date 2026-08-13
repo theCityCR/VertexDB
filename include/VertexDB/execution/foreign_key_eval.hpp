@@ -10,14 +10,27 @@
 #include "VertexDB/storage/table.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
 
+#include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace VertexDB {
 
 class TransactionManager;
+
+inline constexpr std::size_t kMaxReferentialActionDepth = 64;
+
+struct ForeignKeyChildHit {
+    std::shared_ptr<Table> table;
+    std::string tableName;
+    ForeignKeyConstraint fk;
+    RowId rowId{};
+    Row row;
+};
 
 // Validate FK definitions against the catalog. When `creatingSchema` is set and
 // `childTableName` matches an FK parent table name, validate against that schema (self-FK).
@@ -30,11 +43,16 @@ void validateForeignKeyDefinitions(const Database &database, std::string_view ch
 void assertForeignKeysOnChildRow(Database &database, const Table &child, const Row &row,
                                  const ReadSnapshot &snapshot, TransactionManager &transactions);
 
-// Reject DELETE (or UPDATE of a referenced parent key) when SI-visible children still reference it.
-void assertParentKeyNotReferenced(Database &database, const Table &parent, const Row &parentRow,
-                                  const ReadSnapshot &snapshot, TransactionManager &transactions,
-                                  std::optional<std::size_t> updatingColumn = std::nullopt,
-                                  const Value *newValue = nullptr);
+// Collect SI-visible child rows that reference the parent key (for DELETE or parent-key UPDATE).
+[[nodiscard]] std::vector<ForeignKeyChildHit>
+collectReferencingChildren(Database &database, const Table &parent, const Row &parentRow,
+                           const ReadSnapshot &snapshot, TransactionManager &transactions,
+                           std::optional<std::size_t> updatingColumn = std::nullopt,
+                           const Value *newValue = nullptr);
+
+// Reject when any NO ACTION child still references the parent key.
+void assertNoActionParentKeyNotReferenced(std::span<const ForeignKeyChildHit> refs,
+                                          bool forUpdate);
 
 [[nodiscard]] bool tableIsForeignKeyParent(const Database &database, std::string_view tableName);
 
