@@ -124,7 +124,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 407 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 414 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints

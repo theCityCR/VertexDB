@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/execution/foreign_key_eval.hpp"
 #include "VertexDB/execution/query_executor.hpp"
 #include "VertexDB/execution/sql_literal.hpp"
@@ -1575,6 +1576,168 @@ TEST(ConstraintBehaviorTests, DropColumnCascadeRollbackRestoresDependents) {
     ASSERT_TRUE(rows.success);
     ASSERT_EQ(rows.rows.size(), 1U);
     EXPECT_EQ(rows.rows[0][0], Value{10.0});
+}
+
+// Desired: CASCADE+ROLLBACK restores user indexes, expression indexes, child FKs, and composite UNIQUE.
+TEST(ConstraintBehaviorTests, DropColumnCascadeRollbackRestoresIndexesFkAndCompositeUnique) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-cascade-rb-rich-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT NULL "
+                        "REFERENCES Customers(id), note STRING NULL, a INT NULL, b INT NULL, "
+                        "UNIQUE (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_note ON Orders(note);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_note_tri ON Orders((trigram(note)));"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1, \"n\", 1, 2);")).success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse("ALTER TABLE Orders DROP COLUMN customer_id CASCADE;"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    auto orders = executor.currentDatabase()->table("Orders");
+    ASSERT_EQ(orders->foreignKeys().size(), 1U);
+    EXPECT_EQ(orders->foreignKeys()[0].childColumns.front(), "customer_id");
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Orders DROP COLUMN note CASCADE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    EXPECT_TRUE(orders->hasIndex("note"));
+    EXPECT_TRUE(orders->hasExpressionIndex(
+        IndexExpression{IndexExpression::Kind::Trigram, "note", Value{}}));
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Orders DROP COLUMN a CASCADE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+    EXPECT_TRUE(orders->columnIndex("a").has_value());
+    ASSERT_EQ(orders->uniqueConstraints().size(), 1U);
+    EXPECT_EQ(orders->uniqueConstraints()[0].columns, (std::vector<std::string>{"a", "b"}));
+}
+
+TEST(ConstraintBehaviorTests, AddColumnDefaultNullAndDuplicateNameRejected) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-add-edges-", "case");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "ALTER TABLE Employees ADD COLUMN note STRING NULL DEFAULT NULL;"))
+                    .success);
+    auto rows = executor.execute(parser.parse("SELECT note FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_TRUE(rows.rows[0][0].isNull());
+
+    auto dup = executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN name STRING NULL;"));
+    EXPECT_FALSE(dup.success);
+    EXPECT_NE(dup.message.find("already exists"), std::string::npos);
+
+    auto unknown =
+        executor.execute(parser.parse("ALTER TABLE Employees DROP COLUMN missing;"));
+    EXPECT_FALSE(unknown.success);
+    EXPECT_NE(unknown.message.find("unknown column"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, RenameColumnCheckAndExpressionIndexAndNoOp) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-rename-edges-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT, lo DOUBLE, hi DOUBLE, "
+                        "CHECK (lo < hi AND hi > 0.0));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_neg ON Pay((-hi));")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Pay VALUES (1, 1.0, 5.0);")).success);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Pay RENAME COLUMN hi TO high;")).success);
+    auto table = executor.currentDatabase()->table("Pay");
+    ASSERT_EQ(table->checkConstraints().size(), 1U);
+    EXPECT_NE(predicateLiteral(table->checkConstraints()[0]).find("high"), std::string::npos);
+    EXPECT_TRUE(table->hasExpressionIndex(
+        IndexExpression{IndexExpression::Kind::Negate, "high", Value{}}));
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Pay RENAME COLUMN high TO high;")).success);
+    auto missing =
+        executor.execute(parser.parse("ALTER TABLE Pay RENAME COLUMN nope TO x;"));
+    EXPECT_FALSE(missing.success);
+    auto clash =
+        executor.execute(parser.parse("ALTER TABLE Pay RENAME COLUMN lo TO id;"));
+    EXPECT_FALSE(clash.success);
+}
+
+TEST(ConstraintBehaviorTests, DropMiddleColumnKeepsLaterIndexAndClearsHistogram) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-drop-shift-", "case");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE T (a INT, b INT, c INT);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_c ON T(c);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO T VALUES (1, 2, 3), (4, 5, 6);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("ANALYZE TABLE T;")).success);
+    auto table = executor.currentDatabase()->table("T");
+    ASSERT_TRUE(table->columnHistogram("b").has_value());
+
+    ASSERT_TRUE(executor.execute(parser.parse("ALTER TABLE T DROP COLUMN b;")).success);
+    EXPECT_FALSE(table->columnIndex("b").has_value());
+    EXPECT_FALSE(table->columnHistogram("b").has_value());
+    EXPECT_TRUE(table->hasIndex("c"));
+    auto rows = executor.execute(parser.parse("SELECT a FROM T WHERE c = 3;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+}
+
+TEST(ConstraintBehaviorTests, AddColumnApiRejectsInvalidFillAndEmptyName) {
+    Table table{"T", {{"id", ColumnType::Int, false, false, false}}};
+    EXPECT_THROW(table.addColumn(Column{"", ColumnType::Int, true, false, false}),
+                 std::invalid_argument);
+    EXPECT_THROW(table.addColumn(Column{"x", ColumnType::Int, false, true, false}),
+                 std::invalid_argument);
+    EXPECT_THROW(table.addColumn(Column{"x", ColumnType::Int, false, false, false}, Value{}),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        table.addColumn(Column{"x", ColumnType::Int, true, false, false}, Value{std::string{"z"}}),
+        std::invalid_argument);
+    table.addColumn(Column{"note", ColumnType::String, true, false, false});
+    EXPECT_THROW(table.addColumn(Column{"note", ColumnType::String, true, false, false}),
+                 std::invalid_argument);
+}
+
+TEST(ConstraintBehaviorTests, RenameColumnApiRejectsEmptyNames) {
+    Table table{"T",
+                {{"id", ColumnType::Int, false, false, false},
+                 {"note", ColumnType::String, true, false, false}}};
+    EXPECT_THROW(table.renameColumn("", "x", nullptr), std::invalid_argument);
+    EXPECT_THROW(table.renameColumn("id", "", nullptr), std::invalid_argument);
+}
+
+TEST(ConstraintBehaviorTests, AlterTableUnknownTableAndNoDatabase) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-alter-catalog-edges-", "case");
+    auto noDb = executor.execute(parser.parse("ALTER TABLE T ADD COLUMN x INT NULL;"));
+    EXPECT_FALSE(noDb.success);
+    EXPECT_NE(noDb.message.find("no active database"), std::string::npos);
+
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    auto unknown = executor.execute(parser.parse("ALTER TABLE Missing DROP COLUMN x;"));
+    EXPECT_FALSE(unknown.success);
+    EXPECT_NE(unknown.message.find("unknown table"), std::string::npos);
 }
 
 } // namespace VertexDB
