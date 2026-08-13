@@ -50,7 +50,8 @@ QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
     }
     try {
         validateForeignKeyDefinitions(*ctx_.database, command.name, command.columns,
-                                      command.foreignKeys, command.columns);
+                                      command.foreignKeys, command.columns,
+                                      command.uniqueConstraints);
     } catch (const std::invalid_argument &ex) {
         return messageResult(false, ex.what());
     }

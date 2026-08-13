@@ -16,7 +16,7 @@ namespace {
 
 void applyChildFkUpdates(ExecutionContext &ctx, RecoveryService &recovery,
                          std::span<const ForeignKeyChildHit> refs, ForeignKeyAction wanted,
-                         const Value &replacement) {
+                         const Value &replacement, std::string_view parentUpdatingColumn) {
     auto &txns = ctx.session.transactionManager();
     const auto snapshot = ctx.readSnapshot();
     const auto writerId = ctx.session.writeTransactionId();
@@ -24,19 +24,53 @@ void applyChildFkUpdates(ExecutionContext &ctx, RecoveryService &recovery,
         if (hit.fk.onUpdate != wanted) {
             continue;
         }
-        const auto childIndex = hit.table->columnIndex(hit.fk.childColumn);
-        if (!childIndex) {
-            throw std::invalid_argument("FOREIGN KEY child column not found: " + hit.fk.childColumn);
-        }
+
         auto updated = hit.row;
-        updated[*childIndex] = replacement;
+        std::vector<std::size_t> targetIndexes;
+        if (wanted == ForeignKeyAction::SetNull) {
+            targetIndexes.reserve(hit.fk.childColumns.size());
+            for (const auto &childColumn : hit.fk.childColumns) {
+                const auto childIndex = hit.table->columnIndex(childColumn);
+                if (!childIndex) {
+                    throw std::invalid_argument("FOREIGN KEY child column not found: " +
+                                                childColumn);
+                }
+                updated[*childIndex] = Value{};
+                targetIndexes.push_back(*childIndex);
+            }
+        } else {
+            std::optional<std::size_t> mapped;
+            for (std::size_t i = 0; i < hit.fk.parentColumns.size(); ++i) {
+                if (hit.fk.parentColumns[i] == parentUpdatingColumn) {
+                    mapped = i;
+                    break;
+                }
+            }
+            if (!mapped) {
+                continue;
+            }
+            const auto childIndex = hit.table->columnIndex(hit.fk.childColumns[*mapped]);
+            if (!childIndex) {
+                throw std::invalid_argument("FOREIGN KEY child column not found: " +
+                                            hit.fk.childColumns[*mapped]);
+            }
+            updated[*childIndex] = replacement;
+            targetIndexes.push_back(*childIndex);
+        }
+
         hit.table->validateRow(updated);
         hit.table->assertUniqueRow(updated, hit.rowId);
         assertForeignKeysOnChildRow(*ctx.database, *hit.table, updated, snapshot, txns);
 
         const Row beforeImage = hit.row;
-        hit.table->clearDirtyTracking();
-        if (hit.table->update(hit.rowId, *childIndex, replacement, writerId, &txns)) {
+        bool changed = false;
+        for (const auto index : targetIndexes) {
+            hit.table->clearDirtyTracking();
+            if (hit.table->update(hit.rowId, index, updated[index], writerId, &txns)) {
+                changed = true;
+            }
+        }
+        if (changed) {
             if (ctx.session.transactionActive()) {
                 ctx.session.pushUndo(
                     UndoRecord{hit.tableName, UndoKind::Update, hit.rowId, std::move(beforeImage)});
@@ -121,19 +155,30 @@ void DmlEngine::eraseRowWithReferentialActions(Table &table, std::string tableNa
         if (deleted.contains(childKey)) {
             continue;
         }
-        const auto childIndex = hit.table->columnIndex(hit.fk.childColumn);
-        if (!childIndex) {
-            throw std::invalid_argument("FOREIGN KEY child column not found: " + hit.fk.childColumn);
-        }
         auto updated = hit.row;
-        updated[*childIndex] = Value{};
+        std::vector<std::size_t> targetIndexes;
+        targetIndexes.reserve(hit.fk.childColumns.size());
+        for (const auto &childColumn : hit.fk.childColumns) {
+            const auto childIndex = hit.table->columnIndex(childColumn);
+            if (!childIndex) {
+                throw std::invalid_argument("FOREIGN KEY child column not found: " + childColumn);
+            }
+            updated[*childIndex] = Value{};
+            targetIndexes.push_back(*childIndex);
+        }
         hit.table->validateRow(updated);
         hit.table->assertUniqueRow(updated, hit.rowId);
         assertForeignKeysOnChildRow(*ctx_.database, *hit.table, updated, snapshot, txns);
 
         const Row beforeImage = hit.row;
-        hit.table->clearDirtyTracking();
-        if (hit.table->update(hit.rowId, *childIndex, Value{}, writerId, &txns)) {
+        bool changed = false;
+        for (const auto index : targetIndexes) {
+            hit.table->clearDirtyTracking();
+            if (hit.table->update(hit.rowId, index, Value{}, writerId, &txns)) {
+                changed = true;
+            }
+        }
+        if (changed) {
             if (ctx_.session.transactionActive()) {
                 ctx_.session.pushUndo(
                     UndoRecord{hit.tableName, UndoKind::Update, hit.rowId, std::move(beforeImage)});
@@ -186,7 +231,8 @@ QueryResult DmlEngine::executeUpdate(const Update &command) {
         const auto refs = collectReferencingChildren(*ctx_.database, *table, row, snapshot, txns,
                                                      *target, &command.value);
         assertNoActionParentKeyNotReferenced(refs, /*forUpdate=*/true);
-        applyChildFkUpdates(ctx_, recovery_, refs, ForeignKeyAction::SetNull, Value{});
+        applyChildFkUpdates(ctx_, recovery_, refs, ForeignKeyAction::SetNull, Value{},
+                            command.column);
 
         const Row beforeImage = row;
         table->clearDirtyTracking();
@@ -199,7 +245,8 @@ QueryResult DmlEngine::executeUpdate(const Update &command) {
             ++count;
         }
 
-        applyChildFkUpdates(ctx_, recovery_, refs, ForeignKeyAction::Cascade, command.value);
+        applyChildFkUpdates(ctx_, recovery_, refs, ForeignKeyAction::Cascade, command.value,
+                            command.column);
     }
     return messageResult(true, "updated " + std::to_string(count) + " row(s)");
 }

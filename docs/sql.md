@@ -206,17 +206,20 @@ Column constraints on `CREATE TABLE`:
   the full row image at `INSERT`/`UPDATE`. Rejects only when the predicate is FALSE; NULL comparisons
   are UNKNOWN and accepted (SQL CHECK semantics). Error:
   `CHECK constraint violation: <predicate>`.
-- `REFERENCES Parent(col)` or `FOREIGN KEY (col) REFERENCES Parent(col)` — single-column foreign
-  keys. Parent column must be `PRIMARY KEY` or `UNIQUE` and already exist (self-FK allowed on the
-  table being created). Composite parent keys are not yet referenceable as a multi-column FK.
-  Optional `ON DELETE` / `ON UPDATE` actions: `NO ACTION` (default; reject parent delete/key update
-  while children reference it), `CASCADE` (delete children / update child FK to the new parent key),
-  or `SET NULL` (null the child FK; child column must be `NULL`-able). Depth of cascaded deletes is
-  capped (`kMaxReferentialActionDepth`). NULL child keys are accepted (MATCH SIMPLE). Parent
-  existence uses the writer's SI-visible snapshot. `DROP TABLE` / `RENAME TABLE` of a referenced
-  parent is rejected (schema-level; not row CASCADE). Errors: `FOREIGN KEY constraint violation on
-  column …` / `FOREIGN KEY constraint violation: key is still referenced` /
-  `FOREIGN KEY SET NULL requires nullable child column: …`.
+- `REFERENCES Parent(col)` or `FOREIGN KEY (col[, …]) REFERENCES Parent(col[, …])` — foreign keys
+  (single- or multi-column). Parent columns must be an **exact** `PRIMARY KEY` or `UNIQUE` key
+  (same columns in order; a proper subset of a wider unique key is rejected) and the parent table
+  must already exist (self-FK allowed on the table being created). Optional `ON DELETE` /
+  `ON UPDATE` actions: `NO ACTION` (default; reject parent delete/key update while children
+  reference it), `CASCADE` (delete children / update the mapped child FK column when a parent key
+  part changes), or `SET NULL` (null **all** child FK columns; each must be `NULL`-able). Depth of
+  cascaded deletes is capped (`kMaxReferentialActionDepth`). MATCH SIMPLE: any NULL child key part
+  skips the parent existence check. Parent existence uses the writer's SI-visible snapshot.
+  `DROP TABLE` / `RENAME TABLE` of a referenced parent is rejected (schema-level; not row CASCADE).
+  Errors: `FOREIGN KEY constraint violation on column …` / `FOREIGN KEY constraint violation: key is
+  still referenced` / `FOREIGN KEY SET NULL requires nullable child column: …`. Note: `UPDATE` still
+  changes one column per statement, so rewriting a full composite parent key may require multiple
+  statements.
 - VertexDB auto-creates a maintained index (`__pk_<cols>` / `__uq_<cols>`) when no matching
   column/composite index already exists, so equality probes on those keys use `HashEq` without a
   manual `CREATE INDEX`.
@@ -274,22 +277,22 @@ placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST an
 re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
-page-payload + index-pages + column constraint flags + CHECK + FOREIGN KEY + composite UNIQUE/PK
-format v8, extension `.tcrdb`) under the
+page-payload + index-pages + column constraint flags + CHECK + FOREIGN KEY + composite UNIQUE/PK +
+multi-column FK lists format v9, extension `.tcrdb`) under the
 executor's storage root. `SAVE` writes a temporary snapshot, durable-syncs that file (flush+fsync /
 `F_FULLFSYNC` on macOS when available; `FlushFileBuffers` on Windows), renames it into place, then
 durable-syncs the storage directory on POSIX so the directory entry survives power loss — the same
 discipline as WAL `COMMIT`. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
-flags, table-level composite unique constraints, `CHECK` predicate text, and `FOREIGN KEY` metadata),
+flags, table-level composite unique constraints, `CHECK` predicate text, and `FOREIGN KEY` metadata
+with ordered child/parent column lists),
 index definitions (column, `cols:a,b` composite, or `expr:`-prefixed expression metadata),
 `rowsPerPage`, capacity,
 free-list order, serialized page-directory payloads, durable B+ tree / hash index pages, and
 optional per-column histogram blobs so sparse IDs, page bytes, indexes, constraints, and `ANALYZE`
 stats survive checkpoints without an index rebuild.
-Older CHECK v6, constraint-flags v5, index-pages v4, page-payload v3, sparse v2, and dense v1
-snapshots remain
-readable (v1–v3 still
-rebuild indexes after rows). `LOAD DATABASE` without a name reloads the active database when one
+Older composite UNIQUE/PK v8, FK v7, CHECK v6, constraint-flags v5, index-pages v4, page-payload v3,
+sparse v2, and dense v1 snapshots remain readable (v7–v8 single-column FK records normalize to
+width-1 lists; v1–v3 still rebuild indexes after rows). `LOAD DATABASE` without a name reloads the active database when one
 exists, otherwise it loads the first saved database file.
 Query executors also recover automatically on startup by loading the latest saved snapshot and
 replaying WAL records after that checkpoint. DML redo uses page images (`PageImageRedo`); DDL uses

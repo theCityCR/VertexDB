@@ -8,6 +8,7 @@
 #include "VertexDB/storage/foreign_key.hpp"
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/storage/table.hpp"
+#include "VertexDB/storage/unique_constraint.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
 
 #include <cstddef>
@@ -34,10 +35,12 @@ struct ForeignKeyChildHit {
 
 // Validate FK definitions against the catalog. When `creatingSchema` is set and
 // `childTableName` matches an FK parent table name, validate against that schema (self-FK).
+// `creatingUniques` supplies table-level UNIQUE/PK of the table being created.
 void validateForeignKeyDefinitions(const Database &database, std::string_view childTableName,
                                    std::span<const Column> childSchema,
                                    std::span<const ForeignKeyConstraint> foreignKeys,
-                                   std::span<const Column> creatingSchema = {});
+                                   std::span<const Column> creatingSchema = {},
+                                   std::span<const UniqueConstraint> creatingUniques = {});
 
 // Reject INSERT/UPDATE child row images that reference a missing parent key.
 void assertForeignKeysOnChildRow(Database &database, const Table &child, const Row &row,

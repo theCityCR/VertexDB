@@ -1,5 +1,6 @@
 #include "VertexDB/execution/foreign_key_eval.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -15,17 +16,84 @@ const Column *findColumn(std::span<const Column> schema, std::string_view name) 
     return nullptr;
 }
 
-bool parentKeyVisible(Table &parent, std::string_view parentColumn, const Value &value,
-                      const ReadSnapshot &snapshot, TransactionManager &transactions) {
-    auto hits = parent.indexedLookup(parentColumn, value);
-    if (!hits || hits->empty()) {
-        // Fallback scan if the constraint index is missing for any reason.
-        for (const auto &[rowId, row] : parent.visibleEntries(snapshot, transactions)) {
-            const auto index = parent.columnIndex(parentColumn);
-            if (!index) {
-                return false;
+[[nodiscard]] bool columnsEqual(std::span<const std::string> left,
+                                std::span<const std::string> right) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin());
+}
+
+[[nodiscard]] std::vector<UniqueConstraint>
+uniqueConstraintsFromSchema(std::span<const Column> schema,
+                            std::span<const UniqueConstraint> tableLevel) {
+    std::vector<UniqueConstraint> constraints{tableLevel.begin(), tableLevel.end()};
+    for (const auto &column : schema) {
+        if (!column.unique && !column.primaryKey) {
+            continue;
+        }
+        const bool covered = std::ranges::any_of(constraints, [&](const UniqueConstraint &c) {
+            return c.columns.size() == 1 && c.columns.front() == column.name;
+        });
+        if (!covered) {
+            constraints.push_back(
+                UniqueConstraint{{column.name}, column.primaryKey});
+        }
+    }
+    return constraints;
+}
+
+[[nodiscard]] bool parentHasExactUniqueKey(std::span<const UniqueConstraint> constraints,
+                                           std::span<const std::string> parentColumns) {
+    return std::ranges::any_of(constraints, [&](const UniqueConstraint &constraint) {
+        return columnsEqual(constraint.columns, parentColumns);
+    });
+}
+
+[[nodiscard]] std::optional<Value> keyFromRow(const Table &table, const Row &row,
+                                              std::span<const std::string> columns) {
+    std::vector<Value> parts;
+    parts.reserve(columns.size());
+    for (const auto &column : columns) {
+        const auto index = table.columnIndex(column);
+        if (!index) {
+            return std::nullopt;
+        }
+        parts.push_back(row[*index]);
+    }
+    if (parts.size() == 1) {
+        return parts.front();
+    }
+    return Value::composite(std::move(parts));
+}
+
+[[nodiscard]] bool keyHasNullPart(const Value &key) {
+    if (key.isNull()) {
+        return true;
+    }
+    try {
+        for (const auto &part : key.compositeParts()) {
+            if (part.isNull()) {
+                return true;
             }
-            if (row[*index] == value) {
+        }
+        return false;
+    } catch (const std::runtime_error &) {
+        return false;
+    }
+}
+
+[[nodiscard]] bool rowMatchesKey(const Table &table, const Row &row,
+                                 std::span<const std::string> columns, const Value &key) {
+    const auto actual = keyFromRow(table, row, columns);
+    return actual && *actual == key;
+}
+
+bool parentKeyVisible(Table &parent, std::span<const std::string> parentColumns, const Value &value,
+                      const ReadSnapshot &snapshot, TransactionManager &transactions) {
+    auto hits = parent.indexedLookup(parentColumns, value);
+    if (!hits || hits->empty()) {
+        for (const auto &[rowId, row] : parent.visibleEntries(snapshot, transactions)) {
+            (void)rowId;
+            if (rowMatchesKey(parent, row, parentColumns, value)) {
                 return true;
             }
         }
@@ -36,18 +104,14 @@ bool parentKeyVisible(Table &parent, std::string_view parentColumn, const Value 
 }
 
 [[nodiscard]] std::vector<std::pair<RowId, Row>>
-visibleChildrenForKey(Table &child, std::string_view childColumn, const Value &key,
+visibleChildrenForKey(Table &child, std::span<const std::string> childColumns, const Value &key,
                       const ReadSnapshot &snapshot, TransactionManager &transactions) {
-    if (auto hits = child.indexedLookup(childColumn, key)) {
+    if (auto hits = child.indexedLookup(childColumns, key)) {
         return child.visibleEntriesById(*hits, snapshot, transactions);
-    }
-    const auto index = child.columnIndex(childColumn);
-    if (!index) {
-        return {};
     }
     std::vector<std::pair<RowId, Row>> matches;
     for (const auto &[rowId, row] : child.visibleEntries(snapshot, transactions)) {
-        if (!row[*index].isNull() && row[*index] == key) {
+        if (rowMatchesKey(child, row, childColumns, key) && !keyHasNullPart(key)) {
             matches.emplace_back(rowId, row);
         }
     }
@@ -64,16 +128,21 @@ visibleChildrenForKey(Table &child, std::string_view childColumn, const Value &k
 void validateForeignKeyDefinitions(const Database &database, std::string_view childTableName,
                                    std::span<const Column> childSchema,
                                    std::span<const ForeignKeyConstraint> foreignKeys,
-                                   std::span<const Column> creatingSchema) {
+                                   std::span<const Column> creatingSchema,
+                                   std::span<const UniqueConstraint> creatingUniques) {
     for (const auto &fk : foreignKeys) {
-        const auto *childCol = findColumn(childSchema, fk.childColumn);
-        if (childCol == nullptr) {
-            throw std::invalid_argument("FOREIGN KEY child column not found: " + fk.childColumn);
+        if (fk.childColumns.empty() || fk.parentColumns.empty()) {
+            throw std::invalid_argument("FOREIGN KEY requires at least one column");
+        }
+        if (fk.childColumns.size() != fk.parentColumns.size()) {
+            throw std::invalid_argument("FOREIGN KEY child/parent column count mismatch");
         }
 
         std::span<const Column> parentSchema;
+        std::vector<UniqueConstraint> parentUniques;
         if (fk.parentTable == childTableName && !creatingSchema.empty()) {
             parentSchema = creatingSchema;
+            parentUniques = uniqueConstraintsFromSchema(creatingSchema, creatingUniques);
         } else {
             auto parent = database.table(fk.parentTable);
             if (!parent) {
@@ -81,29 +150,44 @@ void validateForeignKeyDefinitions(const Database &database, std::string_view ch
                                             fk.parentTable);
             }
             parentSchema = parent->schema();
+            parentUniques = parent->allUniqueConstraints();
         }
 
-        const auto *parentCol = findColumn(parentSchema, fk.parentColumn);
-        if (parentCol == nullptr) {
-            throw std::invalid_argument("FOREIGN KEY parent column not found: " + fk.parentColumn);
+        for (std::size_t i = 0; i < fk.childColumns.size(); ++i) {
+            const auto *childCol = findColumn(childSchema, fk.childColumns[i]);
+            if (childCol == nullptr) {
+                throw std::invalid_argument("FOREIGN KEY child column not found: " +
+                                            fk.childColumns[i]);
+            }
+            const auto *parentCol = findColumn(parentSchema, fk.parentColumns[i]);
+            if (parentCol == nullptr) {
+                throw std::invalid_argument("FOREIGN KEY parent column not found: " +
+                                            fk.parentColumns[i]);
+            }
+            if (parentCol->type != childCol->type) {
+                throw std::invalid_argument(
+                    "FOREIGN KEY column type mismatch: " + fk.childColumns[i] + " vs " +
+                    fk.parentTable + "." + fk.parentColumns[i]);
+            }
         }
-        if (!parentCol->unique && !parentCol->primaryKey) {
+
+        if (!parentHasExactUniqueKey(parentUniques, fk.parentColumns)) {
             throw std::invalid_argument(
-                "FOREIGN KEY parent column must be PRIMARY KEY or UNIQUE: " + fk.parentTable +
-                "." + fk.parentColumn);
-        }
-        if (parentCol->type != childCol->type) {
-            throw std::invalid_argument("FOREIGN KEY column type mismatch: " + fk.childColumn +
-                                        " vs " + fk.parentTable + "." + fk.parentColumn);
+                "FOREIGN KEY parent columns must be PRIMARY KEY or UNIQUE: " + fk.parentTable +
+                "(" + foreignKeyColumnsLabel(fk.parentColumns) + ")");
         }
         if (!isSupportedAction(fk.onDelete) || !isSupportedAction(fk.onUpdate)) {
             throw std::invalid_argument(
                 "FOREIGN KEY only supports ON DELETE/UPDATE NO ACTION, CASCADE, or SET NULL");
         }
-        if ((fk.onDelete == ForeignKeyAction::SetNull || fk.onUpdate == ForeignKeyAction::SetNull) &&
-            !childCol->nullable) {
-            throw std::invalid_argument(
-                "FOREIGN KEY SET NULL requires nullable child column: " + fk.childColumn);
+        if (fk.onDelete == ForeignKeyAction::SetNull || fk.onUpdate == ForeignKeyAction::SetNull) {
+            for (const auto &childName : fk.childColumns) {
+                const auto *childCol = findColumn(childSchema, childName);
+                if (childCol == nullptr || !childCol->nullable) {
+                    throw std::invalid_argument(
+                        "FOREIGN KEY SET NULL requires nullable child column: " + childName);
+                }
+            }
         }
     }
 }
@@ -111,21 +195,22 @@ void validateForeignKeyDefinitions(const Database &database, std::string_view ch
 void assertForeignKeysOnChildRow(Database &database, const Table &child, const Row &row,
                                  const ReadSnapshot &snapshot, TransactionManager &transactions) {
     for (const auto &fk : child.foreignKeys()) {
-        const auto childIndex = child.columnIndex(fk.childColumn);
-        if (!childIndex) {
-            throw std::invalid_argument("FOREIGN KEY child column not found: " + fk.childColumn);
+        const auto key = keyFromRow(child, row, fk.childColumns);
+        if (!key) {
+            throw std::invalid_argument("FOREIGN KEY child column not found: " +
+                                        foreignKeyColumnsLabel(fk.childColumns));
         }
-        const Value &value = row[*childIndex];
-        if (value.isNull()) {
-            continue; // MATCH SIMPLE: NULL child keys are accepted.
+        // MATCH SIMPLE: any NULL part skips the parent existence check.
+        if (keyHasNullPart(*key)) {
+            continue;
         }
         auto parent = database.table(fk.parentTable);
         if (!parent) {
             throw std::invalid_argument("FOREIGN KEY parent table not found: " + fk.parentTable);
         }
-        if (!parentKeyVisible(*parent, fk.parentColumn, value, snapshot, transactions)) {
+        if (!parentKeyVisible(*parent, fk.parentColumns, *key, snapshot, transactions)) {
             throw std::invalid_argument("FOREIGN KEY constraint violation on column " +
-                                        fk.childColumn);
+                                        foreignKeyColumnsLabel(fk.childColumns));
         }
     }
 }
@@ -140,22 +225,33 @@ collectReferencingChildren(Database &database, const Table &parent, const Row &p
             if (fk.parentTable != parent.name()) {
                 continue;
             }
-            const auto parentIndex = parent.columnIndex(fk.parentColumn);
-            if (!parentIndex) {
+            if (updatingColumn) {
+                const auto &schema = parent.schema();
+                if (*updatingColumn >= schema.size()) {
+                    continue;
+                }
+                const std::string &updatingName = schema[*updatingColumn].name;
+                const bool touchesKey = std::ranges::any_of(
+                    fk.parentColumns, [&](const std::string &column) { return column == updatingName; });
+                if (!touchesKey) {
+                    continue;
+                }
+            }
+
+            const auto oldKey = keyFromRow(parent, parentRow, fk.parentColumns);
+            if (!oldKey || keyHasNullPart(*oldKey)) {
                 continue;
             }
-            if (updatingColumn && *updatingColumn != *parentIndex) {
-                continue;
+            if (updatingColumn && newValue != nullptr) {
+                auto updatedParent = parentRow;
+                updatedParent[*updatingColumn] = *newValue;
+                const auto newKey = keyFromRow(parent, updatedParent, fk.parentColumns);
+                if (newKey && *newKey == *oldKey) {
+                    continue;
+                }
             }
-            const Value &oldValue = parentRow[*parentIndex];
-            if (oldValue.isNull()) {
-                continue;
-            }
-            if (updatingColumn && newValue != nullptr && *newValue == oldValue) {
-                continue;
-            }
-            for (auto &[rowId, row] :
-                 visibleChildrenForKey(*other, fk.childColumn, oldValue, snapshot, transactions)) {
+            for (auto &[rowId, row] : visibleChildrenForKey(*other, fk.childColumns, *oldKey,
+                                                           snapshot, transactions)) {
                 hits.push_back(ForeignKeyChildHit{other, other->name(), fk, rowId, std::move(row)});
             }
         }
@@ -186,8 +282,8 @@ bool tableIsForeignKeyParent(const Database &database, std::string_view tableNam
 }
 
 std::string foreignKeyLiteral(const ForeignKeyConstraint &fk) {
-    std::string sql = "FOREIGN KEY (" + fk.childColumn + ") REFERENCES " + fk.parentTable + "(" +
-                      fk.parentColumn + ")";
+    std::string sql = "FOREIGN KEY (" + foreignKeyColumnsLabel(fk.childColumns) + ") REFERENCES " +
+                      fk.parentTable + "(" + foreignKeyColumnsLabel(fk.parentColumns) + ")";
     if (fk.onDelete != ForeignKeyAction::NoAction) {
         sql += " ON DELETE ";
         sql += foreignKeyActionName(fk.onDelete);

@@ -113,14 +113,12 @@ CreateTable Parser::parseCreateTable() {
         }
         if (match(TokenType::Identifier, "FOREIGN")) {
             expect(TokenType::Identifier, "KEY");
-            expect(TokenType::LeftParen);
-            const auto childColumn = advance();
-            if (childColumn.type != TokenType::Identifier) {
-                throw std::runtime_error("expected FOREIGN KEY column");
+            auto childColumns = parseColumnList();
+            if (childColumns.empty()) {
+                throw std::runtime_error("FOREIGN KEY requires at least one column");
             }
-            expect(TokenType::RightParen);
             expect(TokenType::Identifier, "REFERENCES");
-            auto fk = parseReferencesClause(childColumn.lexeme);
+            auto fk = parseReferencesClause(std::move(childColumns));
             parseForeignKeyActions(fk);
             foreignKeys.push_back(std::move(fk));
             continue;
@@ -198,7 +196,7 @@ CreateTable Parser::parseCreateTable() {
                 continue;
             }
             if (match(TokenType::Identifier, "REFERENCES")) {
-                auto fk = parseReferencesClause(columnName.lexeme);
+                auto fk = parseReferencesClause(std::vector<std::string>{columnName.lexeme});
                 parseForeignKeyActions(fk);
                 foreignKeys.push_back(std::move(fk));
                 continue;
@@ -269,33 +267,49 @@ CreateTable Parser::parseCreateTable() {
         validateCheckColumns(check, columns);
     }
     for (const auto &fk : foreignKeys) {
-        bool found = false;
-        for (const auto &column : columns) {
-            if (column.name == fk.childColumn) {
-                found = true;
-                break;
+        for (const auto &childColumn : fk.childColumns) {
+            bool found = false;
+            for (const auto &column : columns) {
+                if (column.name == childColumn) {
+                    found = true;
+                    break;
+                }
             }
-        }
-        if (!found) {
-            throw std::runtime_error("FOREIGN KEY child column not found: " + fk.childColumn);
+            if (!found) {
+                throw std::runtime_error("FOREIGN KEY child column not found: " + childColumn);
+            }
         }
     }
     return {table.lexeme, std::move(columns), std::move(checkConstraints), std::move(foreignKeys),
             std::move(uniqueConstraints)};
 }
 
-ForeignKeyConstraint Parser::parseReferencesClause(std::string childColumn) {
+ForeignKeyConstraint Parser::parseReferencesClause(std::vector<std::string> childColumns) {
     const auto parentTable = advance();
     if (parentTable.type != TokenType::Identifier) {
         throw std::runtime_error("expected REFERENCES table name");
     }
     expect(TokenType::LeftParen);
-    const auto parentColumn = advance();
-    if (parentColumn.type != TokenType::Identifier) {
-        throw std::runtime_error("expected REFERENCES column name");
-    }
+    std::vector<std::string> parentColumns;
+    do {
+        const auto column = advance();
+        if (column.type != TokenType::Identifier) {
+            throw std::runtime_error("expected REFERENCES column name");
+        }
+        parentColumns.push_back(column.lexeme);
+    } while (match(TokenType::Comma));
     expect(TokenType::RightParen);
-    return ForeignKeyConstraint{std::move(childColumn), parentTable.lexeme, parentColumn.lexeme};
+    if (parentColumns.empty()) {
+        throw std::runtime_error("REFERENCES requires at least one column");
+    }
+    if (parentColumns.size() != childColumns.size()) {
+        throw std::runtime_error("FOREIGN KEY child/parent column count mismatch");
+    }
+    ForeignKeyConstraint fk;
+    fk.childColumns = std::move(childColumns);
+    fk.parentTable = parentTable.lexeme;
+    fk.parentColumns = std::move(parentColumns);
+    return fk;
 }
 
 void Parser::parseForeignKeyActions(ForeignKeyConstraint &fk) {
