@@ -264,4 +264,131 @@ TEST(ConstraintBehaviorTests, SaveLoadPreservesPrimaryKey) {
         std::invalid_argument);
 }
 
+TEST(ConstraintBehaviorTests, ParsesColumnAndTableCheckConstraints) {
+    Parser parser;
+    auto query = parser.parse(
+        "CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0), "
+        "bonus DOUBLE NULL, CHECK (salary > bonus));");
+    ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
+    const auto &table = std::get<CreateTable>(query);
+    ASSERT_EQ(table.columns.size(), 3U);
+    ASSERT_EQ(table.checkConstraints.size(), 2U);
+    EXPECT_EQ(predicateKind(table.checkConstraints[0]), PredicateKind::Comparison);
+    EXPECT_EQ(predicateKind(table.checkConstraints[1]), PredicateKind::Comparison);
+}
+
+TEST(ConstraintBehaviorTests, RejectsUnsupportedCheckShapesAndUnknownColumns) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse("CREATE TABLE T (id INT CHECK (id IN (1, 2)));"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("CREATE TABLE T (id INT CHECK (name > 0));"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("CREATE TABLE T (id INT, CHECK (EXISTS (SELECT 1)));"),
+                 std::runtime_error);
+}
+
+TEST(ConstraintBehaviorTests, CheckRejectsFailingInsert) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "check-insert");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));"))
+                    .success);
+    try {
+        (void)executor.execute(parser.parse("INSERT INTO Pay VALUES (1, 0.0);"));
+        FAIL() << "expected CHECK rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("CHECK constraint violation"), std::string::npos);
+        EXPECT_NE(std::string{ex.what()}.find("salary > 0.0"), std::string::npos);
+    }
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Pay;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
+}
+
+TEST(ConstraintBehaviorTests, CheckRejectsFailingUpdate) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "check-update");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Pay VALUES (1, 10.0);")).success);
+    try {
+        (void)executor.execute(parser.parse("UPDATE Pay SET salary = -1.0 WHERE id = 1;"));
+        FAIL() << "expected CHECK rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("CHECK constraint violation"), std::string::npos);
+    }
+    const auto rows =
+        executor.execute(parser.parse("SELECT salary FROM Pay WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{10.0});
+}
+
+TEST(ConstraintBehaviorTests, CheckAndOrAndNullUnknownPass) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "check-and-null");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor
+            .execute(parser.parse(
+                "CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE NULL, "
+                "bonus DOUBLE NULL, CHECK ((salary > 0.0) AND (bonus > 0.0)));"))
+            .success);
+    // NULL makes the predicate UNKNOWN → accepted.
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Pay VALUES (1, NULL, 5.0);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Pay VALUES (2, 5.0, 1.0);")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("INSERT INTO Pay VALUES (3, -1.0, 1.0);")),
+                 std::invalid_argument);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Pay ORDER BY id;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 2U);
+}
+
+TEST(ConstraintBehaviorTests, CheckMultiRowInsertRefusesWithoutPartialWrite) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "check-batch");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));"))
+                    .success);
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse("INSERT INTO Pay VALUES (1, 10.0), (2, -1.0);")),
+        std::invalid_argument);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Pay;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
+}
+
+TEST(ConstraintBehaviorTests, SaveLoadPreservesCheckConstraints) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "check-save-load");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE, bonus DOUBLE, "
+                        "CHECK (salary > bonus));"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Pay VALUES (1, 10.0, 1.0);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE company;")).success);
+
+    auto table = executor.currentDatabase()->table("Pay");
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->checkConstraints().size(), 1U);
+
+    EXPECT_THROW((void)executor.execute(parser.parse("INSERT INTO Pay VALUES (2, 1.0, 10.0);")),
+                 std::invalid_argument);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO Pay VALUES (2, 20.0, 5.0);")).success);
+}
+
 } // namespace VertexDB

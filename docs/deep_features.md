@@ -100,11 +100,12 @@ width). `Table` delegates physical row storage through a `RowStore` interface an
 page bytes in an in-memory page directory are the source of truth; the buffer pool caches those
 pages and fills on miss so reads deserialize live slots from page payloads. Both `PageRowStore` and
 `VectorRowStore` keep stable row IDs with tombstones and LIFO free-list reuse: deletes leave holes,
-and inserts reuse freed IDs before allocating new capacity. Database snapshots (format v5; v4 still
+and inserts reuse freed IDs before allocating new capacity. Database snapshots (format v6; v5–v1 still
 loadable) persist
 `rowsPerPage`, capacity, free-list order, serialized page-directory payloads, and index pages
 (B+ tree nodes + hash buckets) so row IDs, page bytes, and indexes survive save/load without an
-index rebuild. Legacy page-payload v3, sparse v2, and dense v1 snapshots remain readable.
+index rebuild. Legacy constraint-flags v5, page-payload v3, sparse v2, and dense v1 snapshots remain
+readable.
 
 ## Query Planner
 

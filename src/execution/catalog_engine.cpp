@@ -47,7 +47,8 @@ QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
     if (!ctx_.database) {
         return messageResult(false, "no active database");
     }
-    const bool created = ctx_.database->createTable(command.name, command.columns);
+    const bool created = ctx_.database->createTable(command.name, command.columns,
+                                                    command.checkConstraints);
     if (created) {
         auto table = ctx_.database->table(command.name);
         table->ensureConstraintIndexes();

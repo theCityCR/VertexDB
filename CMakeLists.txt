@@ -43,6 +43,7 @@ add_library(VertexDB
     src/storage/page_row_store_buffer.cpp
     src/storage/page_row_store_io.cpp
     src/storage/table.cpp
+    src/storage/check_eval.cpp
     src/storage/table_indexes.cpp
     src/storage/table_persist.cpp
     src/storage/table_snapshot_io.cpp

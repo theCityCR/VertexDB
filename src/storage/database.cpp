@@ -14,10 +14,11 @@ Database::Database(std::string name) : name_(std::move(name)) {
 
 const std::string &Database::name() const noexcept { return name_; }
 
-bool Database::createTable(std::string name, std::vector<Column> schema) {
+bool Database::createTable(std::string name, std::vector<Column> schema,
+                           std::vector<Predicate> checkConstraints) {
     std::unique_lock lock{mutex_};
-    auto [_, inserted] =
-        tables_.try_emplace(name, std::make_shared<Table>(name, std::move(schema)));
+    auto [_, inserted] = tables_.try_emplace(
+        name, std::make_shared<Table>(name, std::move(schema), std::move(checkConstraints)));
     return inserted;
 }
 
@@ -92,7 +93,10 @@ std::shared_ptr<Database> Database::clone() const {
     auto copy = std::make_shared<Database>(name_);
     for (const auto &sourceTable : tables()) {
         std::vector<Column> schema{sourceTable->schema().begin(), sourceTable->schema().end()};
-        const bool created = copy->createTable(sourceTable->name(), std::move(schema));
+        std::vector<Predicate> checks{sourceTable->checkConstraints().begin(),
+                                      sourceTable->checkConstraints().end()};
+        const bool created =
+            copy->createTable(sourceTable->name(), std::move(schema), std::move(checks));
         if (!created) {
             throw std::runtime_error("failed to clone table");
         }

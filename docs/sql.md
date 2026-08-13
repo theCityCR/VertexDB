@@ -10,6 +10,7 @@ DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE TABLE People (id INT NOT NULL, nickname STRING NULL);
 CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
+CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));
 DROP TABLE Employees;
 RENAME TABLE Employees TO Staff;
 LIST TABLES;
@@ -189,6 +190,11 @@ Column constraints on `CREATE TABLE`:
   table (multi-column keys are out of scope until composite indexes exist). Rejects `NULL PRIMARY KEY`.
 - `col TYPE UNIQUE` — rejects duplicate non-NULL values on `INSERT`/`UPDATE`; multiple `NULL`s are
   allowed when the column is also `NULL`.
+- `CHECK (predicate)` — column-level or table-level. Predicate is simple column comparisons
+  (`=`, `<`, `>`) combined with `AND` / `OR` (no subqueries, `IN`, `LIKE`, or regex). Evaluated on
+  the full row image at `INSERT`/`UPDATE`. Rejects only when the predicate is FALSE; NULL comparisons
+  are UNKNOWN and accepted (SQL CHECK semantics). Error:
+  `CHECK constraint violation: <predicate>`.
 - VertexDB auto-creates a maintained column index (`__pk_<col>` / `__uq_<col>`) when no column index
   already exists, so equality predicates on those columns use `HashEq` without a manual
   `CREATE INDEX`.
@@ -246,16 +252,19 @@ placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST an
 re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
-page-payload + index-pages + column constraint flags format v5, extension `.tcrdb`) under the
+page-payload + index-pages + column constraint flags + CHECK expressions format v6, extension
+`.tcrdb`) under the
 executor's storage root. `SAVE` writes a temporary snapshot, durable-syncs that file (flush+fsync /
 `F_FULLFSYNC` on macOS when available; `FlushFileBuffers` on Windows), renames it into place, then
 durable-syncs the storage directory on POSIX so the directory entry survives power loss — the same
 discipline as WAL `COMMIT`. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
-flags), index definitions (column or `expr:`-prefixed expression metadata), `rowsPerPage`, capacity,
+flags and `CHECK` predicate text), index definitions (column or `expr:`-prefixed expression metadata),
+`rowsPerPage`, capacity,
 free-list order, serialized page-directory payloads, durable B+ tree / hash index pages, and
 optional per-column histogram blobs so sparse IDs, page bytes, indexes, constraints, and `ANALYZE`
 stats survive checkpoints without an index rebuild.
-Older index-pages v4, page-payload v3, sparse v2, and dense v1 snapshots remain readable (v1–v3 still
+Older constraint-flags v5, index-pages v4, page-payload v3, sparse v2, and dense v1 snapshots remain
+readable (v1–v3 still
 rebuild indexes after rows). `LOAD DATABASE` without a name reloads the active database when one
 exists, otherwise it loads the first saved database file.
 Query executors also recover automatically on startup by loading the latest saved snapshot and

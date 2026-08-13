@@ -1,6 +1,7 @@
 #include "VertexDB/execution/sql_literal.hpp"
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/storage/check_eval.hpp"
 
 #include <sstream>
 
@@ -124,6 +125,9 @@ std::string createTableSql(const CreateTable &command) {
         } else if (column.unique) {
             sql << " UNIQUE";
         }
+    }
+    for (const auto &check : command.checkConstraints) {
+        sql << ", CHECK (" << checkConstraintLiteral(check) << ")";
     }
     sql << ");";
     return sql.str();

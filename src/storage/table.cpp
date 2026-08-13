@@ -1,5 +1,6 @@
 #include "VertexDB/storage/table.hpp"
 
+#include "VertexDB/storage/check_eval.hpp"
 #include "VertexDB/storage/page_row_store.hpp"
 
 #include <algorithm>
@@ -9,8 +10,10 @@
 
 namespace VertexDB {
 
-Table::Table(std::string name, std::vector<Column> schema)
-    : name_(std::move(name)), schema_(std::move(schema)), rowStore_(makePageRowStore()) {
+Table::Table(std::string name, std::vector<Column> schema,
+             std::vector<Predicate> checkConstraints)
+    : name_(std::move(name)), schema_(std::move(schema)),
+      checkConstraints_(std::move(checkConstraints)), rowStore_(makePageRowStore()) {
     if (name_.empty()) {
         throw std::invalid_argument("table name cannot be empty");
     }
@@ -32,6 +35,9 @@ Table::Table(std::string name, std::vector<Column> schema)
             sawPrimaryKey = true;
         }
     }
+    for (const auto &check : checkConstraints_) {
+        assertSimpleCheckConstraint(check);
+    }
 }
 
 const std::string &Table::name() const noexcept { return name_; }
@@ -45,6 +51,8 @@ void Table::setName(std::string name) {
 }
 
 std::span<const Column> Table::schema() const noexcept { return schema_; }
+
+std::span<const Predicate> Table::checkConstraints() const noexcept { return checkConstraints_; }
 
 std::optional<std::size_t> Table::columnIndex(std::string_view column) const {
     auto it =
@@ -195,6 +203,7 @@ bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId wr
     }
     auto updated = *rowStore_->get(rowId);
     updated[index] = std::move(value);
+    enforceCheckConstraints(updated);
     enforceUniqueConstraintsUnlocked(updated, rowId);
     const bool updatedOk = rowStore_->update(rowId, updated);
     if (!updatedOk) {
@@ -280,6 +289,19 @@ void Table::validateRow(const Row &row) const {
         }
         if (row[i].type() != schema_[i].type) {
             throw std::invalid_argument("row value does not match column type");
+        }
+    }
+    enforceCheckConstraints(row);
+}
+
+void Table::enforceCheckConstraints(const Row &row) const {
+    auto lookup = [this](std::string_view column) -> std::optional<std::size_t> {
+        return columnIndex(column);
+    };
+    for (const auto &check : checkConstraints_) {
+        if (!evalCheckPredicate(check, row, lookup)) {
+            throw std::invalid_argument("CHECK constraint violation: " +
+                                        checkConstraintLiteral(check));
         }
     }
 }

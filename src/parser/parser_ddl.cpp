@@ -2,17 +2,79 @@
 
 #include "VertexDB/common/string_utils.hpp"
 #include "VertexDB/parser/tokenizer.hpp"
+#include "VertexDB/storage/check_eval.hpp"
 #include "parse_utils.hpp"
 
 #include <stdexcept>
+#include <type_traits>
+#include <unordered_set>
 
 namespace VertexDB {
+namespace {
+
+void collectCheckColumns(const Predicate &predicate, std::unordered_set<std::string> &columns) {
+    std::visit(
+        [&](const auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AndPred> || std::is_same_v<T, OrPred>) {
+                collectCheckColumns(*node.left, columns);
+                collectCheckColumns(*node.right, columns);
+            } else if constexpr (std::is_same_v<T, ComparisonPred>) {
+                columns.insert(node.column);
+                if (node.rhsColumn) {
+                    columns.insert(*node.rhsColumn);
+                }
+            }
+        },
+        predicate);
+}
+
+void validateCheckColumns(const Predicate &predicate, const std::vector<Column> &schema) {
+    std::unordered_set<std::string> known;
+    known.reserve(schema.size());
+    for (const auto &column : schema) {
+        known.insert(column.name);
+    }
+    std::unordered_set<std::string> referenced;
+    collectCheckColumns(predicate, referenced);
+    for (const auto &column : referenced) {
+        if (!known.contains(column)) {
+            throw std::runtime_error("CHECK references unknown column " + column);
+        }
+    }
+}
+
+} // namespace
+
 CreateDatabase Parser::parseCreateDatabase() {
     const auto name = advance();
     if (name.type != TokenType::Identifier) {
         throw std::runtime_error("expected database name");
     }
     return {name.lexeme};
+}
+
+Predicate Parser::parseCheckConstraintBody() {
+    expect(TokenType::LeftParen);
+    auto predicate = parsePredicate();
+    expect(TokenType::RightParen);
+    assertSimpleCheckConstraint(predicate);
+    return predicate;
+}
+
+Predicate Parser::parseCheckConstraintExpression(std::string_view expression) {
+    const auto tokens = Tokenizer{}.tokenize(expression);
+    tokens_ = tokens;
+    current_ = 0;
+    nextParameterIndex_ = 0;
+    currentFromTable_.clear();
+    outerTableStack_.clear();
+    auto predicate = parsePredicate();
+    if (current_ < tokens_.size() && peek().type != TokenType::End) {
+        throw std::runtime_error("unexpected tokens after CHECK expression");
+    }
+    assertSimpleCheckConstraint(predicate);
+    return predicate;
 }
 
 CreateTable Parser::parseCreateTable() {
@@ -23,8 +85,13 @@ CreateTable Parser::parseCreateTable() {
     expect(TokenType::LeftParen);
 
     std::vector<Column> columns;
+    std::vector<Predicate> checkConstraints;
     bool sawPrimaryKey = false;
     do {
+        if (match(TokenType::Identifier, "CHECK")) {
+            checkConstraints.push_back(parseCheckConstraintBody());
+            continue;
+        }
         const auto columnName = advance();
         if (columnName.type != TokenType::Identifier) {
             throw std::runtime_error("expected column name");
@@ -72,6 +139,10 @@ CreateTable Parser::parseCreateTable() {
                 unique = true;
                 continue;
             }
+            if (match(TokenType::Identifier, "CHECK")) {
+                checkConstraints.push_back(parseCheckConstraintBody());
+                continue;
+            }
             break;
         }
         if (primaryKey && nullable) {
@@ -88,7 +159,10 @@ CreateTable Parser::parseCreateTable() {
     } while (match(TokenType::Comma));
 
     expect(TokenType::RightParen);
-    return {table.lexeme, std::move(columns)};
+    for (const auto &check : checkConstraints) {
+        validateCheckColumns(check, columns);
+    }
+    return {table.lexeme, std::move(columns), std::move(checkConstraints)};
 }
 
 DropDatabase Parser::parseDropDatabase() {

@@ -64,6 +64,8 @@ struct DropDatabase {
 struct CreateTable {
     std::string name;
     std::vector<Column> columns;
+    // Simple CHECK predicates (column comparisons with AND/OR; no subqueries).
+    std::vector<Predicate> checkConstraints;
 };
 
 struct DropTable {

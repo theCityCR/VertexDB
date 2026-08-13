@@ -16,6 +16,8 @@ class Parser {
   public:
     [[nodiscard]] Query parse(std::string_view sql);
     [[nodiscard]] Query parse(std::span<const Token> tokens);
+    // Parse a simple CHECK body expression (column comparisons with AND/OR).
+    [[nodiscard]] Predicate parseCheckConstraintExpression(std::string_view expression);
 
   private:
     [[nodiscard]] const Token &peek() const;
@@ -52,6 +54,7 @@ class Parser {
     [[nodiscard]] Predicate parsePrimaryPredicate();
     [[nodiscard]] Predicate parseComparisonPredicate();
     [[nodiscard]] Predicate parseExistsPredicate();
+    [[nodiscard]] Predicate parseCheckConstraintBody();
     [[nodiscard]] IndexExpression parseIndexExpression();
     [[nodiscard]] Value parseValue();
     [[nodiscard]] Select parseSubquerySelect(bool allowOuterRefs);

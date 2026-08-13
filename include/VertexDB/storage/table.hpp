@@ -7,6 +7,7 @@
 #include "VertexDB/common/index_expression.hpp"
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/indexing/index_manager.hpp"
+#include "VertexDB/parser/predicate.hpp"
 #include "VertexDB/storage/histogram.hpp"
 #include "VertexDB/storage/relation_stats.hpp"
 #include "VertexDB/storage/row.hpp"
@@ -27,12 +28,14 @@ namespace VertexDB {
 
 class Table : public RelationStats, public IndexCatalogView {
   public:
-    Table(std::string name, std::vector<Column> schema);
+    Table(std::string name, std::vector<Column> schema,
+          std::vector<Predicate> checkConstraints = {});
 
     // --- Identity / schema ---
     [[nodiscard]] const std::string &name() const noexcept;
     void setName(std::string name);
     [[nodiscard]] std::span<const Column> schema() const noexcept;
+    [[nodiscard]] std::span<const Predicate> checkConstraints() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     void validateRow(const Row &row) const;
     // Reject duplicate values on UNIQUE / PRIMARY KEY columns (NULLs skipped for UNIQUE).
@@ -114,7 +117,7 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;
     bool createIndex(std::string name, std::string column);
     bool createIndex(std::string name, IndexExpression expression);
-    // Register index metadata without rebuilding (snapshot v4/v5 restore path).
+    // Register index metadata without rebuilding (snapshot v4+ restore path).
     bool createIndexWithoutRebuild(std::string name, std::string column);
     bool createIndexWithoutRebuild(std::string name, IndexExpression expression);
     // Drop a named index (public DROP INDEX SQL and txn undo of CREATE INDEX).
@@ -143,9 +146,11 @@ class Table : public RelationStats, public IndexCatalogView {
                        std::optional<IndexExpression> expression, bool rebuild);
     void enforceUniqueConstraintsUnlocked(const Row &row,
                                           std::optional<RowId> excludeRowId) const;
+    void enforceCheckConstraints(const Row &row) const;
 
     std::string name_;
     std::vector<Column> schema_;
+    std::vector<Predicate> checkConstraints_;
     std::unique_ptr<RowStore> rowStore_;
     IndexManager indexManager_;
     TableStatistics statistics_;
