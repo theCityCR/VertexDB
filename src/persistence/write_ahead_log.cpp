@@ -20,6 +20,10 @@ constexpr std::string_view kWalIoError = "failed to read WAL record";
 WriteAheadLog::WriteAheadLog(std::filesystem::path path) : path_(std::move(path)) {}
 
 void WriteAheadLog::durableSync(bool syncParentDirectory) {
+    if (durability_ == WalDurability::FlushOnly) {
+        // Userspace flush already happened before this call; skip fsync for benches.
+        return;
+    }
     durableSyncFile(path_);
     if (syncParentDirectory) {
         durableSyncDirectory(path_.parent_path());

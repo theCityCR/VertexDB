@@ -308,7 +308,8 @@ for DML. `BEGIN` opens a transaction, captures a commit-seq read snapshot, and c
 and any deferred WAL buffer; SELECTs use that snapshot (plus read-your-writes) so concurrent
 uncommitted or post-`BEGIN` commits stay invisible; mutating `INSERT`/`UPDATE`/`DELETE` stamp SQL
 transaction ids, append compensating undo records, and buffer page-image redo records; `COMMIT`
-flushes deferred redo as one atomic WAL batch (each append flush+fsyncs the WAL file) then marks
+flushes deferred redo as one atomic WAL batch (each append applies `WalDurability`; default `Sync`
+flush+fsyncs the WAL file; optional `FlushOnly` for benches) then marks
 the transaction committed and discards the undo log. Educational crash-injection
 (`QueryExecutor::armCrashInjection`) can cut between those steps for durability tests. `ROLLBACK`
 applies the undo log LIFO on the same database instance and drops deferred WAL.

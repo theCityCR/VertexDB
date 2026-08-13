@@ -5,6 +5,8 @@ broad performance regressions and compare storage and access paths under control
 
 **Important:** every `QueryExecutor` bench uses an isolated temp storage root (never the default
 `./data` path). Sharing one WAL across iterations can grow multi‑GB files and starve the host.
+SQL-path benches set `WalDurability::FlushOnly` so absolute times measure engine work rather than
+fsync noise; the engine default remains `Sync`.
 
 ## Current Metrics
 

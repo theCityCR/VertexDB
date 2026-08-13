@@ -115,7 +115,8 @@ uses `complementaryResidual` so AND residual filtering stays distinct. AccessPat
   `durable_sync` file/directory helpers also used by `WriteAheadLog`); the slim `tcrdb_codec`
   orchestrates `.tcrdb` v1–v9 encode/decode across focused value, table, and index codec translation
   units. WAL recovery uses page-image redo plus legacy physical/logical records.
-  `WriteAheadLog::append` and `reset` flush+fsync for durable COMMIT / autocommit; `SAVE` fsyncs the
+  `WriteAheadLog::append` and `reset` apply `WalDurability` (default `Sync` = flush+fsync for durable
+  COMMIT / autocommit; optional `FlushOnly` for benches); `SAVE` always fsyncs the
   temp snapshot before rename and syncs the storage directory on POSIX.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager` (shared readers;
   exclusive writers). One `QueryExecutor` holds at most one open SQL transaction.
@@ -186,8 +187,10 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
   logical DML remain replayable. Trailing torn WAL records are skipped. Successful WAL
-  `append`/`reset` and snapshot `SAVE` share `durable_sync` (file flush+fsync / `F_FULLFSYNC` on
-  macOS; Windows `FlushFileBuffers` on the file). WAL also syncs its parent directory when the file
+  `append`/`reset` under default `WalDurability::Sync` and snapshot `SAVE` share `durable_sync`
+  (file flush+fsync / `F_FULLFSYNC` on macOS; Windows `FlushFileBuffers` on the file). Optional
+  `WalDurability::FlushOnly` skips WAL fsync after userspace flush (benchmarks only; default stays
+  Sync; `SAVE` is always fully durable). WAL also syncs its parent directory when the file
   is newly created on POSIX; `SAVE` syncs the storage directory after rename on POSIX.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
   DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `ALTER TABLE` ADD/DROP COLUMN,

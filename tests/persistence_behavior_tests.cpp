@@ -687,6 +687,7 @@ TEST(PersistenceBehaviorTests, WriteAheadLogAppendPerformsDurableSync) {
     const auto path = root / "test.wal";
 
     WriteAheadLog wal{path};
+    EXPECT_EQ(wal.durability(), WalDurability::Sync);
     EXPECT_EQ(wal.durableSyncCount(), 0U);
     EXPECT_EQ(wal.append(WalOperation::CreateDatabase, "company"), 1U);
     EXPECT_EQ(wal.durableSyncCount(), 1U);
@@ -714,6 +715,61 @@ TEST(PersistenceBehaviorTests, WriteAheadLogResetPerformsDurableSync) {
     wal.reset();
     EXPECT_EQ(wal.durableSyncCount(), syncsAfterAppend + 1);
     EXPECT_TRUE(WriteAheadLog{path}.readAll().empty());
+    std::filesystem::remove_all(root);
+}
+
+// Desired: FlushOnly skips fsync after userspace flush; durableSyncCount stays flat; records
+// remain readable after reopen in-process (kernel buffers still hold the data). Default stays Sync.
+TEST(PersistenceBehaviorTests, WriteAheadLogFlushOnlySkipsDurableSync) {
+    const auto root = tempRoot("wal-flush-only");
+    std::filesystem::remove_all(root);
+    const auto path = root / "test.wal";
+
+    WriteAheadLog wal{path};
+    wal.setDurability(WalDurability::FlushOnly);
+    EXPECT_EQ(wal.durability(), WalDurability::FlushOnly);
+    EXPECT_EQ(wal.durableSyncCount(), 0U);
+    EXPECT_EQ(wal.append(WalOperation::CreateDatabase, "company"), 1U);
+    EXPECT_EQ(wal.append(WalOperation::CreateTable, "Employees"), 2U);
+    EXPECT_EQ(wal.durableSyncCount(), 0U);
+
+    const auto records = WriteAheadLog{path}.readAll();
+    ASSERT_EQ(records.size(), 2U);
+    EXPECT_EQ(records[0].payload, "company");
+    EXPECT_EQ(records[1].payload, "Employees");
+
+    wal.reset();
+    EXPECT_EQ(wal.durableSyncCount(), 0U);
+    EXPECT_TRUE(WriteAheadLog{path}.readAll().empty());
+
+    // Restoring Sync resumes durable sync counting.
+    wal.setDurability(WalDurability::Sync);
+    EXPECT_EQ(wal.append(WalOperation::CreateDatabase, "restored"), 1U);
+    EXPECT_EQ(wal.durableSyncCount(), 1U);
+    std::filesystem::remove_all(root);
+}
+
+// Desired: QueryExecutor exposes WalDurability; default Sync; FlushOnly is opt-in for benches.
+TEST(PersistenceBehaviorTests, QueryExecutorWalDurabilityPolicyDefaultsToSync) {
+    const auto root = tempRoot("executor-wal-durability");
+    std::filesystem::remove_all(root);
+    QueryExecutor executor{root};
+    EXPECT_EQ(executor.walDurability(), WalDurability::Sync);
+    EXPECT_EQ(executor.walDurableSyncCount(), 0U);
+
+    Parser parser;
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    EXPECT_GE(executor.walDurableSyncCount(), 1U);
+    const auto syncsAfterCreate = executor.walDurableSyncCount();
+
+    executor.setWalDurability(WalDurability::FlushOnly);
+    EXPECT_EQ(executor.walDurability(), WalDurability::FlushOnly);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE T (id INT);")).success);
+    EXPECT_EQ(executor.walDurableSyncCount(), syncsAfterCreate);
+
+    executor.setWalDurability(WalDurability::Sync);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_id ON T(id);")).success);
+    EXPECT_GT(executor.walDurableSyncCount(), syncsAfterCreate);
     std::filesystem::remove_all(root);
 }
 

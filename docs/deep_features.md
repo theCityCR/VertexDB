@@ -29,11 +29,14 @@ The WAL records durable operations before they must survive process restart:
 The WAL persists append-only binary log records with a versioned header per record. Mutating
 executor DML writes `PageImageRedo` payloads. Inside an open transaction, those records are buffered
 in the executor and flushed on `COMMIT` as a single batch record (dropped on `ROLLBACK`) so a torn
-commit cannot partially apply the transaction. Each successful `WriteAheadLog::append` (and
-`reset`) flushes userspace buffers and `fsync`s the WAL file — on macOS via `F_FULLFSYNC` when
+commit cannot partially apply the transaction. Each successful `WriteAheadLog::append` (and `reset`) flushes userspace buffers. Under the
+default `WalDurability::Sync` policy it then `fsync`s the WAL file — on macOS via `F_FULLFSYNC` when
 available — and `fsync`s the parent directory when the file is newly created (POSIX only;
 Windows relies on `FlushFileBuffers` of the WAL file), so `COMMIT` and
-autocommit WAL writes are durable before the API returns. Autocommit DML and DDL still append
+autocommit WAL writes are durable before the API returns. `WalDurability::FlushOnly` skips the
+fsync step after flush (for SQL microbenchmarks via `QueryExecutor::setWalDurability`); it must not
+be used as a silent default. Snapshot `SAVE` is always fully durable and is not gated by this
+policy. Autocommit DML and DDL still append
 immediately. Educational crash-injection (`QueryExecutor::armCrashInjection`) can kill after durable
 WAL sync but before the in-memory commit mark (recovery must still replay) or before WAL sync
 (uncommitted work must not survive). Startup recovery loads the latest saved snapshot, then replays

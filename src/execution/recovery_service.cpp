@@ -261,7 +261,8 @@ void RecoveryService::flushPendingWal() {
 
     // Collapse a transaction's page-image (and legacy physical) redo records into one WAL append
     // per redo kind so a torn write cannot partially durable-commit the transaction.
-    // WriteAheadLog::append flush+fsyncs, so COMMIT returns only after that durable write.
+    // WriteAheadLog::append applies WalDurability (default Sync = flush+fsync), so COMMIT
+    // returns only after that durable write unless FlushOnly was set for benchmarks.
     std::vector<PageImageRedoRecord> pageBatch;
     std::vector<PhysicalRedoRecord> physicalBatch;
     for (auto &record : pendingWal) {

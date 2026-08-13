@@ -32,6 +32,8 @@ struct TempExecutor {
                 "-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)))),
           executor(root) {
         std::filesystem::create_directories(root);
+        // Measure engine work, not fsync noise. Production default remains Sync.
+        executor.setWalDurability(WalDurability::FlushOnly);
     }
 
     ~TempExecutor() {

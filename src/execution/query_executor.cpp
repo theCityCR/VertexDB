@@ -126,6 +126,16 @@ void QueryExecutor::armCrashInjection(CrashInjectionPoint point) noexcept {
     crashInjection_ = point;
 }
 
+void QueryExecutor::setWalDurability(WalDurability policy) noexcept {
+    wal_.setDurability(policy);
+}
+
+WalDurability QueryExecutor::walDurability() const noexcept { return wal_.durability(); }
+
+std::uint64_t QueryExecutor::walDurableSyncCount() const noexcept {
+    return wal_.durableSyncCount();
+}
+
 void QueryExecutor::fireCrashInjection(CrashInjectionPoint point) {
     crashInjection_ = CrashInjectionPoint::None;
     throw CrashInjected{point};

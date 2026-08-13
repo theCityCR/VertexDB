@@ -22,7 +22,8 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
 - Versioned binary persistence (page-payload + index-pages + constraint flags + CHECK + FOREIGN KEY
   v9 `.tcrdb` snapshots; composite UNIQUE/PK v8, FK v7, CHECK v6, constraint flags v5, index-pages
   v4, page-payload v3, sparse v2, and dense v1 still loadable), page-image WAL redo for
-  DML with flush+fsync on append (durable `COMMIT` / autocommit), save checkpoints, and startup
+  DML with flush+fsync on append by default (`WalDurability::Sync`; optional `FlushOnly` for
+  benches), durable `COMMIT` / autocommit under Sync, save checkpoints, and startup
   recovery
 - Single- and multi-column `PRIMARY KEY` / `UNIQUE` constraints with auto-maintained (composite)
   indexes and duplicate `INSERT`/`UPDATE` rejection; simple `CHECK` constraints (column comparisons with
@@ -120,7 +121,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 395 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 397 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -148,9 +149,13 @@ Or feed an example script:
   regex / subquery / expression-index probes use relation-membership fallbacks). One executor holds
   at most one open transaction; writers are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
-  row after-images remain replayable. Every successful WAL append/`reset` flush+fsyncs (and syncs
+  row after-images remain replayable. Every successful WAL append/`reset` under default
+  `WalDurability::Sync` flush+fsyncs (and syncs
   the parent directory on create on POSIX; Windows uses `FlushFileBuffers` on the WAL file only)
-  so `COMMIT` / autocommit durability is not left in the OS page cache. Trailing torn WAL records
+  so `COMMIT` / autocommit durability is not left in the OS page cache. Optional
+  `WalDurability::FlushOnly` (via `QueryExecutor::setWalDurability`) skips fsync after userspace
+  flush for microbenchmarks; the default stays Sync and snapshot `SAVE` remains fully durable.
+  Trailing torn WAL records
   are ignored so recovery replays the durable prefix. `SAVE DATABASE` durable-syncs the temp
   `.tcrdb` before rename and syncs the storage directory on POSIX (Windows: file sync only)
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `ALTER TABLE`
@@ -207,7 +212,8 @@ crash-injection durability cut points, composite indexes and multi-column `PRIMA
 (snapshot v8), FK `ON DELETE`/`UPDATE` `CASCADE` / `SET NULL`, Phase 4 atomicity packaging
 (catalog+DML failure matrix + SAVE/LOAD ACID FAQ), planner composite-index `HashEq` for
 multi-equality `AND`, multi-column `FOREIGN KEY` (snapshot v9), `ALTER TABLE ADD COLUMN … NULL` /
-`DROP COLUMN` (eager rewrite; dependency rejection; transactional WAL), and a dated
+`DROP COLUMN` (eager rewrite; dependency rejection; transactional WAL), optional
+`WalDurability::{Sync,FlushOnly}` (default Sync; SQL benches use FlushOnly), and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

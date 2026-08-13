@@ -63,6 +63,11 @@ class QueryExecutor {
     // Arm a one-shot crash on the next COMMIT (see CrashInjectionPoint).
     void armCrashInjection(CrashInjectionPoint point) noexcept;
 
+    // WAL post-append durability (default Sync). FlushOnly is for microbenchmarks only.
+    void setWalDurability(WalDurability policy) noexcept;
+    [[nodiscard]] WalDurability walDurability() const noexcept;
+    [[nodiscard]] std::uint64_t walDurableSyncCount() const noexcept;
+
   private:
     [[nodiscard]] QueryResult executeInsert(const Insert &command);
     [[nodiscard]] QueryResult executeSelect(const Select &command);

@@ -42,8 +42,9 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   files, with `tcrdb_codec` owning the layout; durable `SAVE` (fsync temp snapshot + parent
   directory sync on POSIX, then rename)
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
-  still replayable), logical SQL for DDL, flush+fsync on every successful append/`reset` (durable
-  `COMMIT` / autocommit), truncated-trailing-record tolerance, startup replay, save checkpoints,
+  still replayable), logical SQL for DDL, flush+fsync on every successful append/`reset` by default
+  (`WalDurability::Sync`; optional `FlushOnly` for benches), durable
+  `COMMIT` / autocommit under Sync, truncated-trailing-record tolerance, startup replay, save checkpoints,
   and crash-simulation tests
 - Concurrency: executor-level reader/writer synchronization (`LockManager`) and concurrent client
   tests; SI/SSI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
@@ -124,7 +125,9 @@ predicate SIREAD for OR of column leaves and column `LIKE` (regex / subquery / e
 probes still relation-membership), COMMIT crash-injection cut points (after WAL sync / before
 commit mark, plus before WAL sync), composite indexes plus multi-column `PRIMARY KEY` /
 `UNIQUE` (snapshot v8 table-level constraints + `cols:…` index metadata), and FK
-`ON DELETE`/`UPDATE` `CASCADE` / `SET NULL` (with `NO ACTION` still the default).
+`ON DELETE`/`UPDATE` `CASCADE` / `SET NULL` (with `NO ACTION` still the default). Shipped:
+optional `WalDurability::{Sync,FlushOnly}` (default Sync; FlushOnly for SQL microbenchmarks only;
+`SAVE` remains fully durable).
 
 Shipped (Phase 4): catalog + DML [atomicity matrix](#phase-4--atomicity-edge-polish) with named
 test checklist; [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions) for implicit `SAVE`/`LOAD`
@@ -136,10 +139,10 @@ rejects indexed / CHECK / FK / UNIQUE/PK dependencies; transactional undo + logi
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- **ACID alignment** — see [ACID Plan](#acid-plan) below (optional group-commit sync policy)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
-  gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
+  gates every push/PR via `scripts/run-benchmarks.sh --check-shape`. SQL-path microbenchmarks use
+  `WalDurability::FlushOnly` so absolute times are not dominated by fsync.
 - Broader ALTER (`ADD` with `DEFAULT` / `NOT NULL`, `DROP CASCADE`, rename column) — catalog teaching
   follow-ons
 
@@ -166,7 +169,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL; catalog+DML [failure matrix](#phase-4--atomicity-edge-polish) + SAVE/LOAD [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions) | Crash mid-`SAVE` rename remains an educational durability edge (POSIX dir sync after rename); not a nested-txn story |
 | **C** Consistency | Strong (educational) | Typed schema; `NOT NULL` (default) / `NULL`; single- and multi-column `PRIMARY KEY` / `UNIQUE` (composite indexes); simple `CHECK`; single- and multi-column `FOREIGN KEY` (`NO ACTION` / `CASCADE` / `SET NULL`; MATCH SIMPLE) | Deferred constraint checking / MATCH FULL not implemented |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD including OR of column leaves and column LIKE); executor `LockManager` | One open SQL txn per executor; regex / subquery / expression-index probes use relation-membership SIREAD fallbacks; no next-key / gap locks |
-| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay; crash-injection at COMMIT cut points | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
+| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset` by default (`WalDurability::Sync`); optional `FlushOnly` for benches; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay; crash-injection at COMMIT cut points | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive; `FlushOnly` is not a correctness mode |
 
 ### Principles
 
@@ -211,7 +214,7 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 | Slice | Scope | Notes |
 | --- | --- | --- |
 | **3a. Durable `SAVE DATABASE`** | fsync snapshot temp file + parent directory before/after rename (shared `durable_sync` with WAL) | **Done** — temp fsync before rename; POSIX dir sync after; `SaveDatabasePerformsDurablePublish` |
-| **3b. Group commit / sync policy** | Optional `WalDurability::{Sync,FlushOnly}` for benchmarks — default remains Sync | Only if bench noise from fsync becomes a problem; never silently weaken default |
+| **3b. Group commit / sync policy** | Optional `WalDurability::{Sync,FlushOnly}` for benchmarks — default remains Sync | **Done** — `WriteAheadLog` / `QueryExecutor::setWalDurability`; SQL benches use `FlushOnly`; default Sync unchanged; `SAVE` always fully durable |
 | **3c. Crash-injection tests** | Kill after WAL sync / before in-memory commit mark; assert recovery | **Done** — `QueryExecutor::armCrashInjection`; `RecoverSurvivesCrashAfterWalSyncBeforeCommitMark` + complementary `CrashBeforeWalSyncDoesNotDurableCommit` |
 
 #### Phase 4 — Atomicity edge polish
@@ -242,15 +245,17 @@ Crash cut points for DML `COMMIT`: after WAL sync / before in-memory commit mark
 
 ### Suggested order of attack
 
-1. Optional group-commit / `WalDurability` sync policy only if fsync noise hurts benches.
-2. Broader ALTER (`DEFAULT` / `NOT NULL` ADD, rename column) when catalog teaching continues.
+1. Broader ALTER (`DEFAULT` / `NOT NULL` ADD, rename column) when catalog teaching continues.
+2. Re-refresh absolute times in [benchmarks.md](benchmarks.md) after meaningful planner/storage changes
+   (SQL benches already use `WalDurability::FlushOnly`).
 
 ### Explicit non-goals (for now)
 
 - Claiming “full ACID” or “serializable like Postgres” in the README without the scorecard caveats.
 - Row/page locks as the primary isolation mechanism (MVCC + SSI remains the story).
 - Distributed transactions, 2PC, or replication.
-- Weakening durable WAL sync to chase benchmark absolute times (use shape gates / optional policy instead).
+- Weakening durable WAL sync to chase benchmark absolute times (use shape gates / `WalDurability::FlushOnly`
+  on the bench harness instead; never change the default).
 
 ### ACID definition of done (per slice)
 
