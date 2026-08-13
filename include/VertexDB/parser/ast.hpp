@@ -8,6 +8,7 @@
 #include "VertexDB/common/value.hpp"
 #include "VertexDB/parser/predicate.hpp"
 #include "VertexDB/storage/foreign_key.hpp"
+#include "VertexDB/storage/unique_constraint.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -69,6 +70,8 @@ struct CreateTable {
     std::vector<Predicate> checkConstraints;
     // Single-column FOREIGN KEY constraints (NO ACTION).
     std::vector<ForeignKeyConstraint> foreignKeys;
+    // Table-level UNIQUE / PRIMARY KEY (including multi-column composites).
+    std::vector<UniqueConstraint> uniqueConstraints;
 };
 
 struct DropTable {
@@ -236,7 +239,9 @@ struct Delete {
 struct CreateIndex {
     std::string name;
     std::string table;
+    // Single-column indexes keep `column` as columns.front() for call-site convenience.
     std::string column;
+    std::vector<std::string> columns;
     std::optional<IndexExpression> expression;
 };
 

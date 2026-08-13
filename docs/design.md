@@ -9,8 +9,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 ## What Exists Today
 
 - Repository foundation: CMake targets, CLI, library target, GitHub Actions CI, and documentation
-- Storage engine: typed columns, nullable values, single-column `PRIMARY KEY` / `UNIQUE`
-  constraints (auto hash/B+ indexes; duplicate `INSERT`/`UPDATE` rejected), schema validation,
+- Storage engine: typed columns, nullable values, single- and multi-column `PRIMARY KEY` / `UNIQUE`
+  constraints (auto hash/B+ indexes including composite keys; duplicate `INSERT`/`UPDATE` rejected), schema validation,
   table/database ownership, page-backed `RowStore`, `VectorRowStore`, `BufferPool`, index
   maintenance, MVCC version recording, and stable row IDs with tombstones plus free-list reuse
 - Parser: tokenizer (token offsets / line / column), AST, grammar tests, table-management commands,
@@ -33,11 +33,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   alias scopes (including joined subqueries), expression-index maintenance (including trigram),
   prepared AST binding, save/load, recovery, and transactional read routing
 - Indexes: maintained hash indexes for equality lookup and ordered B+ tree index APIs for point
-  and range lookup (column and expression keys), hash index `IN` multi-lookup, ordered prefix
-  `LIKE`, and hash trigram indexes for substring `LIKE`
+  and range lookup (column, composite column, and expression keys), hash index `IN` multi-lookup,
+  ordered prefix `LIKE`, and hash trigram indexes for substring `LIKE`
 - Persistence: versioned binary snapshots (current page-payload + index-pages + column constraint
-  flags + CHECK + FOREIGN KEY v7; CHECK v6, constraint flags v5, index-pages v4, page-payload v3,
-  sparse v2, and dense v1 still readable) under `.tcrdb`
+  flags + CHECK + FOREIGN KEY + table-level composite UNIQUE/PK v8; FK v7, CHECK v6, constraint
+  flags v5, index-pages v4, page-payload v3, sparse v2, and dense v1 still readable) under `.tcrdb`
   files, with `tcrdb_codec` owning the layout; durable `SAVE` (fsync temp snapshot + parent
   directory sync on POSIX, then rename)
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
@@ -66,11 +66,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   row/page locks or Postgres-style next-key locks. Regex / subquery / expression-index probes use
   conservative relation-membership SIREADs; OR of column comparisons/`IN`/`LIKE` and column `LIKE`
   record real column predicates. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
-- Integrity constraints: single-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL` (default columns;
-  explicit keyword supported), simple `CHECK` (column comparisons with `AND`/`OR`), and
-  single-column `FOREIGN KEY` (`REFERENCES` / `FOREIGN KEY … REFERENCES`, `ON DELETE`/`UPDATE`
-  `NO ACTION` only) are enforced. Multi-column uniqueness is
-  not implemented yet; see [ACID Plan](#acid-plan).
+- Integrity constraints: single-column and multi-column `PRIMARY KEY` / `UNIQUE` (composite indexes;
+  auto `__pk_*` / `__uq_*`), `NOT NULL` (default columns; explicit keyword supported), simple
+  `CHECK` (column comparisons with `AND`/`OR`), and single-column `FOREIGN KEY` (`REFERENCES` /
+  `FOREIGN KEY … REFERENCES`, `ON DELETE`/`UPDATE` `NO ACTION` only) are enforced. FK CASCADE/SET NULL
+  are not implemented yet; see [ACID Plan](#acid-plan).
 - `SAVE DATABASE` in an open transaction implicitly commits then checkpoints; `LOAD DATABASE`
   implicitly rolls back then loads.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
@@ -118,10 +118,11 @@ insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, 
 append/`reset`), single-column `PRIMARY KEY` / `UNIQUE` (snapshot v5 constraint flags), and
 first-class `NOT NULL` Consistency messaging/tests, durable `SAVE DATABASE` snapshot publish
 (fsync temp + POSIX directory sync), simple `CHECK` constraints (column comparisons with
-`AND`/`OR`; snapshot v6), single-column `FOREIGN KEY` (`NO ACTION`; snapshot v7), and richer
+`AND`/`OR`; snapshot v6), single-column `FOREIGN KEY` (`NO ACTION`; snapshot v7), richer
 predicate SIREAD for OR of column leaves and column `LIKE` (regex / subquery / expression-index
-probes still relation-membership), and COMMIT crash-injection cut points (after WAL sync / before
-commit mark, plus before WAL sync).
+probes still relation-membership), COMMIT crash-injection cut points (after WAL sync / before
+commit mark, plus before WAL sync), and composite indexes plus multi-column `PRIMARY KEY` /
+`UNIQUE` (snapshot v8 table-level constraints + `cols:…` index metadata).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
@@ -131,6 +132,7 @@ Forward-looking options (intentional gaps, pick by teaching value):
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
 - ALTER-style DDL (`ADD`/`DROP COLUMN`, etc.) — orthogonal to ACID; useful catalog teaching
+- Planner use of composite indexes for multi-equality `AND` (vs Intersect of single-column indexes)
 
 Demo wedges (done):
 
@@ -153,7 +155,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | Property | Status | What exists | Main gap |
 | --- | --- | --- | --- |
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
-| **C** Consistency | Strong (educational) | Typed schema; `NOT NULL` (default) / `NULL`; single-column `PRIMARY KEY` / `UNIQUE`; simple `CHECK`; single-column `FOREIGN KEY` (`NO ACTION`) | No multi-column uniqueness; no FK CASCADE/SET NULL |
+| **C** Consistency | Strong (educational) | Typed schema; `NOT NULL` (default) / `NULL`; single- and multi-column `PRIMARY KEY` / `UNIQUE` (composite indexes); simple `CHECK`; single-column `FOREIGN KEY` (`NO ACTION`) | No FK CASCADE/SET NULL; multi-column FK not yet |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD including OR of column leaves and column LIKE); executor `LockManager` | One open SQL txn per executor; regex / subquery / expression-index probes use relation-membership SIREAD fallbacks; no next-key / gap locks |
 | **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay; crash-injection at COMMIT cut points | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
 
@@ -174,6 +176,7 @@ Ship integrity constraints so `C` is engine-enforced, not only application conve
 | Slice | Scope | Touch points | Done when |
 | --- | --- | --- | --- |
 | **1a. `PRIMARY KEY` / `UNIQUE`** | Column uniqueness; reject duplicate `INSERT`/`UPDATE`; auto `__pk_`/`__uq_` hash/B+ indexes; snapshot v5 flags | Parser DDL, `Table` / `IndexManager`, DML engine, `.tcrdb` schema metadata, SQL docs | **Done** — duplicate insert/update aborted; unique index used for equality; save/load preserves constraint |
+| **1a2. Multi-column `PRIMARY KEY` / `UNIQUE`** | Table-level `PRIMARY KEY (…)` / `UNIQUE (…)`; composite indexes; snapshot v8 | Parser, `IndexManager` composite keys, `UniqueConstraint`, `.tcrdb` v8 | **Done** — composite equality keys; `__pk_a_b` / `__uq_a_b`; NULL parts distinct for UNIQUE |
 | **1b. `NOT NULL` as first-class constraint story** | Document and test null-rejection as an ACID-`C` guarantee; aligned error messages name the column | Docs + DML rejection tests; WAL `createTableSql` emits `NOT NULL` | **Done** — named insert/update/multi-row tests; `NOT NULL constraint violation on column …` |
 | **1c. `CHECK` (simple)** | Boolean predicate on row image at insert/update (column comparisons / AND / OR; no subqueries v1) | Parser, DML validate path, snapshot metadata | **Done** — rejecting insert/update tests; UNKNOWN (NULL) accepted; save/load v6 |
 | **1d. `FOREIGN KEY` (optional later)** | Same-database parent lookup on insert/update; restrict or reject delete of referenced parent | Catalog + DML; careful interaction with SI visibility | **Done** — `NO ACTION` only; SI-visible parent probe; DROP/RENAME parent rejected while referenced |
@@ -210,9 +213,9 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 ### Suggested order of attack
 
-1. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
-2. FK `CASCADE` / `SET NULL` only if teaching referential actions is the focus.
-3. Phase **4** atomicity FAQ / failure-matrix docs when packaging catalog+DML edge cases.
+1. FK `CASCADE` / `SET NULL` only if teaching referential actions is the focus.
+2. Phase **4** atomicity FAQ / failure-matrix docs when packaging catalog+DML edge cases.
+3. Optional planner preference for composite indexes on multi-equality `AND`.
 
 ### Explicit non-goals (for now)
 

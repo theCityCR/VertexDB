@@ -3,6 +3,7 @@
 // Named database: owns tables under a shared mutex. Persistence is StorageManager.
 
 #include "VertexDB/storage/table.hpp"
+#include "VertexDB/storage/unique_constraint.hpp"
 
 #include <map>
 #include <memory>
@@ -20,7 +21,8 @@ class Database {
     [[nodiscard]] const std::string &name() const noexcept;
     [[nodiscard]] bool createTable(std::string name, std::vector<Column> schema,
                                    std::vector<Predicate> checkConstraints = {},
-                                   std::vector<ForeignKeyConstraint> foreignKeys = {});
+                                   std::vector<ForeignKeyConstraint> foreignKeys = {},
+                                   std::vector<UniqueConstraint> uniqueConstraints = {});
     [[nodiscard]] bool dropTable(std::string_view name);
     [[nodiscard]] std::shared_ptr<Table> detachTable(std::string_view name);
     [[nodiscard]] bool attachTable(std::shared_ptr<Table> table);

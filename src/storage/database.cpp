@@ -16,11 +16,12 @@ const std::string &Database::name() const noexcept { return name_; }
 
 bool Database::createTable(std::string name, std::vector<Column> schema,
                            std::vector<Predicate> checkConstraints,
-                           std::vector<ForeignKeyConstraint> foreignKeys) {
+                           std::vector<ForeignKeyConstraint> foreignKeys,
+                           std::vector<UniqueConstraint> uniqueConstraints) {
     std::unique_lock lock{mutex_};
     auto [_, inserted] = tables_.try_emplace(
         name, std::make_shared<Table>(name, std::move(schema), std::move(checkConstraints),
-                                      std::move(foreignKeys)));
+                                      std::move(foreignKeys), std::move(uniqueConstraints)));
     return inserted;
 }
 
@@ -99,8 +100,11 @@ std::shared_ptr<Database> Database::clone() const {
                                       sourceTable->checkConstraints().end()};
         std::vector<ForeignKeyConstraint> fks{sourceTable->foreignKeys().begin(),
                                               sourceTable->foreignKeys().end()};
-        const bool created = copy->createTable(sourceTable->name(), std::move(schema),
-                                               std::move(checks), std::move(fks));
+        std::vector<UniqueConstraint> uniques{sourceTable->uniqueConstraints().begin(),
+                                              sourceTable->uniqueConstraints().end()};
+        const bool created =
+            copy->createTable(sourceTable->name(), std::move(schema), std::move(checks),
+                              std::move(fks), std::move(uniques));
         if (!created) {
             throw std::runtime_error("failed to clone table");
         }
@@ -109,7 +113,7 @@ std::shared_ptr<Database> Database::clone() const {
             const bool ok =
                 definition.expression
                     ? destinationTable->createIndex(definition.name, *definition.expression)
-                    : destinationTable->createIndex(definition.name, definition.column);
+                    : destinationTable->createIndex(definition.name, definition.columns);
             if (!ok) {
                 throw std::runtime_error("failed to clone index");
             }

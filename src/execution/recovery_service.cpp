@@ -91,7 +91,10 @@ void RecoveryService::applyUndoRecord(const UndoRecord &record) {
         const bool restored =
             record.indexExpression
                 ? table->createIndex(record.indexName, *record.indexExpression)
-                : table->createIndex(record.indexName, record.indexColumn);
+                : table->createIndex(record.indexName,
+                                     record.indexColumns.empty()
+                                         ? std::vector<std::string>{record.indexColumn}
+                                         : record.indexColumns);
         if (!restored) {
             throw std::runtime_error("failed to undo drop index");
         }

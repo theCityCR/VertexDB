@@ -10,6 +10,7 @@ DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE TABLE People (id INT NOT NULL, nickname STRING NULL);
 CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
+CREATE TABLE Enrollments (student_id INT, course_id INT, PRIMARY KEY (student_id, course_id));
 CREATE TABLE Pay (id INT PRIMARY KEY, salary DOUBLE CHECK (salary > 0.0));
 CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT REFERENCES Customers(id));
 DROP TABLE Employees;
@@ -173,13 +174,15 @@ Arms must project the same column count; `ORDER BY` / `LIMIT` after the chain ap
 result. Set-op CTE bodies are force-materialized (they are not inlined).
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
+`CREATE INDEX idx ON t(a, b, …)` builds a **composite** index keyed by the ordered column tuple
+(equality lookup on the full key; stored as a composite `Value` in hash/B+ structures).
 `CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where
 `expr` is a column, unary `-column`, `column +/- literal`, or `trigram(column)` (hash-only trigram
 keys for substring `LIKE`). Predicates of the form `(expr) = const` or `(expr) >/< const` can use
 arithmetic expression indexes; `EXPLAIN` reports expression hash/ordered access. Expression
-metadata is stored with index definitions in snapshot v4+ (`expr:…` encoding) so SAVE/LOAD restores
-expression indexes without losing keys. `DROP INDEX idx ON t` removes the named index; reserved
-constraint indexes (`__pk_*` / `__uq_*`) cannot be dropped.
+metadata is stored with index definitions in snapshot v4+ (`expr:…` encoding); composite column
+lists use `cols:a,b` in snapshot v8+ so SAVE/LOAD restores multi-column indexes. `DROP INDEX idx ON t`
+removes the named index; reserved constraint indexes (`__pk_*` / `__uq_*`) cannot be dropped.
 
 Column constraints on `CREATE TABLE`:
 
@@ -187,10 +190,15 @@ Column constraints on `CREATE TABLE`:
   to state the default explicitly. Assigning `NULL` on insert/update throws
   `NOT NULL constraint violation on column <name>` — an ACID **Consistency** guarantee, not only a
   storage shape check.
-- `col TYPE PRIMARY KEY` — implies `NOT NULL` and uniqueness; at most one primary-key column per
-  table (multi-column keys are out of scope until composite indexes exist). Rejects `NULL PRIMARY KEY`.
+- `col TYPE PRIMARY KEY` — implies `NOT NULL` and uniqueness; at most one primary key per table
+  (column-level or table-level). Rejects `NULL PRIMARY KEY`.
+- `PRIMARY KEY (c1, c2, …)` — table-level composite primary key; all listed columns become
+  `NOT NULL`. Auto-creates `__pk_c1_c2_…` composite index.
 - `col TYPE UNIQUE` — rejects duplicate non-NULL values on `INSERT`/`UPDATE`; multiple `NULL`s are
   allowed when the column is also `NULL`.
+- `UNIQUE (c1, c2, …)` — table-level composite uniqueness. A row is skipped for the uniqueness
+  check when any key part is NULL (NULL parts are distinct); otherwise the full key must be unique.
+  Auto-creates `__uq_c1_c2_…`.
 - `CHECK (predicate)` — column-level or table-level. Predicate is simple column comparisons
   (`=`, `<`, `>`) combined with `AND` / `OR` (no subqueries, `IN`, `LIKE`, or regex). Evaluated on
   the full row image at `INSERT`/`UPDATE`. Rejects only when the predicate is FALSE; NULL comparisons
@@ -198,15 +206,16 @@ Column constraints on `CREATE TABLE`:
   `CHECK constraint violation: <predicate>`.
 - `REFERENCES Parent(col)` or `FOREIGN KEY (col) REFERENCES Parent(col)` — single-column foreign
   keys. Parent column must be `PRIMARY KEY` or `UNIQUE` and already exist (self-FK allowed on the
-  table being created). Optional `ON DELETE NO ACTION` / `ON UPDATE NO ACTION` (the only supported
+  table being created). Composite parent keys are not yet referenceable as a multi-column FK.
+  Optional `ON DELETE NO ACTION` / `ON UPDATE NO ACTION` (the only supported
   actions). NULL child keys are accepted (MATCH SIMPLE). Parent existence uses the writer's
   SI-visible snapshot. Deleting or updating a referenced parent key is rejected while visible
   children still reference it. `DROP TABLE` / `RENAME TABLE` of a referenced parent is rejected.
   Errors: `FOREIGN KEY constraint violation on column …` /
   `FOREIGN KEY constraint violation: key is still referenced`.
-- VertexDB auto-creates a maintained column index (`__pk_<col>` / `__uq_<col>`) when no column index
-  already exists, so equality predicates on those columns use `HashEq` without a manual
-  `CREATE INDEX`.
+- VertexDB auto-creates a maintained index (`__pk_<cols>` / `__uq_<cols>`) when no matching
+  column/composite index already exists, so equality probes on those keys use `HashEq` without a
+  manual `CREATE INDEX`.
 
 `ANALYZE` / `ANALYZE TABLE name` scans live rows and builds per-column equi-height histograms
 (default 32 buckets) plus distinct counts. Histograms feed range/`IN` selectivity in the planner.
@@ -261,14 +270,14 @@ placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST an
 re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
-page-payload + index-pages + column constraint flags + CHECK + FOREIGN KEY format v7, extension
-`.tcrdb`) under the
+page-payload + index-pages + column constraint flags + CHECK + FOREIGN KEY + composite UNIQUE/PK
+format v8, extension `.tcrdb`) under the
 executor's storage root. `SAVE` writes a temporary snapshot, durable-syncs that file (flush+fsync /
 `F_FULLFSYNC` on macOS when available; `FlushFileBuffers` on Windows), renames it into place, then
 durable-syncs the storage directory on POSIX so the directory entry survives power loss — the same
 discipline as WAL `COMMIT`. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
-flags, `CHECK` predicate text, and `FOREIGN KEY` metadata), index definitions (column or
-`expr:`-prefixed expression metadata),
+flags, table-level composite unique constraints, `CHECK` predicate text, and `FOREIGN KEY` metadata),
+index definitions (column, `cols:a,b` composite, or `expr:`-prefixed expression metadata),
 `rowsPerPage`, capacity,
 free-list order, serialized page-directory payloads, durable B+ tree / hash index pages, and
 optional per-column histogram blobs so sparse IDs, page bytes, indexes, constraints, and `ANALYZE`

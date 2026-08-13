@@ -5,12 +5,16 @@
 #include "VertexDB/storage/check_eval.hpp"
 
 #include <sstream>
+#include <vector>
 
 namespace VertexDB {
 
 std::string sqlLiteral(const Value &value) {
     if (value.isNull()) {
         return "NULL";
+    }
+    if (value.isComposite()) {
+        return value.toString();
     }
     switch (value.type()) {
     case ColumnType::Int:
@@ -99,7 +103,16 @@ std::string createIndexSql(const CreateIndex &command) {
         return "CREATE INDEX " + command.name + " ON " + command.table + "((" +
                indexExpressionToString(*command.expression) + "));";
     }
-    return "CREATE INDEX " + command.name + " ON " + command.table + "(" + command.column + ");";
+    std::string columns;
+    const auto &list = command.columns.empty() ? std::vector<std::string>{command.column}
+                                               : command.columns;
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        if (i != 0) {
+            columns += ", ";
+        }
+        columns += list[i];
+    }
+    return "CREATE INDEX " + command.name + " ON " + command.table + "(" + columns + ");";
 }
 
 std::string dropIndexSql(const DropIndex &command) {
@@ -126,6 +139,16 @@ std::string createTableSql(const CreateTable &command) {
         } else if (column.unique) {
             sql << " UNIQUE";
         }
+    }
+    for (const auto &constraint : command.uniqueConstraints) {
+        sql << ", " << (constraint.primaryKey ? "PRIMARY KEY (" : "UNIQUE (");
+        for (std::size_t i = 0; i < constraint.columns.size(); ++i) {
+            if (i != 0) {
+                sql << ", ";
+            }
+            sql << constraint.columns[i];
+        }
+        sql << ")";
     }
     for (const auto &check : command.checkConstraints) {
         sql << ", CHECK (" << checkConstraintLiteral(check) << ")";

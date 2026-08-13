@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <variant>
+#include <vector>
 
 namespace VertexDB::tcrdb_detail {
 
@@ -23,6 +24,15 @@ void writeValue(std::ostream &out, const Value &value) {
         writePodDb(out, kNullValueType);
         return;
     }
+    if (value.isComposite()) {
+        writePodDb(out, kCompositeValueType);
+        const auto &parts = value.compositeParts();
+        writePodDb(out, static_cast<std::uint64_t>(parts.size()));
+        for (const auto &part : parts) {
+            writeValue(out, part);
+        }
+        return;
+    }
     writePodDb(out, static_cast<std::uint8_t>(value.type()));
     switch (value.type()) {
     case ColumnType::Int:
@@ -41,6 +51,15 @@ Value readValue(std::istream &in) {
     const auto encodedType = readPodDb<std::uint8_t>(in);
     if (encodedType == kNullValueType) {
         return Value{};
+    }
+    if (encodedType == kCompositeValueType) {
+        const auto partCount = readPodDb<std::uint64_t>(in);
+        std::vector<Value> parts;
+        parts.reserve(static_cast<std::size_t>(partCount));
+        for (std::uint64_t i = 0; i < partCount; ++i) {
+            parts.push_back(readValue(in));
+        }
+        return Value::composite(std::move(parts));
     }
     const auto type = static_cast<ColumnType>(encodedType);
     switch (type) {

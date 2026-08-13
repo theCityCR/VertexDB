@@ -7,15 +7,41 @@
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace VertexDB {
+namespace {
+
+void validateUniqueConstraintColumns(const UniqueConstraint &constraint,
+                                     std::span<const Column> schema) {
+    if (constraint.columns.empty()) {
+        throw std::invalid_argument("UNIQUE / PRIMARY KEY requires at least one column");
+    }
+    std::unordered_set<std::string> seen;
+    for (const auto &name : constraint.columns) {
+        if (!seen.insert(name).second) {
+            throw std::invalid_argument("duplicate column in UNIQUE / PRIMARY KEY: " + name);
+        }
+        const auto it = std::ranges::find_if(
+            schema, [&](const Column &column) { return column.name == name; });
+        if (it == schema.end()) {
+            throw std::invalid_argument("unknown UNIQUE / PRIMARY KEY column: " + name);
+        }
+        if (constraint.primaryKey && it->nullable) {
+            throw std::invalid_argument("PRIMARY KEY column cannot be NULL: " + name);
+        }
+    }
+}
+
+} // namespace
 
 Table::Table(std::string name, std::vector<Column> schema,
              std::vector<Predicate> checkConstraints,
-             std::vector<ForeignKeyConstraint> foreignKeys)
+             std::vector<ForeignKeyConstraint> foreignKeys,
+             std::vector<UniqueConstraint> uniqueConstraints)
     : name_(std::move(name)), schema_(std::move(schema)),
       checkConstraints_(std::move(checkConstraints)), foreignKeys_(std::move(foreignKeys)),
-      rowStore_(makePageRowStore()) {
+      uniqueConstraints_(std::move(uniqueConstraints)), rowStore_(makePageRowStore()) {
     if (name_.empty()) {
         throw std::invalid_argument("table name cannot be empty");
     }
@@ -35,6 +61,20 @@ Table::Table(std::string name, std::vector<Column> schema,
                 throw std::invalid_argument("PRIMARY KEY column must be UNIQUE");
             }
             sawPrimaryKey = true;
+        }
+    }
+    for (const auto &constraint : uniqueConstraints_) {
+        validateUniqueConstraintColumns(constraint, schema_);
+        if (constraint.primaryKey) {
+            if (sawPrimaryKey) {
+                throw std::invalid_argument("multiple PRIMARY KEY constraints are not supported");
+            }
+            sawPrimaryKey = true;
+            for (auto &column : schema_) {
+                if (std::ranges::find(constraint.columns, column.name) != constraint.columns.end()) {
+                    column.nullable = false;
+                }
+            }
         }
     }
     for (const auto &check : checkConstraints_) {
@@ -57,6 +97,10 @@ std::span<const Column> Table::schema() const noexcept { return schema_; }
 std::span<const Predicate> Table::checkConstraints() const noexcept { return checkConstraints_; }
 
 std::span<const ForeignKeyConstraint> Table::foreignKeys() const noexcept { return foreignKeys_; }
+
+std::span<const UniqueConstraint> Table::uniqueConstraints() const noexcept {
+    return uniqueConstraints_;
+}
 
 std::optional<std::size_t> Table::columnIndex(std::string_view column) const {
     auto it =
@@ -316,19 +360,106 @@ void Table::assertUniqueRow(const Row &row, std::optional<RowId> excludeRowId) c
     enforceUniqueConstraintsUnlocked(row, excludeRowId);
 }
 
-void Table::ensureConstraintIndexes() {
-    std::unique_lock lock{mutex_};
-    for (std::size_t i = 0; i < schema_.size(); ++i) {
-        const auto &column = schema_[i];
+bool Table::rowsConflictOnUnique(const Row &left, const Row &right) const {
+    for (const auto &constraint : allUniqueConstraints()) {
+        if (uniqueRowsEqual(constraint, left, right)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<UniqueConstraint> Table::allUniqueConstraints() const {
+    std::vector<UniqueConstraint> constraints = uniqueConstraints_;
+    for (const auto &column : schema_) {
         if (!column.unique && !column.primaryKey) {
             continue;
         }
-        if (indexManager_.hasIndex(column.name, schema_)) {
+        // Column-level flags already covered when a matching table-level constraint exists.
+        const bool covered = std::ranges::any_of(uniqueConstraints_, [&](const UniqueConstraint &c) {
+            return c.columns.size() == 1 && c.columns.front() == column.name;
+        });
+        if (covered) {
             continue;
         }
-        const std::string indexName =
-            (column.primaryKey ? "__pk_" : "__uq_") + column.name;
-        if (!registerIndex(indexName, i, std::nullopt, true)) {
+        constraints.push_back(UniqueConstraint{{column.name}, column.primaryKey});
+    }
+    return constraints;
+}
+
+std::string Table::constraintIndexName(const UniqueConstraint &constraint) {
+    std::string name = constraint.primaryKey ? "__pk_" : "__uq_";
+    for (std::size_t i = 0; i < constraint.columns.size(); ++i) {
+        if (i != 0) {
+            name.push_back('_');
+        }
+        name += constraint.columns[i];
+    }
+    return name;
+}
+
+std::string Table::formatUniqueColumns(const UniqueConstraint &constraint) {
+    if (constraint.columns.size() == 1) {
+        return constraint.columns.front();
+    }
+    std::string text = "(";
+    for (std::size_t i = 0; i < constraint.columns.size(); ++i) {
+        if (i != 0) {
+            text += ", ";
+        }
+        text += constraint.columns[i];
+    }
+    text.push_back(')');
+    return text;
+}
+
+Value Table::uniqueKeyForRow(const UniqueConstraint &constraint, const Row &row) const {
+    std::vector<Value> parts;
+    parts.reserve(constraint.columns.size());
+    for (const auto &columnName : constraint.columns) {
+        const auto index = columnIndex(columnName);
+        if (!index) {
+            throw std::runtime_error("unknown unique constraint column");
+        }
+        parts.push_back(row[*index]);
+    }
+    return Value::composite(std::move(parts));
+}
+
+bool Table::uniqueRowsEqual(const UniqueConstraint &constraint, const Row &left,
+                            const Row &right) const {
+    for (const auto &columnName : constraint.columns) {
+        const auto index = columnIndex(columnName);
+        if (!index) {
+            return false;
+        }
+        if (left[*index].isNull() || right[*index].isNull()) {
+            return false;
+        }
+        if (!(left[*index] == right[*index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Table::ensureConstraintIndexes() {
+    std::unique_lock lock{mutex_};
+    for (const auto &constraint : allUniqueConstraints()) {
+        if (indexManager_.hasIndex(constraint.columns, schema_)) {
+            continue;
+        }
+        const std::string indexName = constraintIndexName(constraint);
+        std::vector<std::size_t> indexes;
+        indexes.reserve(constraint.columns.size());
+        for (const auto &columnName : constraint.columns) {
+            const auto index = columnIndex(columnName);
+            if (!index) {
+                throw std::runtime_error("failed to create constraint index " + indexName);
+            }
+            indexes.push_back(*index);
+        }
+        if (!registerIndex(indexName, std::move(indexes), std::nullopt, true)) {
             throw std::runtime_error("failed to create constraint index " + indexName);
         }
     }
@@ -336,22 +467,19 @@ void Table::ensureConstraintIndexes() {
 
 void Table::enforceUniqueConstraintsUnlocked(const Row &row,
                                              std::optional<RowId> excludeRowId) const {
-    for (std::size_t i = 0; i < schema_.size(); ++i) {
-        if (!schema_[i].unique && !schema_[i].primaryKey) {
+    for (const auto &constraint : allUniqueConstraints()) {
+        const Value key = uniqueKeyForRow(constraint, row);
+        if (key.hasNullCompositePart()) {
+            // UNIQUE allows rows with NULL parts; PRIMARY KEY columns are non-nullable.
             continue;
         }
-        const Value &value = row[i];
-        if (value.isNull()) {
-            // UNIQUE allows multiple NULLs; PRIMARY KEY is non-nullable.
-            continue;
-        }
-        if (auto hits = indexManager_.indexedLookup(schema_[i].name, value, schema_)) {
+        if (auto hits = indexManager_.indexedLookup(constraint.columns, key, schema_)) {
             for (const RowId hit : *hits) {
                 if (excludeRowId && hit == *excludeRowId) {
                     continue;
                 }
                 throw std::invalid_argument("unique constraint violation on column " +
-                                            schema_[i].name);
+                                            formatUniqueColumns(constraint));
             }
             continue;
         }
@@ -359,9 +487,9 @@ void Table::enforceUniqueConstraintsUnlocked(const Row &row,
             if (excludeRowId && rowId == *excludeRowId) {
                 continue;
             }
-            if (existing[i] == value) {
+            if (uniqueRowsEqual(constraint, row, existing)) {
                 throw std::invalid_argument("unique constraint violation on column " +
-                                            schema_[i].name);
+                                            formatUniqueColumns(constraint));
             }
         }
     }

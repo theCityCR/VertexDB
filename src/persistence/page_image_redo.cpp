@@ -5,11 +5,13 @@
 #include <cstring>
 #include <stdexcept>
 #include <variant>
+#include <vector>
 
 namespace VertexDB {
 namespace {
 
 constexpr std::uint8_t kNullValueType = 255;
+constexpr std::uint8_t kCompositeValueType = 254;
 constexpr std::string_view kTruncated = "truncated page image redo payload";
 
 void appendBytes(std::vector<std::byte> &bytes, const void *data, std::size_t size) {
@@ -29,6 +31,15 @@ void appendString(std::vector<std::byte> &bytes, std::string_view value) {
 void appendValue(std::vector<std::byte> &bytes, const Value &value) {
     if (value.isNull()) {
         appendPod(bytes, kNullValueType);
+        return;
+    }
+    if (value.isComposite()) {
+        appendPod(bytes, kCompositeValueType);
+        const auto &parts = value.compositeParts();
+        appendPod(bytes, static_cast<std::uint64_t>(parts.size()));
+        for (const auto &part : parts) {
+            appendValue(bytes, part);
+        }
         return;
     }
     appendPod(bytes, static_cast<std::uint8_t>(value.type()));
@@ -59,6 +70,15 @@ Value readValue(std::span<const std::byte> &bytes) {
     const auto encodedType = readPod<std::uint8_t>(bytes, kTruncated);
     if (encodedType == kNullValueType) {
         return Value{};
+    }
+    if (encodedType == kCompositeValueType) {
+        const auto partCount = readPod<std::uint64_t>(bytes, kTruncated);
+        std::vector<Value> parts;
+        parts.reserve(static_cast<std::size_t>(partCount));
+        for (std::uint64_t i = 0; i < partCount; ++i) {
+            parts.push_back(readValue(bytes));
+        }
+        return Value::composite(std::move(parts));
     }
     switch (static_cast<ColumnType>(encodedType)) {
     case ColumnType::Int:

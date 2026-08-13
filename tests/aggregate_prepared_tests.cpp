@@ -521,13 +521,13 @@ TEST(AggregatePreparedTests, SqlLiteralHelpersCoverNullDoubleAndEscapes) {
     Predicate both = makeAnd(comparison, inList);
     EXPECT_NE(predicateLiteral(both).find("AND"), std::string::npos);
 
-    CreateIndex index{"idx_id", "Employees", "id"};
+    CreateIndex index{"idx_id", "Employees", "id", {"id"}};
     EXPECT_NE(createIndexSql(index).find("CREATE INDEX"), std::string::npos);
 
     IndexExpression expr;
     expr.kind = IndexExpression::Kind::Negate;
     expr.column = "salary";
-    CreateIndex exprIndex{"idx_neg", "Employees", {}};
+    CreateIndex exprIndex{"idx_neg", "Employees", "salary", {"salary"}};
     exprIndex.expression = expr;
     EXPECT_NE(createIndexSql(exprIndex).find("-salary"), std::string::npos);
 

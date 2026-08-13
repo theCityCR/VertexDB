@@ -24,9 +24,9 @@ design, correctness tests, and explicit tradeoffs in database internals—not pr
   and dense v1 still loadable), page-image WAL redo for
   DML with flush+fsync on append (durable `COMMIT` / autocommit), save checkpoints, and startup
   recovery
-- Single-column `PRIMARY KEY` / `UNIQUE` constraints with auto-maintained indexes and duplicate
-  `INSERT`/`UPDATE` rejection; simple `CHECK` constraints (column comparisons with `AND`/`OR`);
-  single-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION`)
+- Single- and multi-column `PRIMARY KEY` / `UNIQUE` constraints with auto-maintained (composite)
+  indexes and duplicate `INSERT`/`UPDATE` rejection; simple `CHECK` constraints (column comparisons with
+  `AND`/`OR`); single-column `FOREIGN KEY` (`REFERENCES`, `NO ACTION`)
 - Transaction state tracking, MVCC row-version storage with commit-aware snapshot isolation, undo-log
   rollback for DML, and transaction-atomic page-image WAL (DML deferred until `COMMIT`, then
   durable-synced)
@@ -65,7 +65,7 @@ COMMIT;
 ROLLBACK;
 ```
 
-Also supported: nullable columns and explicit `NOT NULL`, single-column `PRIMARY KEY` / `UNIQUE`,
+Also supported: nullable columns and explicit `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`,
 simple `CHECK` (column comparisons with `AND`/`OR`), single-column `FOREIGN KEY` (`NO ACTION`),
 compound predicates
 (`AND`/`OR`, `LIKE`, regex `~`), left-deep
@@ -168,15 +168,15 @@ Or feed an example script:
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
-- Single-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL`, simple `CHECK`, and single-column `FOREIGN KEY`
-  (`NO ACTION`) are enforced; multi-column uniqueness and FK CASCADE/SET NULL are not yet
-  implemented (see [ACID Plan](docs/design.md#acid-plan))
+- Single- and multi-column `PRIMARY KEY` / `UNIQUE`, `NOT NULL`, simple `CHECK`, and single-column
+  `FOREIGN KEY` (`NO ACTION`) are enforced; FK CASCADE/SET NULL are not yet implemented (see
+  [ACID Plan](docs/design.md#acid-plan))
 
 ## Roadmap
 
 Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps and
 [ACID Plan](docs/design.md#acid-plan)). Shipped milestones
-include snapshot v7 FOREIGN KEY + v6 CHECK + v5 constraint flags + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
+include snapshot v8 composite UNIQUE/PK + v7 FOREIGN KEY + v6 CHECK + v5 constraint flags + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
 `WITH` nesting depth up to 6 and correlation through eight outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
 non-equi `ON`, `LIKE` / regex predicates (prefix and trigram index paths), join-table aliases, `JOIN`
@@ -195,7 +195,8 @@ complementary residual), multiple independent recursive CTEs, mutual recursion a
 single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guarantees, durable
 `SAVE DATABASE` snapshot publish, simple `CHECK` constraints, single-column `FOREIGN KEY`
 (`NO ACTION`), richer predicate SIREAD for OR of column leaves and column `LIKE`, COMMIT
-crash-injection durability cut points, and a dated
+crash-injection durability cut points, composite indexes and multi-column `PRIMARY KEY` / `UNIQUE`
+(snapshot v8), and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

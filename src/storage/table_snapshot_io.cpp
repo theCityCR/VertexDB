@@ -122,13 +122,18 @@ TableSnapshotIO::exportIndexPages(const IndexManager &indexes,
     const auto &orderedIndexes = indexes.orderedIndexes();
     const auto &hashIndexes = indexes.hashIndexes();
     snapshot.indexes.reserve(indexColumns.size());
-    for (const auto &[name, columnIndex] : indexColumns) {
+    for (const auto &[name, columnIndexes] : indexColumns) {
         IndexStoreSnapshot entry;
         entry.name = name;
+        std::vector<std::string> columns;
+        columns.reserve(columnIndexes.size());
+        for (const auto columnIndex : columnIndexes) {
+            columns.push_back(schema[columnIndex].name);
+        }
         if (auto it = indexExpressions.find(name); it != indexExpressions.end()) {
-            entry.column = encodeIndexDefinitionColumn(schema[columnIndex].name, it->second);
+            entry.column = encodeIndexDefinitionColumns(columns, it->second);
         } else {
-            entry.column = schema[columnIndex].name;
+            entry.column = encodeIndexDefinitionColumns(columns, std::nullopt);
         }
         entry.btree = orderedIndexes.at(name).exportPages();
         entry.hash = hashIndexes.at(name).exportBuckets();

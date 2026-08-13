@@ -56,7 +56,7 @@ QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
     }
     const bool created =
         ctx_.database->createTable(command.name, command.columns, command.checkConstraints,
-                                   command.foreignKeys);
+                                   command.foreignKeys, command.uniqueConstraints);
     if (created) {
         auto table = ctx_.database->table(command.name);
         table->ensureConstraintIndexes();
@@ -134,7 +134,7 @@ QueryResult CatalogEngine::executeCreateIndex(const CreateIndex &command) {
     auto table = ctx_.select->requireTable(command.table);
     const bool created =
         command.expression ? table->createIndex(command.name, *command.expression)
-                           : table->createIndex(command.name, command.column);
+                           : table->createIndex(command.name, command.columns);
     if (created) {
         if (ctx_.session.transactionActive()) {
             UndoRecord undo;
@@ -173,6 +173,7 @@ QueryResult CatalogEngine::executeDropIndex(const DropIndex &command) {
         undo.kind = UndoKind::DropIndex;
         undo.indexName = definition->name;
         undo.indexColumn = definition->column;
+        undo.indexColumns = definition->columns;
         undo.indexExpression = definition->expression;
         ctx_.session.pushUndo(std::move(undo));
     }
