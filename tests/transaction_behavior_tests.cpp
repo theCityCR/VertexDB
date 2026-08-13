@@ -737,6 +737,74 @@ TEST(TransactionBehaviorTests, CommitReturnsOnlyAfterDeferredWalIsDurable) {
     std::filesystem::remove_all(root);
 }
 
+// Desired (ACID Phase 3c): if the process dies after durable WAL sync but before the in-memory
+// commit mark, recovery must still replay the committed batch.
+TEST(TransactionBehaviorTests, RecoverSurvivesCrashAfterWalSyncBeforeCommitMark) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-crash-after-wal-sync";
+    std::filesystem::remove_all(root);
+    Parser parser;
+    const auto walPath = root / "VertexDB.wal";
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE TABLE Items (id INT, label STRING);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Items VALUES (1, \"synced\");")).success);
+        ASSERT_EQ(WriteAheadLog{walPath}.readAll().size(), 2U);
+
+        executor.armCrashInjection(CrashInjectionPoint::AfterWalSyncBeforeCommitMark);
+        EXPECT_THROW(executor.execute(parser.parse("COMMIT;")), CrashInjected);
+
+        // WAL already holds the batch; only the in-memory commit mark was skipped.
+        const auto records = WriteAheadLog{walPath}.readAll();
+        ASSERT_EQ(records.size(), 3U);
+        EXPECT_EQ(records[2].operation, WalOperation::PageImageRedo);
+    }
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id, label FROM Items;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_EQ(result.rows[0][1], Value{"synced"});
+    std::filesystem::remove_all(root);
+}
+
+// Desired complementary cut point: die before WAL sync — uncommitted DML must not survive restart.
+TEST(TransactionBehaviorTests, CrashBeforeWalSyncDoesNotDurableCommit) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-crash-before-wal-sync";
+    std::filesystem::remove_all(root);
+    Parser parser;
+    const auto walPath = root / "VertexDB.wal";
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("CREATE TABLE Items (id INT, label STRING);")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Items VALUES (1, \"lost\");")).success);
+
+        executor.armCrashInjection(CrashInjectionPoint::BeforeWalSync);
+        EXPECT_THROW(executor.execute(parser.parse("COMMIT;")), CrashInjected);
+        EXPECT_EQ(WriteAheadLog{walPath}.readAll().size(), 2U)
+            << "crash before WAL sync must not append the deferred DML batch";
+    }
+
+    QueryExecutor recovered{root};
+    auto result = recovered.execute(parser.parse("SELECT id, label FROM Items;"));
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.rows.empty())
+        << "uncommitted insert must not be durable when COMMIT dies before WAL sync";
+    std::filesystem::remove_all(root);
+}
+
 // --- SI anomaly wedge -------------------------------------------------------
 // Multi-txn interleaving uses shared Table + TransactionManager (one QueryExecutor
 // cannot hold two open SQL transactions). Executor honesty tests cover the RW gate.

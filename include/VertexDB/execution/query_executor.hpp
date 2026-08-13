@@ -21,12 +21,36 @@
 #include "VertexDB/planner/query_planner.hpp"
 #include "VertexDB/storage/database.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace VertexDB {
+
+// Educational durability crash-injection (ACID Phase 3c). Armed once; fires on the next COMMIT
+// at the named cut point, then clears. Not a production fault-injection framework.
+enum class CrashInjectionPoint : std::uint8_t {
+    None = 0,
+    BeforeWalSync,                 // die before flushPendingWal — uncommitted work must not survive
+    AfterWalSyncBeforeCommitMark,  // die after durable WAL append, before TM commit mark
+};
+
+class CrashInjected : public std::runtime_error {
+  public:
+    explicit CrashInjected(CrashInjectionPoint point)
+        : std::runtime_error(point == CrashInjectionPoint::BeforeWalSync
+                                 ? "crash injected before WAL sync"
+                                 : "crash injected after WAL sync before commit mark"),
+          point_(point) {}
+
+    [[nodiscard]] CrashInjectionPoint point() const noexcept { return point_; }
+
+  private:
+    CrashInjectionPoint point_;
+};
 
 class QueryExecutor {
   public:
@@ -35,6 +59,9 @@ class QueryExecutor {
     [[nodiscard]] QueryResult execute(const Query &query);
     [[nodiscard]] std::shared_ptr<Database> currentDatabase() const noexcept;
     [[nodiscard]] std::optional<Query> preparedAst(std::string_view name) const;
+
+    // Arm a one-shot crash on the next COMMIT (see CrashInjectionPoint).
+    void armCrashInjection(CrashInjectionPoint point) noexcept;
 
   private:
     [[nodiscard]] QueryResult executeInsert(const Insert &command);
@@ -49,6 +76,7 @@ class QueryExecutor {
     [[nodiscard]] QueryResult executePrepared(const ExecutePrepared &command);
 
     [[nodiscard]] QueryResult executeUnlocked(const Query &query);
+    [[noreturn]] void fireCrashInjection(CrashInjectionPoint point);
 
     std::shared_ptr<Database> database_;
     StorageManager storageManager_;
@@ -63,6 +91,7 @@ class QueryExecutor {
     CatalogEngine catalogEngine_;
     PreparedStatementCatalog prepared_;
     LockManager lockManager_;
+    CrashInjectionPoint crashInjection_{CrashInjectionPoint::None};
 };
 
 } // namespace VertexDB

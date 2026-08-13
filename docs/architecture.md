@@ -154,7 +154,8 @@ catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP I
 compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to the same `Database`
 instance (or restores a prior DB after `CREATE DATABASE`), and `COMMIT` discards the log after
 `RecoveryService` flushes deferred WAL (logical DDL SQL plus collapsed page-image redo) with
-durable sync before discarding the undo log.
+durable sync before discarding the undo log. Crash-injection on `COMMIT` can kill after that WAL
+sync but before the in-memory commit mark (or before WAL sync) for durability tests.
 `SAVE DATABASE` may implicitly commit first; `LOAD DATABASE` may implicitly roll back first.
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index

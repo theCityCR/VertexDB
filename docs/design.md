@@ -120,12 +120,13 @@ first-class `NOT NULL` Consistency messaging/tests, durable `SAVE DATABASE` snap
 (fsync temp + POSIX directory sync), simple `CHECK` constraints (column comparisons with
 `AND`/`OR`; snapshot v6), single-column `FOREIGN KEY` (`NO ACTION`; snapshot v7), and richer
 predicate SIREAD for OR of column leaves and column `LIKE` (regex / subquery / expression-index
-probes still relation-membership).
+probes still relation-membership), and COMMIT crash-injection cut points (after WAL sync / before
+commit mark, plus before WAL sync).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- **ACID alignment** — see [ACID Plan](#acid-plan) below (crash-injection; CASCADE/SET NULL FK
-  actions; optional richer predicate SIREAD for remaining regex/subquery/expression fallbacks)
+- **ACID alignment** — see [ACID Plan](#acid-plan) below (CASCADE/SET NULL FK actions; optional
+  group-commit sync policy; atomicity edge polish)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
@@ -154,7 +155,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
 | **C** Consistency | Strong (educational) | Typed schema; `NOT NULL` (default) / `NULL`; single-column `PRIMARY KEY` / `UNIQUE`; simple `CHECK`; single-column `FOREIGN KEY` (`NO ACTION`) | No multi-column uniqueness; no FK CASCADE/SET NULL |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD including OR of column leaves and column LIKE); executor `LockManager` | One open SQL txn per executor; regex / subquery / expression-index probes use relation-membership SIREAD fallbacks; no next-key / gap locks |
-| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
+| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay; crash-injection at COMMIT cut points | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
 
 ### Principles
 
@@ -198,7 +199,7 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 | --- | --- | --- |
 | **3a. Durable `SAVE DATABASE`** | fsync snapshot temp file + parent directory before/after rename (shared `durable_sync` with WAL) | **Done** — temp fsync before rename; POSIX dir sync after; `SaveDatabasePerformsDurablePublish` |
 | **3b. Group commit / sync policy** | Optional `WalDurability::{Sync,FlushOnly}` for benchmarks — default remains Sync | Only if bench noise from fsync becomes a problem; never silently weaken default |
-| **3c. Crash-injection tests** | Kill after WAL sync / before in-memory commit mark; assert recovery | Strengthens D without new features |
+| **3c. Crash-injection tests** | Kill after WAL sync / before in-memory commit mark; assert recovery | **Done** — `QueryExecutor::armCrashInjection`; `RecoverSurvivesCrashAfterWalSyncBeforeCommitMark` + complementary `CrashBeforeWalSyncDoesNotDurableCommit` |
 
 #### Phase 4 — Atomicity edge polish
 
@@ -209,9 +210,9 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 ### Suggested order of attack
 
-1. Phase **3c** when packaging a deeper recovery story.
-2. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
-3. FK `CASCADE` / `SET NULL` only if teaching referential actions is the focus.
+1. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
+2. FK `CASCADE` / `SET NULL` only if teaching referential actions is the focus.
+3. Phase **4** atomicity FAQ / failure-matrix docs when packaging catalog+DML edge cases.
 
 ### Explicit non-goals (for now)
 

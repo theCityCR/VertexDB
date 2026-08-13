@@ -120,6 +120,15 @@ QueryResult QueryExecutor::executeBegin() {
     return session_.begin();
 }
 
+void QueryExecutor::armCrashInjection(CrashInjectionPoint point) noexcept {
+    crashInjection_ = point;
+}
+
+void QueryExecutor::fireCrashInjection(CrashInjectionPoint point) {
+    crashInjection_ = CrashInjectionPoint::None;
+    throw CrashInjected{point};
+}
+
 QueryResult QueryExecutor::executeCommit() {
     if (!session_.transactionActive()) {
         return messageResult(false, "no active transaction");
@@ -132,7 +141,13 @@ QueryResult QueryExecutor::executeCommit() {
         (void)session_.rollback();
         return messageResult(false, "serialization failure");
     }
+    if (crashInjection_ == CrashInjectionPoint::BeforeWalSync) {
+        fireCrashInjection(CrashInjectionPoint::BeforeWalSync);
+    }
     recovery_.flushPendingWal();
+    if (crashInjection_ == CrashInjectionPoint::AfterWalSyncBeforeCommitMark) {
+        fireCrashInjection(CrashInjectionPoint::AfterWalSyncBeforeCommitMark);
+    }
     return session_.commit();
 }
 

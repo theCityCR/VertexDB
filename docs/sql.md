@@ -291,8 +291,9 @@ and any deferred WAL buffer; SELECTs use that snapshot (plus read-your-writes) s
 uncommitted or post-`BEGIN` commits stay invisible; mutating `INSERT`/`UPDATE`/`DELETE` stamp SQL
 transaction ids, append compensating undo records, and buffer page-image redo records; `COMMIT`
 flushes deferred redo as one atomic WAL batch (each append flush+fsyncs the WAL file) then marks
-the transaction committed and discards the undo log; `ROLLBACK` applies the undo log LIFO on the
-same database instance and drops deferred WAL.
+the transaction committed and discards the undo log. Educational crash-injection
+(`QueryExecutor::armCrashInjection`) can cut between those steps for durability tests. `ROLLBACK`
+applies the undo log LIFO on the same database instance and drops deferred WAL.
 Snapshot isolation **prevents** dirty reads, non-repeatable reads, and mid-txn phantoms under a held
 snapshot. SSI **aborts** a later `COMMIT` on overlapping row read/write sets (write skew /
 write–write) or on insert-phantom conflicts (predicate SIREAD summaries from SELECT/UPDATE/DELETE
