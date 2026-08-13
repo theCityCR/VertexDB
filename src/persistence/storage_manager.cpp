@@ -1,5 +1,6 @@
 #include "VertexDB/persistence/storage_manager.hpp"
 
+#include "VertexDB/persistence/durable_sync.hpp"
 #include "VertexDB/persistence/tcrdb_codec.hpp"
 
 #include <fstream>
@@ -19,7 +20,13 @@ void StorageManager::saveDatabase(const Database &database) const {
             throw std::runtime_error("failed to open temporary database file for writing");
         }
         writeTcrdbSnapshot(out, database);
+        out.flush();
+        if (!out) {
+            throw std::runtime_error("failed to write temporary database snapshot");
+        }
     }
+    // Contents durable before rename so a crash cannot publish a torn .tcrdb.
+    durableSyncFile(tempPath);
 
     std::error_code error;
     std::filesystem::rename(tempPath, targetPath, error);
@@ -32,6 +39,9 @@ void StorageManager::saveDatabase(const Database &database) const {
         std::filesystem::remove(tempPath);
         throw std::runtime_error("failed to publish database snapshot");
     }
+    // Directory entry for the final name (POSIX); no-op directory sync on Windows.
+    durableSyncDirectory(root_);
+    ++durablePublishCount_;
 }
 
 void StorageManager::deleteDatabase(std::string_view databaseName) const {
