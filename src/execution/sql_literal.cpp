@@ -115,6 +115,9 @@ std::string createTableSql(const CreateTable &command) {
         sql << column.name << " " << toString(column.type);
         if (column.nullable) {
             sql << " NULL";
+        } else if (!column.primaryKey) {
+            // Default columns are NOT NULL; emit the keyword so WAL/replay states the C guarantee.
+            sql << " NOT NULL";
         }
         if (column.primaryKey) {
             sql << " PRIMARY KEY";

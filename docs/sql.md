@@ -8,7 +8,7 @@ VertexDB intentionally supports a small SQL subset first.
 CREATE DATABASE company;
 DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
-CREATE TABLE People (id INT, nickname STRING NULL);
+CREATE TABLE People (id INT NOT NULL, nickname STRING NULL);
 CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
 DROP TABLE Employees;
 RENAME TABLE Employees TO Staff;
@@ -181,6 +181,10 @@ constraint indexes (`__pk_*` / `__uq_*`) cannot be dropped.
 
 Column constraints on `CREATE TABLE`:
 
+- Columns are `NOT NULL` by default. Write `col TYPE NULL` to allow nulls, or `col TYPE NOT NULL`
+  to state the default explicitly. Assigning `NULL` on insert/update throws
+  `NOT NULL constraint violation on column <name>` — an ACID **Consistency** guarantee, not only a
+  storage shape check.
 - `col TYPE PRIMARY KEY` — implies `NOT NULL` and uniqueness; at most one primary-key column per
   table (multi-column keys are out of scope until composite indexes exist). Rejects `NULL PRIMARY KEY`.
 - `col TYPE UNIQUE` — rejects duplicate non-NULL values on `INSERT`/`UPDATE`; multiple `NULL`s are
@@ -289,10 +293,12 @@ implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
 - `INT`: stored as signed 64-bit integer.
 - `DOUBLE`: stored as C++ `double`.
 - `STRING`: stored as `std::string`.
-- `NULL`: allowed only for columns declared nullable with `NULL` (and never for `PRIMARY KEY`).
-  Equality comparisons, equi-join keys, correlated `IN`/`EXISTS` outer binds, and `GROUP BY` keys
-  treat `NULL = NULL` as true (VertexDB `Value` equality), unlike SQL's UNKNOWN. `LIKE` and `~` on a
-  NULL column value do not match. `UNIQUE` columns allow multiple NULLs.
+- `NULL`: allowed only for columns declared nullable with `NULL` (and never for `PRIMARY KEY` or
+  default/`NOT NULL` columns). Insert/update of NULL into a non-nullable column is a
+  `NOT NULL` constraint violation. Equality comparisons, equi-join keys, correlated `IN`/`EXISTS`
+  outer binds, and `GROUP BY` keys treat `NULL = NULL` as true (VertexDB `Value` equality), unlike
+  SQL's UNKNOWN. `LIKE` and `~` on a NULL column value do not match. `UNIQUE` columns allow multiple
+  NULLs.
 
 Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`column` (message prefix
 `line L, column C: …`). The CLI prints `error: ` plus that message.

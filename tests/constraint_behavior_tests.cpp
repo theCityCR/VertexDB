@@ -115,8 +115,83 @@ TEST(ConstraintBehaviorTests, PrimaryKeyRejectsNullInsert) {
     ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
     ASSERT_TRUE(
         executor.execute(parser.parse("CREATE TABLE Accounts (id INT PRIMARY KEY);")).success);
-    EXPECT_THROW((void)executor.execute(parser.parse("INSERT INTO Accounts VALUES (NULL);")),
-                 std::invalid_argument);
+    try {
+        (void)executor.execute(parser.parse("INSERT INTO Accounts VALUES (NULL);"));
+        FAIL() << "expected NOT NULL rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("NOT NULL constraint violation on column id"),
+                  std::string::npos);
+    }
+}
+
+TEST(ConstraintBehaviorTests, ParsesExplicitNotNull) {
+    Parser parser;
+    auto query = parser.parse("CREATE TABLE People (id INT NOT NULL, nickname STRING NULL);");
+    ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
+    const auto &table = std::get<CreateTable>(query);
+    ASSERT_EQ(table.columns.size(), 2U);
+    EXPECT_FALSE(table.columns[0].nullable);
+    EXPECT_TRUE(table.columns[1].nullable);
+}
+
+TEST(ConstraintBehaviorTests, NotNullRejectsNullInsert) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "not-null-insert");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE People (id INT NOT NULL, name STRING NOT NULL);"))
+                    .success);
+    try {
+        (void)executor.execute(parser.parse("INSERT INTO People VALUES (1, NULL);"));
+        FAIL() << "expected NOT NULL rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("NOT NULL constraint violation on column name"),
+                  std::string::npos);
+    }
+    const auto rows = executor.execute(parser.parse("SELECT id FROM People;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
+}
+
+TEST(ConstraintBehaviorTests, NotNullRejectsNullUpdate) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "not-null-update");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE People (id INT NOT NULL, name STRING NOT NULL);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("INSERT INTO People VALUES (1, \"Ada\");")).success);
+    try {
+        (void)executor.execute(parser.parse("UPDATE People SET name = NULL WHERE id = 1;"));
+        FAIL() << "expected NOT NULL rejection";
+    } catch (const std::invalid_argument &ex) {
+        EXPECT_NE(std::string{ex.what()}.find("NOT NULL constraint violation on column name"),
+                  std::string::npos);
+    }
+    const auto rows =
+        executor.execute(parser.parse("SELECT name FROM People WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{std::string{"Ada"}});
+}
+
+TEST(ConstraintBehaviorTests, NotNullMultiRowInsertRefusesWithoutPartialWrite) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "not-null-batch");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE People (id INT NOT NULL, name STRING);"))
+            .success);
+    EXPECT_THROW(
+        (void)executor.execute(parser.parse(
+            "INSERT INTO People VALUES (1, \"Ada\"), (2, NULL);")),
+        std::invalid_argument);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM People;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
 }
 
 TEST(ConstraintBehaviorTests, PrimaryKeyAutoIndexUsedForHashEq) {

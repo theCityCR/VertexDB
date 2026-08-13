@@ -61,7 +61,7 @@ COMMIT;
 ROLLBACK;
 ```
 
-Also supported: nullable columns, single-column `PRIMARY KEY` / `UNIQUE`, compound predicates
+Also supported: nullable columns and explicit `NOT NULL`, single-column `PRIMARY KEY` / `UNIQUE`, compound predicates
 (`AND`/`OR`, `LIKE`, regex `~`), left-deep
 `INNER` / `LEFT` / `RIGHT` / `FULL` join chains and `CROSS JOIN` with `ON col op col` (`=`, `<`, `>`; none for `CROSS`), aggregates
 (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) with `GROUP BY`, `WITH` CTEs (always inlined by default; nesting
@@ -109,11 +109,11 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 297 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 301 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
-  (`PRIMARY KEY` / `UNIQUE`), deep features, and regressions (see [docs/testing.md](docs/testing.md)
+  (`PRIMARY KEY` / `UNIQUE` / `NOT NULL`), deep features, and regressions (see [docs/testing.md](docs/testing.md)
   for file ownership)
 - Coverage script enforces an 85% line coverage floor for the core library (latest local run:
   85.19%)
@@ -160,8 +160,8 @@ Or feed an example script:
 - Aggregates and `GROUP BY` are supported; non-aggregated selected columns must appear in `GROUP BY`.
   Joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL` chains and `CROSS JOIN` with `ON` `=` /
   `<` / `>` (no `ON` for `CROSS`)
-- Single-column `PRIMARY KEY` / `UNIQUE` are enforced; `CHECK`, `FOREIGN KEY`, and multi-column
-  uniqueness are not yet implemented (see [ACID Plan](docs/design.md#acid-plan))
+- Single-column `PRIMARY KEY` / `UNIQUE` and `NOT NULL` are enforced; `CHECK`, `FOREIGN KEY`, and
+  multi-column uniqueness are not yet implemented (see [ACID Plan](docs/design.md#acid-plan))
 
 ## Roadmap
 
@@ -183,7 +183,8 @@ CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
 `EXCEPT ALL`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
 complementary residual), multiple independent recursive CTEs, mutual recursion among
 `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync),
-single-column `PRIMARY KEY` / `UNIQUE`, and a dated absolute-time benchmark summary (last refreshed
+single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guarantees, and a dated
+absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
