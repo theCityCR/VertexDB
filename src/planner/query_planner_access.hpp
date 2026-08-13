@@ -1,7 +1,12 @@
 #pragma once
 
 // Access-path strategy helpers used by query_planner_select.cpp (OR-union, AND-intersect,
-// best-path finalize). Implementations: query_planner_access.cpp.
+// best-path finalize). Implementations:
+//   query_planner_or_union.cpp      — tryPlanTopLevelOrUnion
+//   query_planner_composite_eq.cpp  — tryPlanCompositeHashEq
+//   query_planner_and_intersect.cpp — tryPlanAndIntersect
+//   query_planner_access.cpp        — chooseBestConjunctPath, finalizeBestAccessPath,
+//                                     shared selectivity helpers
 // These are planner_detail free functions — not a separate public type.
 
 #include "planner_detail.hpp"
@@ -12,6 +17,11 @@
 
 namespace VertexDB {
 namespace planner_detail {
+
+[[nodiscard]] double unionSelectivity(const IndexBitmapNode &unionNode, const RelationStats &stats,
+                                      const IndexCatalogView &indexes, std::size_t estimatedRows);
+[[nodiscard]] double nodeSelectivity(const IndexBitmapNode &node, const RelationStats &stats,
+                                     const IndexCatalogView &indexes, std::size_t estimatedRows);
 
 // When where is a top-level OrPred, fills plan and returns true. Otherwise returns false.
 [[nodiscard]] bool tryPlanTopLevelOrUnion(const Predicate &where, const RelationStats &stats,

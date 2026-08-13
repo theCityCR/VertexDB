@@ -76,6 +76,9 @@ add_library(VertexDB
     src/planner/query_planner.cpp
     src/planner/query_planner_select.cpp
     src/planner/query_planner_access.cpp
+    src/planner/query_planner_or_union.cpp
+    src/planner/query_planner_composite_eq.cpp
+    src/planner/query_planner_and_intersect.cpp
     src/planner/query_planner_predicate.cpp
     src/planner/query_planner_join.cpp
     src/planner/query_planner_format.cpp
