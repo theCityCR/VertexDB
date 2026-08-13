@@ -130,10 +130,18 @@ RowId Table::insert(Row row, TransactionId writerId, TransactionManager *transac
     validateRow(row);
     std::unique_lock lock{mutex_};
     const RowId rowId = rowStore_->append(std::move(row));
-    versions_.write(rowId, *rowStore_->get(rowId), writerId);
+    const Row &stored = *rowStore_->get(rowId);
+    versions_.write(rowId, stored, writerId);
     addRowToIndexes(rowId);
     if (transactions != nullptr) {
         transactions->recordWrite(writerId, name_, rowId);
+        SsiInsert image;
+        image.relation = name_;
+        image.columns.reserve(schema_.size());
+        for (std::size_t i = 0; i < schema_.size(); ++i) {
+            image.columns.emplace_back(schema_[i].name, stored[i]);
+        }
+        transactions->recordInsert(writerId, std::move(image));
     }
     return rowId;
 }
@@ -174,10 +182,19 @@ bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId wr
     if (!updatedOk) {
         return false;
     }
-    versions_.write(rowId, *rowStore_->get(rowId), writerId);
+    const Row &stored = *rowStore_->get(rowId);
+    versions_.write(rowId, stored, writerId);
     rebuildIndexes();
     if (transactions != nullptr) {
         transactions->recordWrite(writerId, name_, rowId);
+        // Update-into-predicate is treated like an insert for phantom SSI matching.
+        SsiInsert image;
+        image.relation = name_;
+        image.columns.reserve(schema_.size());
+        for (std::size_t i = 0; i < schema_.size(); ++i) {
+            image.columns.emplace_back(schema_[i].name, stored[i]);
+        }
+        transactions->recordInsert(writerId, std::move(image));
     }
     return true;
 }

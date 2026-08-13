@@ -253,10 +253,12 @@ transaction ids, append compensating undo records, and buffer page-image redo re
 flushes deferred redo as one atomic WAL batch then marks the transaction committed and discards the
 undo log; `ROLLBACK` applies the undo log LIFO on the same database instance and drops deferred WAL.
 Snapshot isolation **prevents** dirty reads, non-repeatable reads, and mid-txn phantoms under a held
-snapshot. Row-level SSI **aborts** a later `COMMIT` when its read or write set overlaps a concurrent
-committed write set (classic write skew and same-row write–write); predicate locks are not
-implemented. One executor holds at most one open transaction; writers are serialized by the
-executor `LockManager`. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
+snapshot. SSI **aborts** a later `COMMIT` on overlapping row read/write sets (write skew /
+write–write) or on insert-phantom conflicts (predicate SIREAD summaries from SELECT/UPDATE/DELETE
+scans vs inserted or update-produced row images). OR/LIKE/subquery shapes use conservative
+relation-membership SIREADs; there are no Postgres-style next-key locks. One executor holds at most
+one open transaction; writers are serialized by the executor `LockManager`. See
+[si_anomaly_wedge.md](si_anomaly_wedge.md).
 While a transaction is active, `CREATE DATABASE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`,
 `CREATE INDEX`, and `DROP INDEX` are allowed: each applies immediately and pushes an undo record
 (with deferred logical WAL until `COMMIT`; dropped on `ROLLBACK`). `DROP DATABASE` is rejected

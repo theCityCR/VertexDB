@@ -1,5 +1,5 @@
 -- Single-session SI illustration (read-your-writes, post-COMMIT visibility).
--- True multi-txn interleaving — including row-level SSI write-skew / write-write abort —
+-- True multi-txn interleaving — including SSI write-skew / write-write / insert-phantom abort —
 -- lives in GoogleTest (Table + shared TransactionManager). See docs/si_anomaly_wedge.md.
 CREATE DATABASE si_demo;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);

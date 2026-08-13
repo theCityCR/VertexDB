@@ -72,15 +72,20 @@ revealed prior image). Logical DML WAL records are replaced by page-image redo: 
 transaction is active, flushed as one batch on `COMMIT`, and dropped on `ROLLBACK`. Legacy physical
 row-image redo remains replayable.
 
-| Anomaly | Under SI + row-level SSI here |
+| Anomaly | Under SI + SSI here |
 | --- | --- |
 | Dirty read | Prevented |
 | Non-repeatable read | Prevented (`maxCommitSeq` watermark) |
 | Mid-txn phantom (held snapshot) | Prevented |
-| Write skew / same-row WW | Aborted at commit (row read/write sets; no predicate locks) |
+| Write skew / same-row WW | Aborted at commit (row read/write sets) |
+| Insert phantom / empty probe | Aborted at commit (predicate SIREAD vs insert/update images) |
 
-Executor writers are exclusive (`LockManager`); multi-txn interleaving tests share
-`Table` + `TransactionManager`. Full wedge: [si_anomaly_wedge.md](si_anomaly_wedge.md).
+SSI records relation+row read/write sets on `Table` snapshot/DML paths, plus predicate summaries from
+`SelectEngine` scans (`recordPredicateRead` / relation-membership fallback) and insert images on
+`INSERT`/`UPDATE`. Committed predicate reads and inserts are retained until concurrent snapshots can
+no longer conflict (same prune rule as write sets). Executor writers are exclusive (`LockManager`);
+multi-txn interleaving tests share `Table` + `TransactionManager`. Full wedge:
+[si_anomaly_wedge.md](si_anomaly_wedge.md).
 
 ## Buffer Pool
 

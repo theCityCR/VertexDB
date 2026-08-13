@@ -103,7 +103,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 281 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 284 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, deep features, and
@@ -123,9 +123,10 @@ Or feed an example script:
 
 - Transactions use undo-log rollback for DML, commit-aware MVCC snapshot isolation for reads, and
   transaction-atomic page-image WAL (DML deferred until `COMMIT` as one batch, dropped on
-  `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; row-level SSI aborts later
-  committers on overlapping read/write sets (write skew / write–write; no predicate locks). One
-  executor holds at most one open transaction; writers are serialized by `LockManager`
+  `ROLLBACK`). SI prevents dirty reads and hides post-`BEGIN` commits; SSI aborts later committers
+  on overlapping read/write sets (write skew / write–write) and on insert phantoms (predicate
+  SIREAD vs insert/update images; OR/LIKE use relation-membership fallbacks). One executor holds at
+  most one open transaction; writers are serialized by `LockManager`
 - WAL DML redo uses page images (`PageImageRedo`); DDL remains logical SQL. Legacy `PhysicalRedo`
   row after-images remain replayable. Trailing torn WAL records are ignored so recovery replays the
   durable prefix
@@ -163,7 +164,8 @@ positions, CI CTE + multi-index-intersect cost-shape gating, indexed `UPDATE`/`D
 transactional catalog DDL (`CREATE`/`DROP INDEX`, `CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
 `DROP DATABASE`), same-column equality `OR`→`IN` rewrite, literal `IN` lists, `EXPLAIN` for
 `UPDATE`/`DELETE`/`INSERT`, `EXPLAIN ANALYZE` (actual vs estimated), SI anomaly packaging with
-row-level SSI write-skew / write–write aborts, composite Intersect∪Union for fully indexable nested
+row-level SSI write-skew / write–write aborts and insert-phantom SSI (predicate SIREAD), composite
+Intersect∪Union for fully indexable nested
 `OR` under `AND`, `SAVE`/`LOAD` inside open transactions (implicit commit/rollback), top-level and
 CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` /
 `EXCEPT ALL`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +

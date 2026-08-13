@@ -729,8 +729,8 @@ TEST(TransactionBehaviorTests, DirtyReadOfUncommittedUpdateIsPrevented) {
 TEST(TransactionBehaviorTests, SnapshotIsolationHidesCommittedInsertMatchingPredicate) {
     // Desired SI contract for a held snapshot: a row inserted+committed after BEGIN that
     // matches a predicate never appears in repeated reads of that snapshot (no mid-txn
-    // phantom). Row-level SSI does not add predicate locks — concurrent inserts that were
-    // never in the reader's row read-set still commit.
+    // phantom). This Table::rowsSnapshot path records row reads only — insert-phantom SSI
+    // requires an explicit predicate read (see SerializableSnapshotIsolationAbortsInsertPhantom).
     TransactionManager transactions;
     Table table{"Employees",
                 {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
@@ -760,6 +760,89 @@ TEST(TransactionBehaviorTests, SnapshotIsolationHidesCommittedInsertMatchingPred
     EXPECT_EQ(countHighSalary(transactions.currentSnapshot()), 2U)
         << "a fresh snapshot may see the new row";
     transactions.commit(reader.id);
+}
+
+TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsInsertPhantom) {
+    // Classic insert phantom under SSI: T1 observes salary > 100000 (predicate SIREAD), T2
+    // inserts a matching row. First committer wins; the later commit throws.
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted(), &transactions);
+
+    const auto t1 = transactions.begin();
+    const auto snap1 = transactions.currentSnapshot(t1.id);
+    transactions.recordPredicateRead(
+        t1.id, SsiPredicate{"Employees", "salary", ComparisonOperator::Greater, Value{100000.0}});
+    std::size_t high = 0;
+    for (const auto &row : table.rowsSnapshot(snap1, transactions)) {
+        if (std::get<double>(row[2].data()) > 100000.0) {
+            ++high;
+        }
+    }
+    ASSERT_EQ(high, 1U);
+
+    const auto t2 = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Bob"}, Value{110000.0}}, t2.id,
+                 &transactions);
+    transactions.commit(t2.id);
+    EXPECT_THROW(transactions.commit(t1.id), SerializationFailure)
+        << "SSI aborts the predicate reader after a concurrent matching insert commits";
+}
+
+TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsInsertPhantomEmptyProbe) {
+    // Empty predicate observation still takes a SIREAD: T1 sees no rows with id = 99, T2
+    // inserts that key; later committer aborts.
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    table.insert({Value{static_cast<std::int64_t>(1)}, Value{"Alice"}, Value{120000.0}},
+                 transactions.beginCommitted(), &transactions);
+
+    const auto t1 = transactions.begin();
+    transactions.recordPredicateRead(
+        t1.id, SsiPredicate{"Employees", "id", ComparisonOperator::Equal,
+                            Value{static_cast<std::int64_t>(99)}});
+    const auto snap1 = transactions.currentSnapshot(t1.id);
+    std::size_t hits = 0;
+    for (const auto &row : table.rowsSnapshot(snap1, transactions)) {
+        if (std::get<std::int64_t>(row[0].data()) == 99) {
+            ++hits;
+        }
+    }
+    ASSERT_EQ(hits, 0U);
+
+    const auto t2 = transactions.begin();
+    table.insert({Value{static_cast<std::int64_t>(99)}, Value{"Zed"}, Value{50000.0}}, t2.id,
+                 &transactions);
+    // Reader commits first (read-only) — retains committed predicate reads for concurrent T2.
+    transactions.commit(t1.id);
+    EXPECT_THROW(transactions.commit(t2.id), SerializationFailure)
+        << "SSI aborts the inserter when a concurrent empty probe already committed";
+}
+
+TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsUpdateIntoPredicate) {
+    // Updating a row into a predicate range is treated like an insert for phantom SSI.
+    // T1 records the predicate without reading Bob's row id (empty high-salary set).
+    TransactionManager transactions;
+    Table table{"Employees",
+                {{"id", ColumnType::Int}, {"name", ColumnType::String}, {"salary", ColumnType::Double}}};
+
+    const auto bob =
+        table.insert({Value{static_cast<std::int64_t>(2)}, Value{"Bob"}, Value{90000.0}},
+                     transactions.beginCommitted(), &transactions);
+
+    const auto t1 = transactions.begin();
+    transactions.recordPredicateRead(
+        t1.id, SsiPredicate{"Employees", "salary", ComparisonOperator::Greater, Value{100000.0}});
+
+    const auto t2 = transactions.begin();
+    ASSERT_TRUE(table.update(bob, 2, Value{150000.0}, t2.id, &transactions));
+    transactions.commit(t2.id);
+    EXPECT_THROW(transactions.commit(t1.id), SerializationFailure);
 }
 
 TEST(TransactionBehaviorTests, SerializableSnapshotIsolationAbortsWriteSkew) {

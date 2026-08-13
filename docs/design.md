@@ -40,11 +40,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   still replayable), logical SQL for DDL, truncated-trailing-record tolerance, startup replay, save
   checkpoints, and crash-simulation tests
 - Concurrency: executor-level reader/writer synchronization (`LockManager`) and concurrent client
-  tests; SI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
+  tests; SI/SSI anomaly evidence packaged in [si_anomaly_wedge.md](si_anomaly_wedge.md)
 - Transactions: commit-aware MVCC snapshot isolation (dirty reads / SI watermark / mid-txn phantoms
-  prevented) plus row-level SSI commit aborts for write skew and write–write conflicts (no predicate
-  locks), undo-log DML rollback, transaction-batched page-image WAL flush
-  on `COMMIT`
+  prevented) plus SSI commit aborts for write skew, write–write conflicts, and insert phantoms
+  (predicate SIREAD vs insert/update images), undo-log DML rollback, transaction-batched page-image
+  WAL flush on `COMMIT`
 - Planner: cost-based access paths (including multi-index AND intersect, top-level OR union with
   partial residual OR, composite Intersect∪Union for nested OR under AND including partial nested
   OR, prefix `LIKE`, and trigram intersect), residual filters, join algorithm
@@ -55,10 +55,11 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
 
 ## Known Limitations
 
-- Snapshot isolation prevents dirty reads and hides commits after `BEGIN`. Row-level SSI aborts a
-  later committer when its read or write set overlaps a concurrent committed write set (write skew
-  and same-row write–write). There are no row/page locks or predicate locks. See
-  [si_anomaly_wedge.md](si_anomaly_wedge.md).
+- Snapshot isolation prevents dirty reads and hides commits after `BEGIN`. SSI aborts a later
+  committer on overlapping row read/write sets (write skew / write–write) or on insert-phantom
+  conflicts (predicate SIREAD summaries vs inserted or update-produced row images). There are no
+  row/page locks or Postgres-style next-key locks; OR/LIKE/subquery scans use conservative
+  relation-membership SIREADs. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
 - `SAVE DATABASE` in an open transaction implicitly commits then checkpoints; `LOAD DATABASE`
   implicitly rolls back then loads.
 - DML WAL redo stores page images (`PageImageRedo`); DDL still uses logical SQL payloads. Legacy
@@ -100,16 +101,17 @@ transactions (implicit commit / rollback), set operations (`UNION` / `UNION ALL`
 `EXCEPT`, including recursive `UNION` dedup), partial nested `OR` under `AND` (indexable
 arms + complementary residual), multiple independent recursive CTEs, `INTERSECT ALL` /
 `EXCEPT ALL`, mutual recursion among `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` binding
-for the recursive arm, and row-level SSI commit aborts for write skew / write–write conflicts,
-`DROP DATABASE`, raised `WITH`/correlation caps (6 / 8), and `EXPLAIN INSERT`.
+for the recursive arm, row-level SSI commit aborts for write skew / write–write conflicts,
+insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, raised
+`WITH`/correlation caps (6 / 8), and `EXPLAIN INSERT`.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
-- Predicate-lock / insert-phantom SSI (beyond row read/write sets), or ALTER-style DDL
-  (`ADD`/`DROP COLUMN`, etc.)
+- ALTER-style DDL (`ADD`/`DROP COLUMN`, etc.), or richer predicate SSI (true gap/next-key locks
+  instead of relation-membership fallbacks for OR/LIKE)
 
 Demo wedges (done):
 

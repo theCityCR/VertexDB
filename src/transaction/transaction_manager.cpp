@@ -14,9 +14,36 @@ bool intersects(const std::unordered_set<ConflictKey> &left,
     }
     const auto &smaller = left.size() <= right.size() ? left : right;
     const auto &larger = left.size() <= right.size() ? right : left;
-    for (const auto key : smaller) {
+    for (const auto &key : smaller) {
         if (larger.contains(key)) {
             return true;
+        }
+    }
+    return false;
+}
+
+bool compareCell(const Value &left, ComparisonOperator op, const Value &right) {
+    switch (op) {
+    case ComparisonOperator::Equal:
+        return left == right;
+    case ComparisonOperator::Greater:
+        return right < left;
+    case ComparisonOperator::Less:
+        return left < right;
+    }
+    return false;
+}
+
+bool insertMatchesPredicate(const SsiInsert &insert, const SsiPredicate &predicate) {
+    if (insert.relation != predicate.relation) {
+        return false;
+    }
+    if (predicate.column.empty() || !predicate.op || !predicate.value) {
+        return true; // relation-wide membership
+    }
+    for (const auto &[name, value] : insert.columns) {
+        if (name == predicate.column) {
+            return compareCell(value, *predicate.op, *predicate.value);
         }
     }
     return false;
@@ -38,7 +65,24 @@ Transaction TransactionManager::begin() {
     transactions_.emplace(transaction.id, transaction);
     activeReads_.emplace(transaction.id, std::unordered_set<ConflictKey>{});
     activeWrites_.emplace(transaction.id, std::unordered_set<ConflictKey>{});
+    activePredicateReads_.emplace(transaction.id, std::vector<SsiPredicate>{});
+    activeInserts_.emplace(transaction.id, std::vector<SsiInsert>{});
     return transaction;
+}
+
+bool TransactionManager::predicateConflictsWithInserts(
+    const std::vector<SsiPredicate> &predicates, const std::vector<SsiInsert> &inserts) const {
+    if (predicates.empty() || inserts.empty()) {
+        return false;
+    }
+    for (const auto &predicate : predicates) {
+        for (const auto &insert : inserts) {
+            if (insertMatchesPredicate(insert, predicate)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool TransactionManager::isSerializable(TransactionId id) const {
@@ -48,15 +92,38 @@ bool TransactionManager::isSerializable(TransactionId id) const {
     }
     const auto readIt = activeReads_.find(id);
     const auto writeIt = activeWrites_.find(id);
+    const auto predIt = activePredicateReads_.find(id);
+    const auto insertIt = activeInserts_.find(id);
     const auto &reads =
         readIt == activeReads_.end() ? std::unordered_set<ConflictKey>{} : readIt->second;
     const auto &writes =
         writeIt == activeWrites_.end() ? std::unordered_set<ConflictKey>{} : writeIt->second;
+    const auto &predicates =
+        predIt == activePredicateReads_.end() ? std::vector<SsiPredicate>{} : predIt->second;
+    const auto &inserts =
+        insertIt == activeInserts_.end() ? std::vector<SsiInsert>{} : insertIt->second;
+
     for (const auto &[seq, committedWrites] : committedWriteSets_) {
         if (seq <= it->second.snapshotMaxCommitSeq) {
             continue;
         }
         if (intersects(reads, committedWrites) || intersects(writes, committedWrites)) {
+            return false;
+        }
+    }
+    for (const auto &[seq, committedInserts] : committedInserts_) {
+        if (seq <= it->second.snapshotMaxCommitSeq) {
+            continue;
+        }
+        if (predicateConflictsWithInserts(predicates, committedInserts)) {
+            return false;
+        }
+    }
+    for (const auto &[seq, committedPredicates] : committedPredicateReads_) {
+        if (seq <= it->second.snapshotMaxCommitSeq) {
+            continue;
+        }
+        if (predicateConflictsWithInserts(committedPredicates, inserts)) {
             return false;
         }
     }
@@ -78,9 +145,19 @@ void TransactionManager::commit(TransactionId id) {
     if (writeIt != activeWrites_.end() && !writeIt->second.empty()) {
         committedWriteSets_.emplace(*it->second.commitSeq, std::move(writeIt->second));
     }
+    auto predIt = activePredicateReads_.find(id);
+    if (predIt != activePredicateReads_.end() && !predIt->second.empty()) {
+        committedPredicateReads_.emplace(*it->second.commitSeq, std::move(predIt->second));
+    }
+    auto insertIt = activeInserts_.find(id);
+    if (insertIt != activeInserts_.end() && !insertIt->second.empty()) {
+        committedInserts_.emplace(*it->second.commitSeq, std::move(insertIt->second));
+    }
     activeWrites_.erase(id);
     activeReads_.erase(id);
-    pruneCommittedWriteSets();
+    activePredicateReads_.erase(id);
+    activeInserts_.erase(id);
+    pruneCommittedConflictSets();
 }
 
 void TransactionManager::rollback(TransactionId id) {
@@ -91,7 +168,9 @@ void TransactionManager::rollback(TransactionId id) {
     it->second.state = TransactionState::RolledBack;
     activeReads_.erase(id);
     activeWrites_.erase(id);
-    pruneCommittedWriteSets();
+    activePredicateReads_.erase(id);
+    activeInserts_.erase(id);
+    pruneCommittedConflictSets();
 }
 
 TransactionId TransactionManager::beginCommitted() {
@@ -173,25 +252,76 @@ void TransactionManager::recordWrite(TransactionId id, std::string_view relation
     committedWriteSets_[*txn->commitSeq].insert(key);
 }
 
-void TransactionManager::pruneCommittedWriteSets() {
-    if (activeReads_.empty()) {
+void TransactionManager::recordPredicateRead(TransactionId id, SsiPredicate predicate) {
+    if (id == kSystemTransactionId) {
+        return;
+    }
+    auto it = activePredicateReads_.find(id);
+    if (it == activePredicateReads_.end()) {
+        return;
+    }
+    it->second.push_back(std::move(predicate));
+}
+
+void TransactionManager::recordRelationRead(TransactionId id, std::string_view relation) {
+    recordPredicateRead(id, SsiPredicate{std::string{relation}, {}, std::nullopt, std::nullopt});
+}
+
+void TransactionManager::recordInsert(TransactionId id, SsiInsert insert) {
+    if (id == kSystemTransactionId) {
+        return;
+    }
+    auto activeIt = activeInserts_.find(id);
+    if (activeIt != activeInserts_.end()) {
+        activeIt->second.push_back(std::move(insert));
+        return;
+    }
+    const auto txn = find(id);
+    if (!txn || txn->state != TransactionState::Committed || !txn->commitSeq) {
+        return;
+    }
+    committedInserts_[*txn->commitSeq].push_back(std::move(insert));
+}
+
+void TransactionManager::pruneCommittedConflictSets() {
+    if (activeReads_.empty() && activePredicateReads_.empty() && activeInserts_.empty() &&
+        activeWrites_.empty()) {
         committedWriteSets_.clear();
+        committedPredicateReads_.clear();
+        committedInserts_.clear();
         return;
     }
     CommitSeq minSnapshot = nextCommitSeq_;
-    for (const auto &[id, _] : activeReads_) {
+    auto consider = [&](TransactionId id) {
         const auto txn = find(id);
         if (txn && txn->state == TransactionState::Active) {
             minSnapshot = std::min(minSnapshot, txn->snapshotMaxCommitSeq);
         }
+    };
+    for (const auto &[id, _] : activeReads_) {
+        consider(id);
     }
-    for (auto it = committedWriteSets_.begin(); it != committedWriteSets_.end();) {
-        if (it->first <= minSnapshot) {
-            it = committedWriteSets_.erase(it);
-        } else {
-            ++it;
+    for (const auto &[id, _] : activePredicateReads_) {
+        consider(id);
+    }
+    for (const auto &[id, _] : activeInserts_) {
+        consider(id);
+    }
+    for (const auto &[id, _] : activeWrites_) {
+        consider(id);
+    }
+    auto pruneMap = [&](auto &map) {
+        for (auto it = map.begin(); it != map.end();) {
+            if (it->first <= minSnapshot) {
+                it = map.erase(it);
+            } else {
+                ++it;
+            }
         }
-    }
+    };
+    pruneMap(committedWriteSets_);
+    pruneMap(committedPredicateReads_);
+    pruneMap(committedInserts_);
 }
 
 } // namespace VertexDB

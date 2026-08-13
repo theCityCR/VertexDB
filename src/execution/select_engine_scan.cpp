@@ -2,6 +2,7 @@
 
 #include "VertexDB/common/comparison_operator.hpp"
 #include "VertexDB/execution/select_helpers.hpp"
+#include "VertexDB/transaction/transaction_manager.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -12,6 +13,119 @@
 
 namespace VertexDB {
 namespace {
+
+std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table);
+
+void recordSsiPredicateFromTree(TransactionManager &txns, TransactionId id,
+                                std::string_view relation, const Predicate &predicate) {
+    std::visit(
+        [&](const auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, ComparisonPred>) {
+                if (node.rhsColumn || node.expression) {
+                    txns.recordRelationRead(id, relation);
+                    return;
+                }
+                txns.recordPredicateRead(
+                    id, SsiPredicate{std::string{relation}, node.column, node.op, node.value});
+            } else if constexpr (std::is_same_v<T, AndPred>) {
+                recordSsiPredicateFromTree(txns, id, relation, *node.left);
+                recordSsiPredicateFromTree(txns, id, relation, *node.right);
+            } else if constexpr (std::is_same_v<T, InListPred>) {
+                if (node.expression) {
+                    txns.recordRelationRead(id, relation);
+                    return;
+                }
+                for (const auto &value : node.inValues) {
+                    txns.recordPredicateRead(
+                        id, SsiPredicate{std::string{relation}, node.column,
+                                         ComparisonOperator::Equal, value});
+                }
+            } else {
+                // OR / LIKE / regex / subquery: conservative relation membership.
+                txns.recordRelationRead(id, relation);
+            }
+        },
+        predicate);
+}
+
+void recordSsiProbe(TransactionManager &txns, TransactionId id, std::string_view relation,
+                    const IndexEqualityProbe &probe) {
+    if (probe.expression) {
+        txns.recordRelationRead(id, relation);
+        return;
+    }
+    txns.recordPredicateRead(
+        id, SsiPredicate{std::string{relation}, probe.column, ComparisonOperator::Equal,
+                         probe.value});
+}
+
+void recordSsiBitmapNode(TransactionManager &txns, TransactionId id, std::string_view relation,
+                         const IndexBitmapNode &node) {
+    if (node.kind == IndexBitmapNode::Kind::Probe) {
+        recordSsiProbe(txns, id, relation, node.probe);
+        return;
+    }
+    for (const auto &child : node.children) {
+        recordSsiBitmapNode(txns, id, relation, child);
+    }
+}
+
+void recordSsiScanPredicates(TransactionManager &txns, TransactionId id, const Table &table,
+                             const Select &command, const QueryPlan &plan) {
+    const std::string_view relation = table.name();
+    std::visit(
+        [&](const auto &path) {
+            using T = std::decay_t<decltype(path)>;
+            if constexpr (std::is_same_v<T, HashEqPlan>) {
+                if (path.indexExpression) {
+                    txns.recordRelationRead(id, relation);
+                } else {
+                    txns.recordPredicateRead(
+                        id, SsiPredicate{std::string{relation}, path.indexColumn,
+                                         ComparisonOperator::Equal, path.indexValue});
+                }
+            } else if constexpr (std::is_same_v<T, OrderedRangePlan>) {
+                if (path.indexExpression) {
+                    txns.recordRelationRead(id, relation);
+                } else {
+                    txns.recordPredicateRead(
+                        id, SsiPredicate{std::string{relation}, path.indexColumn, path.indexOp,
+                                         path.indexValue});
+                }
+            } else if constexpr (std::is_same_v<T, HashInPlan>) {
+                if (path.indexExpression) {
+                    txns.recordRelationRead(id, relation);
+                } else {
+                    for (const auto &value : path.indexValues) {
+                        txns.recordPredicateRead(
+                            id, SsiPredicate{std::string{relation}, path.indexColumn,
+                                             ComparisonOperator::Equal, value});
+                    }
+                }
+            } else if constexpr (std::is_same_v<T, IntersectPlan> || std::is_same_v<T, UnionPlan>) {
+                for (const auto &child : path.children) {
+                    recordSsiBitmapNode(txns, id, relation, child);
+                }
+            } else if constexpr (std::is_same_v<T, PrefixLikePlan>) {
+                txns.recordRelationRead(id, relation);
+            } else {
+                // FullScanPlan
+                if (command.where) {
+                    recordSsiPredicateFromTree(txns, id, relation, *command.where);
+                } else {
+                    txns.recordRelationRead(id, relation);
+                }
+            }
+        },
+        plan.path);
+    if (plan.residual()) {
+        recordSsiPredicateFromTree(txns, id, relation, *plan.residual());
+    }
+    if (plan.complementaryResidual()) {
+        recordSsiPredicateFromTree(txns, id, relation, *plan.complementaryResidual());
+    }
+}
 
 std::vector<RowId> evalBitmapNode(const IndexBitmapNode &node, const Table &table);
 
@@ -89,6 +203,9 @@ std::vector<RowId> evalUnionPlan(const UnionPlan &path, const Table &table) {
 std::vector<std::pair<RowId, Row>>
 SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
                                     const QueryPlan &plan, ExplainAnalyzeStats *stats) const {
+    const auto snap = ctx_.readSnapshot();
+    recordSsiScanPredicates(ctx_.session.transactionManager(), snap.self, table, command, plan);
+
     const std::string_view scope = selectScopeName(command);
     auto applyResidual = [&](std::vector<std::pair<RowId, Row>> entries) {
         if (!plan.residual()) {

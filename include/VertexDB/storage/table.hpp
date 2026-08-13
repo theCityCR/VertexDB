@@ -58,7 +58,7 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
 
     // --- DML ---
-    // Optional `transactions` records row-level SSI write sets for the writer.
+    // Optional `transactions` records SSI write sets and insert images for phantom checks.
     RowId insert(Row row, TransactionId writerId = kSystemTransactionId,
                  TransactionManager *transactions = nullptr);
     bool erase(RowId rowId, TransactionId writerId = kSystemTransactionId,
