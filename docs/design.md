@@ -22,7 +22,7 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   correlation through eight outer frames), outer `JOIN` against CTE/derived aliases (force
   materialize), expression indexes (including `trigram(column)`),
   `EXPLAIN` / `EXPLAIN ANALYZE`, transactions, prepared statements (typed AST + `?` slots), save/load,
-  `DROP DATABASE`, exit, and
+  `DROP DATABASE`, exit, `ALTER TABLE ADD/DROP COLUMN`, and
   `ParseError` diagnostics with source positions
 - Query execution: projection, filtering, ordering, limit, aggregates/`GROUP BY`, insert, update,
   delete (UPDATE/DELETE `WHERE` uses the same planner index access paths as SELECT), table management,
@@ -99,8 +99,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   `UNION` (dedup) or `UNION ALL`.
 - Aggregates/`GROUP BY` are supported; joins are left-deep `INNER` / `LEFT` / `RIGHT` / `FULL`
   `[OUTER]` and `CROSS` chains (`ON col op col` for non-`CROSS`). Catalog DDL includes
-  `CREATE`/`DROP DATABASE`, table/index commands, and `RENAME TABLE`; broader ALTER-style DDL is
-  still out of scope.
+  `CREATE`/`DROP DATABASE`, table/index commands, `RENAME TABLE`, and `ALTER TABLE`
+  (`ADD COLUMN … NULL` / `DROP COLUMN` with dependency rejection).
 
 ## Next Steps
 
@@ -131,7 +131,8 @@ test checklist; [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions) for impli
 (not nested transactions). Shipped: planner composite-index `HashEq` for multi-equality `AND`
 (prefer one probe over Intersect of single-column indexes when the full key is covered). Shipped:
 multi-column `FOREIGN KEY` (snapshot v9 column lists; CASCADE/SET NULL/NO ACTION; exact parent
-UNIQUE/PK).
+UNIQUE/PK). Shipped: `ALTER TABLE ADD COLUMN … NULL` / `DROP COLUMN` (eager row rewrite; DROP
+rejects indexed / CHECK / FK / UNIQUE/PK dependencies; transactional undo + logical WAL).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
@@ -139,7 +140,8 @@ Forward-looking options (intentional gaps, pick by teaching value):
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
-- ALTER-style DDL (`ADD`/`DROP COLUMN`, etc.) — orthogonal to ACID; useful catalog teaching
+- Broader ALTER (`ADD` with `DEFAULT` / `NOT NULL`, `DROP CASCADE`, rename column) — catalog teaching
+  follow-ons
 
 Demo wedges (done):
 
@@ -231,6 +233,7 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 | `CREATE INDEX` / `DROP INDEX` | Yes | Index removed / restored | Logical SQL replayed | `CreateIndexRollbackRemovesIndex`, `DropIndexRollbackRestoresIndex`, matching `*CommitFlushesWalAndRecovers` |
 | `CREATE DATABASE` | Yes (swaps instance) | Prior database restored | Autocommit path also durable | `CreateDatabaseRollbackRestoresPriorDatabase` |
 | `DROP DATABASE` | **Rejected** | n/a | Autocommit only; WAL + snapshot delete | `DropDatabaseClearsActiveAndDeletesSnapshot` (in-txn reject), `DropDatabaseWalRecoversWithoutActiveDatabase` |
+| `ALTER TABLE ADD/DROP COLUMN` | Yes | ADD undone by DROP; DROP restores column + values | Logical SQL replayed | `AddColumnRollbackRemovesColumnAndRestoresWidth`, `DropColumnRollbackRestoresColumnAndValues`, `AddColumnCommitFlushesWalAndRecovers`, `DropColumnCommitFlushesWalAndRecovers` |
 | Mixed catalog + DML in one txn | Yes | Both undone | Both durable after commit | `CreateIndexWithInsertRollbackRestoresBoth`, `CatalogAndDmlMixedCommitFlushesWalAndRecovers` |
 | `SAVE DATABASE` | Implicit `COMMIT` then checkpoint | n/a (txn already closed) | Snapshot + WAL checkpoint | `SaveDatabaseInTransactionCommitsThenCheckpoints` |
 | `LOAD DATABASE` | Implicit `ROLLBACK` then load | Uncommitted work discarded | Loads snapshot (not nested txn) | `LoadDatabaseInTransactionRollsBackThenLoads` |
@@ -240,7 +243,7 @@ Crash cut points for DML `COMMIT`: after WAL sync / before in-memory commit mark
 ### Suggested order of attack
 
 1. Optional group-commit / `WalDurability` sync policy only if fsync noise hurts benches.
-2. ALTER-style DDL when catalog teaching is the focus.
+2. Broader ALTER (`DEFAULT` / `NOT NULL` ADD, rename column) when catalog teaching continues.
 
 ### Explicit non-goals (for now)
 

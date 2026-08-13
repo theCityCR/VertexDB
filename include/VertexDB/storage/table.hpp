@@ -28,6 +28,8 @@
 
 namespace VertexDB {
 
+class Database;
+
 class Table : public RelationStats, public IndexCatalogView {
   public:
     Table(std::string name, std::vector<Column> schema,
@@ -52,6 +54,21 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] bool rowsConflictOnUnique(const Row &left, const Row &right) const;
     // Register reserved `__pk_` / `__uq_` indexes when missing (CREATE TABLE / restore).
     void ensureConstraintIndexes();
+
+    // --- Schema evolution (ALTER TABLE) ---
+    // Append a nullable column and pad every live heap row + MVCC version with NULL.
+    void addNullableColumn(Column column);
+    // Drop an unreferenced column; returns captured values for txn undo.
+    struct DroppedColumnCapture {
+        Column column;
+        std::size_t columnIndex{};
+        std::vector<std::pair<RowId, Value>> heapValues;
+        std::vector<std::pair<RowId, std::vector<Value>>> versionValues;
+    };
+    [[nodiscard]] DroppedColumnCapture
+    dropUnreferencedColumn(std::string_view columnName, const Database *database);
+    // Restore a previously dropped column (ROLLBACK of DROP COLUMN).
+    void restoreDroppedColumn(const DroppedColumnCapture &capture);
 
     // --- MVCC / visibility reads ---
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;

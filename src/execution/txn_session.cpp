@@ -176,6 +176,14 @@ void TxnSession::rewriteTableName(std::string_view oldName, std::string_view new
             record.payload = prefix + source + " TO " + dest + ";";
             break;
         }
+        case WalOperation::AlterTable: {
+            const std::string needle = "ALTER TABLE " + from + " ";
+            const std::string replacement = "ALTER TABLE " + to + " ";
+            if (record.payload.starts_with(needle)) {
+                record.payload.replace(0, needle.size(), replacement);
+            }
+            break;
+        }
         default:
             break;
         }

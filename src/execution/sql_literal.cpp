@@ -5,6 +5,7 @@
 #include "VertexDB/storage/check_eval.hpp"
 
 #include <sstream>
+#include <type_traits>
 #include <vector>
 
 namespace VertexDB {
@@ -117,6 +118,21 @@ std::string createIndexSql(const CreateIndex &command) {
 
 std::string dropIndexSql(const DropIndex &command) {
     return "DROP INDEX " + command.name + " ON " + command.table + ";";
+}
+
+std::string alterTableSql(const AlterTable &command) {
+    return std::visit(
+        [&](const auto &action) -> std::string {
+            using T = std::decay_t<decltype(action)>;
+            if constexpr (std::is_same_v<T, AlterAddColumn>) {
+                return "ALTER TABLE " + command.table + " ADD COLUMN " + action.column.name + " " +
+                       toString(action.column.type) + " NULL;";
+            } else {
+                static_assert(std::is_same_v<T, AlterDropColumn>);
+                return "ALTER TABLE " + command.table + " DROP COLUMN " + action.column + ";";
+            }
+        },
+        command.action);
 }
 
 std::string createTableSql(const CreateTable &command) {

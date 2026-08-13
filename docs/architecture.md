@@ -84,9 +84,10 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   INSERT/UPDATE/DELETE with undo and page-image WAL redo; UPDATE/DELETE reuse
   `QueryPlanner::planSelect` plus `SelectEngine::collectVisibleEntries` so mutation `WHERE`
   clauses use the same index access paths as SELECT. `CatalogEngine` owns CREATE/DROP/RENAME
-  DATABASE/TABLE, `LIST TABLES`, `CREATE INDEX` / `DROP INDEX`, `ANALYZE`, and `SAVE`/`LOAD` (with
-  WAL append and snapshot coordination). `SubqueryRuntime` owns CTE/`IN`/`EXISTS` preparation and
-  evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`, `subquery_runtime_cte.cpp`),
+  DATABASE/TABLE, `ALTER TABLE` ADD/DROP COLUMN, `LIST TABLES`, `CREATE INDEX` / `DROP INDEX`,
+  `ANALYZE`, and `SAVE`/`LOAD` (with WAL append and snapshot coordination). `SubqueryRuntime` owns
+  CTE/`IN`/`EXISTS` preparation and evaluation (`subquery_runtime.cpp`, `subquery_runtime_bind.cpp`,
+  `subquery_runtime_cte.cpp`),
   including joined subqueries, recursive CTE materialization, and full predicate matching
   (correlated subquery arms). `PreparedStatementCatalog` owns parsed prepared ASTs.
   `TxnSession` owns transaction-manager, snapshot, undo-log, and deferred-WAL state, while
@@ -153,7 +154,8 @@ ids, captures a commit-seq snapshot at `BEGIN`, and supplies all SELECT visibili
 commit-aware MVCC (dirty-read prevention, SI watermark for post-`BEGIN` commits, and held-snapshot
 phantom hiding). Write skew remains allowed under classic SI.
 `BEGIN`/`COMMIT`/`ROLLBACK` still use a per-transaction undo log for abort: DML and transactional
-catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`, `CREATE`/`DROP INDEX`) record
+catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `ALTER TABLE` ADD/DROP COLUMN, `CREATE DATABASE`,
+`CREATE`/`DROP INDEX`) record
 compensating actions, `RecoveryService` applies them LIFO on `ROLLBACK` to the same `Database`
 instance (or restores a prior DB after `CREATE DATABASE`), and `COMMIT` discards the log after
 `RecoveryService` flushes deferred WAL (logical DDL SQL plus collapsed page-image redo) with
@@ -175,8 +177,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
   macOS; Windows `FlushFileBuffers` on the file). WAL also syncs its parent directory when the file
   is newly created on POSIX; `SAVE` syncs the storage directory after rename on POSIX.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
-  DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
-  `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped
+  DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `ALTER TABLE` ADD/DROP COLUMN,
+  `CREATE DATABASE`, `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic
+  batch) and dropped
   on `ROLLBACK`. `SAVE DATABASE` in an open transaction implicitly commits then checkpoints;
   `LOAD DATABASE` implicitly rolls back then loads. SSI aborts write skew / write–write overlap and
   insert phantoms (predicate SIREAD, including OR of column leaves and column `LIKE`; regex /

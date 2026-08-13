@@ -4,6 +4,7 @@
 // Implementation: src/transaction/undo_log.cpp.
 
 #include "VertexDB/common/index_expression.hpp"
+#include "VertexDB/common/value.hpp"
 #include "VertexDB/storage/row.hpp"
 
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace VertexDB {
@@ -29,6 +31,8 @@ enum class UndoKind : std::uint8_t {
     DropTable,
     RenameTable,
     SwapDatabase,
+    AlterAddColumn,
+    AlterDropColumn,
 };
 
 struct UndoRecord {
@@ -48,6 +52,11 @@ struct UndoRecord {
     std::shared_ptr<Database> previousDatabase;
     // Populated for UndoKind::RenameTable: tableName is the pre-rename name, renameTo the new name.
     std::string renameTo;
+    // Populated for UndoKind::AlterAddColumn / AlterDropColumn.
+    Column alterColumn;
+    std::size_t alterColumnIndex{};
+    std::vector<std::pair<RowId, Value>> alterHeapColumnValues;
+    std::vector<std::pair<RowId, std::vector<Value>>> alterVersionColumnValues;
 };
 
 class UndoLog {

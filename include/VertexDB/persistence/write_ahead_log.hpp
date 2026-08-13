@@ -27,6 +27,7 @@ enum class WalOperation : std::uint8_t {
     PageImageRedo,
     DropIndex,
     DropDatabase,
+    AlterTable,
 };
 
 struct WalRecord {

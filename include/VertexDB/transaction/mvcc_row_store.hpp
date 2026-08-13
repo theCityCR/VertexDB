@@ -6,9 +6,11 @@
 #include "VertexDB/storage/row.hpp"
 #include "VertexDB/transaction/transaction_manager.hpp"
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace VertexDB {
@@ -40,6 +42,14 @@ class MVCCRowStore {
     [[nodiscard]] std::vector<std::pair<RowId, Row>>
     visibleEntries(const ReadSnapshot &snapshot, const TransactionManager &transactions) const;
     [[nodiscard]] std::size_t versionCount(RowId rowId) const;
+    // Rewrite every version image (ALTER TABLE ADD/DROP COLUMN).
+    void transformRows(const std::function<void(Row &)> &fn);
+    // Remove columnIndex from every version; returns per-rowId values in chain order.
+    [[nodiscard]] std::vector<std::pair<RowId, std::vector<Value>>>
+    extractColumn(std::size_t columnIndex);
+    // Inverse of extractColumn for ALTER DROP COLUMN undo.
+    void insertColumn(std::size_t columnIndex,
+                      const std::vector<std::pair<RowId, std::vector<Value>>> &values);
 
   private:
     std::map<RowId, std::vector<RowVersion>> versions_;

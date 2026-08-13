@@ -281,6 +281,34 @@ bool tableIsForeignKeyParent(const Database &database, std::string_view tableNam
     return false;
 }
 
+bool columnIsForeignKeyParent(const Database &database, std::string_view tableName,
+                              std::string_view columnName) {
+    for (const auto &other : database.tables()) {
+        for (const auto &fk : other->foreignKeys()) {
+            if (fk.parentTable != tableName) {
+                continue;
+            }
+            for (const auto &parentColumn : fk.parentColumns) {
+                if (parentColumn == columnName) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool columnIsForeignKeyChild(const Table &table, std::string_view columnName) {
+    for (const auto &fk : table.foreignKeys()) {
+        for (const auto &childColumn : fk.childColumns) {
+            if (childColumn == columnName) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string foreignKeyLiteral(const ForeignKeyConstraint &fk) {
     std::string sql = "FOREIGN KEY (" + foreignKeyColumnsLabel(fk.childColumns) + ") REFERENCES " +
                       fk.parentTable + "(" + foreignKeyColumnsLabel(fk.parentColumns) + ")";

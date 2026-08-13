@@ -108,6 +108,37 @@ TEST(ParserTests, ParsesTableManagementCommands) {
     EXPECT_TRUE(std::holds_alternative<ListTables>(parser.parse("LIST TABLES;")));
 }
 
+TEST(ParserTests, ParsesAlterTableAddAndDropColumn) {
+    Parser parser;
+
+    auto add = parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NULL;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(add));
+    const auto &addCommand = std::get<AlterTable>(add);
+    EXPECT_EQ(addCommand.table, "Employees");
+    ASSERT_TRUE(std::holds_alternative<AlterAddColumn>(addCommand.action));
+    const auto &added = std::get<AlterAddColumn>(addCommand.action).column;
+    EXPECT_EQ(added.name, "nickname");
+    EXPECT_EQ(added.type, ColumnType::String);
+    EXPECT_TRUE(added.nullable);
+    EXPECT_FALSE(added.unique);
+    EXPECT_FALSE(added.primaryKey);
+
+    auto drop = parser.parse("ALTER TABLE Employees DROP COLUMN nickname;");
+    ASSERT_TRUE(std::holds_alternative<AlterTable>(drop));
+    const auto &dropCommand = std::get<AlterTable>(drop);
+    EXPECT_EQ(dropCommand.table, "Employees");
+    ASSERT_TRUE(std::holds_alternative<AlterDropColumn>(dropCommand.action));
+    EXPECT_EQ(std::get<AlterDropColumn>(dropCommand.action).column, "nickname");
+}
+
+TEST(ParserTests, RejectsAlterTableAddWithoutExplicitNull) {
+    Parser parser;
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING;"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NOT NULL;"),
+                 std::runtime_error);
+}
+
 TEST(ParserTests, RejectsTrailingTokens) {
     Parser parser;
 

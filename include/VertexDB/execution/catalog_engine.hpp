@@ -22,6 +22,7 @@ class CatalogEngine {
     [[nodiscard]] QueryResult executeCreateTable(const CreateTable &command);
     [[nodiscard]] QueryResult executeDropTable(const DropTable &command);
     [[nodiscard]] QueryResult executeRenameTable(const RenameTable &command);
+    [[nodiscard]] QueryResult executeAlterTable(const AlterTable &command);
     [[nodiscard]] QueryResult executeListTables();
     [[nodiscard]] QueryResult executeCreateIndex(const CreateIndex &command);
     [[nodiscard]] QueryResult executeDropIndex(const DropIndex &command);

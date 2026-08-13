@@ -382,6 +382,42 @@ RenameTable Parser::parseRenameTable() {
     return {oldName.lexeme, newName.lexeme};
 }
 
+AlterTable Parser::parseAlterTable() {
+    expect(TokenType::Identifier, "TABLE");
+    const auto table = advance();
+    if (table.type != TokenType::Identifier) {
+        throw std::runtime_error("expected table name");
+    }
+    if (match(TokenType::Identifier, "ADD")) {
+        expect(TokenType::Identifier, "COLUMN");
+        const auto columnName = advance();
+        if (columnName.type != TokenType::Identifier) {
+            throw std::runtime_error("expected column name");
+        }
+        const auto typeName = advance();
+        if (typeName.type != TokenType::Identifier) {
+            throw std::runtime_error("expected column type");
+        }
+        auto type = columnTypeFromString(typeName.lexeme);
+        if (!type) {
+            throw std::runtime_error("unsupported column type");
+        }
+        // First slice: nullable ADD only; require explicit NULL (no DEFAULT / NOT NULL / constraints).
+        expect(TokenType::Identifier, "NULL");
+        Column column{columnName.lexeme, *type, true, false, false};
+        return AlterTable{table.lexeme, AlterAddColumn{std::move(column)}};
+    }
+    if (match(TokenType::Identifier, "DROP")) {
+        expect(TokenType::Identifier, "COLUMN");
+        const auto columnName = advance();
+        if (columnName.type != TokenType::Identifier) {
+            throw std::runtime_error("expected column name");
+        }
+        return AlterTable{table.lexeme, AlterDropColumn{columnName.lexeme}};
+    }
+    throw std::runtime_error("expected ADD or DROP after ALTER TABLE");
+}
+
 CreateIndex Parser::parseCreateIndex() {
     const auto index = advance();
     if (index.type != TokenType::Identifier) {

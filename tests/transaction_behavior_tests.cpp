@@ -569,6 +569,157 @@ TEST(TransactionBehaviorTests, RenameTableCommitFlushesWalAndRecovers) {
     std::filesystem::remove_all(root);
 }
 
+TEST(TransactionBehaviorTests, AddNullableColumnAppearsAsNullOnSelect) {
+    Parser parser;
+    auto executor = makeExecutor("alter-add-null-select");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NULL;"))
+            .success);
+    auto rows =
+        executor.execute(parser.parse("SELECT id, nickname FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_TRUE(rows.rows[0][1].isNull());
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (4, \"Dee\", 50000.0, NULL);"))
+                    .success);
+    auto dee = executor.execute(parser.parse("SELECT nickname FROM Employees WHERE id = 4;"));
+    ASSERT_TRUE(dee.success);
+    ASSERT_EQ(dee.rows.size(), 1U);
+    EXPECT_TRUE(dee.rows[0][0].isNull());
+}
+
+TEST(TransactionBehaviorTests, AddColumnRollbackRemovesColumnAndRestoresWidth) {
+    Parser parser;
+    auto executor = makeExecutor("alter-add-rb");
+    seedEmployees(executor, parser, false, false);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NULL;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT nickname FROM Employees WHERE id = 1;")),
+                 std::runtime_error);
+    auto rows = executor.execute(parser.parse("SELECT id, name, salary FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+}
+
+TEST(TransactionBehaviorTests, DropColumnRollbackRestoresColumnAndValues) {
+    Parser parser;
+    auto executor = makeExecutor("alter-drop-rb");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NULL;"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "UPDATE Employees SET nickname = \"Ally\" WHERE id = 1;"))
+                    .success);
+
+    ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Employees DROP COLUMN nickname;")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("SELECT nickname FROM Employees WHERE id = 1;")),
+                 std::runtime_error);
+    ASSERT_TRUE(executor.execute(parser.parse("ROLLBACK;")).success);
+
+    auto rows =
+        executor.execute(parser.parse("SELECT nickname FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{"Ally"});
+}
+
+TEST(TransactionBehaviorTests, AddColumnCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-alter-add";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING);"))
+                        .success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("INSERT INTO Employees VALUES (1, \"Alice\");")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor
+                .execute(parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NULL;"))
+                .success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    auto rows =
+        recovered.execute(parser.parse("SELECT id, nickname FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{static_cast<std::int64_t>(1)});
+    EXPECT_TRUE(rows.rows[0][1].isNull());
+    std::filesystem::remove_all(root);
+}
+
+TEST(TransactionBehaviorTests, DropColumnCommitFlushesWalAndRecovers) {
+    const auto root =
+        std::filesystem::temp_directory_path() / "vertexdb-desired-wal-alter-drop";
+    std::filesystem::remove_all(root);
+    Parser parser;
+
+    {
+        QueryExecutor executor{root};
+        ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "CREATE TABLE Employees (id INT, name STRING, note STRING NULL);"))
+                        .success);
+        ASSERT_TRUE(executor
+                        .execute(parser.parse(
+                            "INSERT INTO Employees VALUES (1, \"Alice\", \"keep\");"))
+                        .success);
+        ASSERT_TRUE(executor.execute(parser.parse("BEGIN;")).success);
+        ASSERT_TRUE(
+            executor.execute(parser.parse("ALTER TABLE Employees DROP COLUMN note;")).success);
+        ASSERT_TRUE(executor.execute(parser.parse("COMMIT;")).success);
+    }
+
+    QueryExecutor recovered{root};
+    EXPECT_THROW((void)recovered.execute(parser.parse("SELECT note FROM Employees WHERE id = 1;")),
+                 std::runtime_error);
+    auto rows = recovered.execute(parser.parse("SELECT id, name FROM Employees WHERE id = 1;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][1], Value{"Alice"});
+    std::filesystem::remove_all(root);
+}
+
+TEST(TransactionBehaviorTests, SaveLoadPreservesAddedColumn) {
+    Parser parser;
+    auto executor = makeExecutor("alter-save-load");
+    seedEmployees(executor, parser, false, false);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("ALTER TABLE Employees ADD COLUMN nickname STRING NULL;"))
+            .success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE company;")).success);
+    auto rows =
+        executor.execute(parser.parse("SELECT id, nickname FROM Employees WHERE id = 2;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_TRUE(rows.rows[0][1].isNull());
+}
+
 // Phase 4a checklist: mixed catalog DDL + DML in one txn is one atomic commit batch.
 TEST(TransactionBehaviorTests, CatalogAndDmlMixedCommitFlushesWalAndRecovers) {
     const auto root =
