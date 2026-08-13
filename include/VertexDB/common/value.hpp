@@ -57,7 +57,7 @@ struct Column {
     std::string name;
     ColumnType type;
     bool nullable{false};
-    // ACID Consistency: column uniqueness. PRIMARY KEY also sets unique and clears nullable.
+    // ACID Consistency: NOT NULL is the default (!nullable). PRIMARY KEY also sets unique and clears nullable.
     bool unique{false};
     bool primaryKey{false};
 };

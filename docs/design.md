@@ -63,8 +63,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   conflicts (predicate SIREAD summaries vs inserted or update-produced row images). There are no
   row/page locks or Postgres-style next-key locks; OR/LIKE/subquery scans use conservative
   relation-membership SIREADs. See [si_anomaly_wedge.md](si_anomaly_wedge.md).
-- Integrity constraints: single-column `PRIMARY KEY` / `UNIQUE` are enforced (PK ⇒ `NOT NULL` +
-  unique; UNIQUE allows multiple `NULL`s). `CHECK` / `FOREIGN KEY` / multi-column uniqueness are
+- Integrity constraints: single-column `PRIMARY KEY` / `UNIQUE` and `NOT NULL` (default columns;
+  explicit keyword supported) are enforced. `CHECK` / `FOREIGN KEY` / multi-column uniqueness are
   not implemented yet; see [ACID Plan](#acid-plan).
 - `SAVE DATABASE` in an open transaction implicitly commits then checkpoints; `LOAD DATABASE`
   implicitly rolls back then loads.
@@ -110,12 +110,13 @@ arms + complementary residual), multiple independent recursive CTEs, `INTERSECT 
 for the recursive arm, row-level SSI commit aborts for write skew / write–write conflicts,
 insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, raised
 `WITH`/correlation caps (6 / 8), `EXPLAIN INSERT`, durable WAL `COMMIT` (flush+fsync on
-append/`reset`), and single-column `PRIMARY KEY` / `UNIQUE` (snapshot v5 constraint flags).
+append/`reset`), single-column `PRIMARY KEY` / `UNIQUE` (snapshot v5 constraint flags), and
+first-class `NOT NULL` Consistency messaging/tests.
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- **ACID alignment** — see [ACID Plan](#acid-plan) below (`NOT NULL` docs/tests, then `CHECK`,
-  durable `SAVE`, optional FK / I polish)
+- **ACID alignment** — see [ACID Plan](#acid-plan) below (durable `SAVE`, then `CHECK`, optional FK /
+  I polish)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
@@ -142,7 +143,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | Property | Status | What exists | Main gap |
 | --- | --- | --- | --- |
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
-| **C** Consistency | Improving | Typed schema, nullability, single-column `PRIMARY KEY` / `UNIQUE` (auto indexes; DML reject) | No `CHECK` / `FOREIGN KEY` / multi-column uniqueness; “consistent” still not full SQL integrity |
+| **C** Consistency | Improving | Typed schema; `NOT NULL` (default) / `NULL`; single-column `PRIMARY KEY` / `UNIQUE` (auto indexes; DML reject) | No `CHECK` / `FOREIGN KEY` / multi-column uniqueness |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD); executor `LockManager` | One open SQL txn per executor; OR/LIKE/subquery use relation-membership SIREAD fallbacks; no next-key / gap locks |
 | **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; torn trailing record ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); snapshot `.tcrdb` publish is rename-based without directory fsync; power-loss models are not exhaustive |
 
@@ -163,7 +164,7 @@ Ship integrity constraints so `C` is engine-enforced, not only application conve
 | Slice | Scope | Touch points | Done when |
 | --- | --- | --- | --- |
 | **1a. `PRIMARY KEY` / `UNIQUE`** | Column uniqueness; reject duplicate `INSERT`/`UPDATE`; auto `__pk_`/`__uq_` hash/B+ indexes; snapshot v5 flags | Parser DDL, `Table` / `IndexManager`, DML engine, `.tcrdb` schema metadata, SQL docs | **Done** — duplicate insert/update aborted; unique index used for equality; save/load preserves constraint |
-| **1b. `NOT NULL` as first-class constraint story** | Already partially present via nullable columns — document and test as an ACID-`C` guarantee; align error messages | Docs + any missing DML rejection tests | Explicit tests named for null-rejection on non-nullable columns (insert/update) |
+| **1b. `NOT NULL` as first-class constraint story** | Document and test null-rejection as an ACID-`C` guarantee; aligned error messages name the column | Docs + DML rejection tests; WAL `createTableSql` emits `NOT NULL` | **Done** — named insert/update/multi-row tests; `NOT NULL constraint violation on column …` |
 | **1c. `CHECK` (simple)** | Boolean predicate on row image at insert/update (column comparisons / AND / OR; no subqueries v1) | Parser, DML validate path, snapshot metadata | Rejecting insert/update tests; `EXPLAIN` optional |
 | **1d. `FOREIGN KEY` (optional later)** | Same-database parent lookup on insert/update; restrict or reject delete of referenced parent | Catalog + DML; careful interaction with SI visibility | Only after 1a; document ON DELETE/UPDATE policy (start with `NO ACTION` / reject) |
 
@@ -199,11 +200,10 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 ### Suggested order of attack
 
-1. Phase **1b** docs/tests for `NOT NULL` as an explicit consistency guarantee.
-2. Phase **3a** durable snapshot publish — pairs well with the recent WAL fsync work.
-3. Phase **1c** simple `CHECK` if constraint teaching is still the focus.
-4. Phase **2a** / **3c** only when packaging a deeper concurrency or recovery story.
-5. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
+1. Phase **3a** durable snapshot publish — pairs well with the recent WAL fsync work.
+2. Phase **1c** simple `CHECK` if constraint teaching is still the focus.
+3. Phase **2a** / **3c** only when packaging a deeper concurrency or recovery story.
+4. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
 
 ### Explicit non-goals (for now)
 

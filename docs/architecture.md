@@ -113,7 +113,8 @@ see `AGENTS.md` for the agent-oriented layout map.
 
 ## Architectural Boundaries
 
-`Table` owns schema validation (including single-column `PRIMARY KEY` / `UNIQUE` enforcement),
+`Table` owns schema validation (including `NOT NULL` and single-column `PRIMARY KEY` / `UNIQUE`
+enforcement),
 synchronization, composes `IndexManager`, `TableStatistics`, and
 `TableSnapshotIO`, and delegates physical row storage to the `RowStore` interface. `TableSnapshotIO`
 owns the unlocked snapshot restore/export, dirty-page capture, and physical/page-image redo logic;

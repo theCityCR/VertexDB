@@ -187,7 +187,8 @@ bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId wr
     }
     if (value.isNull()) {
         if (!schema_[index].nullable) {
-            throw std::invalid_argument("null value assigned to non-nullable column");
+            throw std::invalid_argument("NOT NULL constraint violation on column " +
+                                        schema_[index].name);
         }
     } else if (value.type() != schema_[index].type) {
         throw std::invalid_argument("updated value does not match column type");
@@ -272,7 +273,8 @@ void Table::validateRow(const Row &row) const {
     for (std::size_t i = 0; i < row.size(); ++i) {
         if (row[i].isNull()) {
             if (!schema_[i].nullable) {
-                throw std::invalid_argument("null value assigned to non-nullable column");
+                throw std::invalid_argument("NOT NULL constraint violation on column " +
+                                            schema_[i].name);
             }
             continue;
         }
