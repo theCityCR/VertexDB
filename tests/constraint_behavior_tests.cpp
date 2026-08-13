@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -42,6 +43,9 @@ TEST(ConstraintBehaviorTests, RejectsPrimaryKeyNullAndMultiplePrimaryKeys) {
     EXPECT_THROW((void)parser.parse("CREATE TABLE T (id INT NULL PRIMARY KEY);"),
                  std::runtime_error);
     EXPECT_THROW((void)parser.parse("CREATE TABLE T (id INT PRIMARY KEY, other INT PRIMARY KEY);"),
+                 std::runtime_error);
+    EXPECT_THROW((void)parser.parse(
+                     "CREATE TABLE T (a INT, b INT, PRIMARY KEY (a, b), PRIMARY KEY (a));"),
                  std::runtime_error);
 }
 
@@ -821,6 +825,103 @@ TEST(ConstraintBehaviorTests, CatalogCommandsRequireActiveDatabase) {
     ASSERT_TRUE(executor.execute(parser.parse("CREATE TABLE T (id INT);")).success);
     EXPECT_THROW((void)executor.execute(parser.parse("UPDATE T SET nosuch = 1;")),
                  std::runtime_error);
+}
+
+TEST(ConstraintBehaviorTests, ParsesCompositePrimaryKeyAndUnique) {
+    Parser parser;
+    auto query = parser.parse(
+        "CREATE TABLE Enrollments (student_id INT, course_id INT, note STRING NULL, "
+        "PRIMARY KEY (student_id, course_id), UNIQUE (note, course_id));");
+    ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
+    const auto &table = std::get<CreateTable>(query);
+    ASSERT_EQ(table.uniqueConstraints.size(), 2U);
+    EXPECT_TRUE(table.uniqueConstraints[0].primaryKey);
+    ASSERT_EQ(table.uniqueConstraints[0].columns.size(), 2U);
+    EXPECT_EQ(table.uniqueConstraints[0].columns[0], "student_id");
+    EXPECT_EQ(table.uniqueConstraints[0].columns[1], "course_id");
+    EXPECT_FALSE(table.columns[0].nullable);
+    EXPECT_FALSE(table.columns[1].nullable);
+    EXPECT_FALSE(table.uniqueConstraints[1].primaryKey);
+}
+
+TEST(ConstraintBehaviorTests, CompositePrimaryKeyRejectsDuplicatesAndAllowsIndexedLookup) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "composite-pk");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE school;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Enrollments (student_id INT, course_id INT, grade STRING, "
+                        "PRIMARY KEY (student_id, course_id));"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Enrollments VALUES (1, 10, \"A\"), (1, 11, \"B\");"))
+                    .success);
+    EXPECT_THROW((void)executor.execute(
+                     parser.parse("INSERT INTO Enrollments VALUES (1, 10, \"C\");")),
+                 std::invalid_argument);
+
+    auto table = executor.currentDatabase()->table("Enrollments");
+    ASSERT_TRUE(table);
+    const std::vector<std::string> keyCols{"student_id", "course_id"};
+    EXPECT_TRUE(table->hasIndex(keyCols));
+    const auto names = table->listIndexes();
+    EXPECT_NE(std::find(names.begin(), names.end(), "__pk_student_id_course_id"), names.end());
+
+    const auto key = Value::composite({Value{1}, Value{10}});
+    auto hits = table->indexedLookup(keyCols, key);
+    ASSERT_TRUE(hits);
+    ASSERT_EQ(hits->size(), 1U);
+}
+
+TEST(ConstraintBehaviorTests, CompositeUniqueAllowsNullPartsAndRejectsFullKeyDup) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "composite-uq");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Tags (id INT PRIMARY KEY, a INT NULL, b INT NULL, "
+                        "UNIQUE (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Tags VALUES (1, 1, NULL), (2, 1, NULL), (3, 1, 2);"))
+                    .success);
+    EXPECT_THROW((void)executor.execute(parser.parse("INSERT INTO Tags VALUES (4, 1, 2);")),
+                 std::invalid_argument);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Tags ORDER BY id;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 3U);
+}
+
+TEST(ConstraintBehaviorTests, CompositeConstraintsSurviveSaveLoad) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "composite-save");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Pair (a INT, b INT, PRIMARY KEY (a, b));"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Pair VALUES (1, 2);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE;")).success);
+    EXPECT_THROW((void)executor.execute(parser.parse("INSERT INTO Pair VALUES (1, 2);")),
+                 std::invalid_argument);
+    auto table = executor.currentDatabase()->table("Pair");
+    ASSERT_TRUE(table);
+    ASSERT_EQ(table->uniqueConstraints().size(), 1U);
+    EXPECT_TRUE(table->uniqueConstraints()[0].primaryKey);
+}
+
+TEST(ConstraintBehaviorTests, CreateIndexSupportsCompositeColumns) {
+    Parser parser;
+    auto query = parser.parse("CREATE INDEX idx_ab ON T (a, b);");
+    ASSERT_TRUE(std::holds_alternative<CreateIndex>(query));
+    const auto &index = std::get<CreateIndex>(query);
+    ASSERT_EQ(index.columns.size(), 2U);
+    EXPECT_EQ(index.columns[0], "a");
+    EXPECT_EQ(index.columns[1], "b");
+    EXPECT_EQ(index.column, "a");
 }
 
 } // namespace VertexDB

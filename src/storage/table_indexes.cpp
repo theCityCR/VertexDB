@@ -2,6 +2,8 @@
 
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
+#include <vector>
 
 namespace VertexDB {
 
@@ -19,6 +21,12 @@ std::optional<std::vector<RowId>> Table::indexedLookup(std::string_view column,
                                                        const Value &value) const {
     std::shared_lock lock{mutex_};
     return indexManager_.indexedLookup(column, value, schema_);
+}
+
+std::optional<std::vector<RowId>> Table::indexedLookup(std::span<const std::string> columns,
+                                                       const Value &key) const {
+    std::shared_lock lock{mutex_};
+    return indexManager_.indexedLookup(columns, key, schema_);
 }
 
 std::optional<std::vector<RowId>> Table::indexedLookup(const IndexExpression &expression,
@@ -45,6 +53,11 @@ bool Table::hasIndex(std::string_view column) const {
     return indexManager_.hasIndex(column, schema_);
 }
 
+bool Table::hasIndex(std::span<const std::string> columns) const {
+    std::shared_lock lock{mutex_};
+    return indexManager_.hasIndex(columns, schema_);
+}
+
 bool Table::hasExpressionIndex(const IndexExpression &expression) const {
     std::shared_lock lock{mutex_};
     return indexManager_.hasExpressionIndex(expression);
@@ -66,19 +79,37 @@ Table::orderedIndexNodesSnapshot(std::string_view indexName) const {
     return indexManager_.orderedIndexNodesSnapshot(indexName);
 }
 
+bool Table::registerIndex(std::string name, std::vector<std::size_t> columnIndexes,
+                          std::optional<IndexExpression> expression, bool rebuild) {
+    return indexManager_.registerIndex(std::move(name), std::move(columnIndexes),
+                                       std::move(expression), rebuild, *rowStore_, schema_);
+}
+
 bool Table::registerIndex(std::string name, std::size_t columnIndex,
                           std::optional<IndexExpression> expression, bool rebuild) {
-    return indexManager_.registerIndex(std::move(name), columnIndex, std::move(expression), rebuild,
-                                       *rowStore_, schema_);
+    return registerIndex(std::move(name), std::vector<std::size_t>{columnIndex},
+                         std::move(expression), rebuild);
 }
 
 bool Table::createIndex(std::string name, std::string column) {
-    auto indexColumn = columnIndex(column);
-    if (!indexColumn) {
+    return createIndex(std::move(name), std::vector<std::string>{std::move(column)});
+}
+
+bool Table::createIndex(std::string name, std::vector<std::string> columns) {
+    if (columns.empty()) {
         return false;
     }
+    std::vector<std::size_t> indexes;
+    indexes.reserve(columns.size());
+    for (const auto &column : columns) {
+        auto indexColumn = columnIndex(column);
+        if (!indexColumn) {
+            return false;
+        }
+        indexes.push_back(*indexColumn);
+    }
     std::unique_lock lock{mutex_};
-    return registerIndex(std::move(name), *indexColumn, std::nullopt, true);
+    return registerIndex(std::move(name), std::move(indexes), std::nullopt, true);
 }
 
 bool Table::createIndex(std::string name, IndexExpression expression) {
@@ -91,12 +122,24 @@ bool Table::createIndex(std::string name, IndexExpression expression) {
 }
 
 bool Table::createIndexWithoutRebuild(std::string name, std::string column) {
-    auto indexColumn = columnIndex(column);
-    if (!indexColumn) {
+    return createIndexWithoutRebuild(std::move(name), std::vector<std::string>{std::move(column)});
+}
+
+bool Table::createIndexWithoutRebuild(std::string name, std::vector<std::string> columns) {
+    if (columns.empty()) {
         return false;
     }
+    std::vector<std::size_t> indexes;
+    indexes.reserve(columns.size());
+    for (const auto &column : columns) {
+        auto indexColumn = columnIndex(column);
+        if (!indexColumn) {
+            return false;
+        }
+        indexes.push_back(*indexColumn);
+    }
     std::unique_lock lock{mutex_};
-    return registerIndex(std::move(name), *indexColumn, std::nullopt, false);
+    return registerIndex(std::move(name), std::move(indexes), std::nullopt, false);
 }
 
 bool Table::createIndexWithoutRebuild(std::string name, IndexExpression expression) {

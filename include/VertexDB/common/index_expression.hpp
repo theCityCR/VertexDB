@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace VertexDB {
 
@@ -30,12 +31,18 @@ struct IndexExpression {
     const IndexExpression &expression, const Row &row,
     const std::function<std::optional<std::size_t>(std::string_view)> &lookup);
 
-// Persistence encoding: column indexes store the column name; expression indexes use this prefix.
+// Persistence encoding: column indexes store the column name; expression indexes use this prefix;
+// multi-column indexes use cols:a,b.
 inline constexpr std::string_view kExpressionIndexPrefix = "expr:";
+inline constexpr std::string_view kCompositeIndexPrefix = "cols:";
 
 [[nodiscard]] std::string encodeIndexDefinitionColumn(const std::string &column,
                                                       const std::optional<IndexExpression> &expression);
+[[nodiscard]] std::string encodeIndexDefinitionColumns(const std::vector<std::string> &columns,
+                                                       const std::optional<IndexExpression> &expression);
 [[nodiscard]] std::pair<std::string, std::optional<IndexExpression>>
 decodeIndexDefinitionColumn(std::string_view encoded);
+[[nodiscard]] std::pair<std::vector<std::string>, std::optional<IndexExpression>>
+decodeIndexDefinitionColumns(std::string_view encoded);
 
 } // namespace VertexDB

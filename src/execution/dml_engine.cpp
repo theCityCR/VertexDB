@@ -22,7 +22,6 @@ void DmlEngine::appendPageImageRedo(Table &table, std::string tableName) {
 
 QueryResult DmlEngine::executeInsert(const Insert &command) {
     auto table = ctx_.select->requireTable(command.table);
-    const auto schema = table->schema();
     const auto snapshot = ctx_.readSnapshot();
     auto &txns = ctx_.session.transactionManager();
     for (std::size_t i = 0; i < command.rows.size(); ++i) {
@@ -31,18 +30,8 @@ QueryResult DmlEngine::executeInsert(const Insert &command) {
         table->assertUniqueRow(row);
         assertForeignKeysOnChildRow(*ctx_.database, *table, row, snapshot, txns);
         for (std::size_t j = 0; j < i; ++j) {
-            const auto &prior = command.rows[j];
-            for (std::size_t col = 0; col < schema.size(); ++col) {
-                if (!schema[col].unique && !schema[col].primaryKey) {
-                    continue;
-                }
-                if (row[col].isNull() || prior[col].isNull()) {
-                    continue;
-                }
-                if (row[col] == prior[col]) {
-                    throw std::invalid_argument("unique constraint violation on column " +
-                                                schema[col].name);
-                }
+            if (table->rowsConflictOnUnique(row, command.rows[j])) {
+                throw std::invalid_argument("unique constraint violation on batch insert");
             }
         }
     }

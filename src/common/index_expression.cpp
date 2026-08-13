@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace VertexDB {
 namespace {
@@ -233,23 +234,75 @@ Value evaluateIndexExpression(
 
 std::string encodeIndexDefinitionColumn(const std::string &column,
                                         const std::optional<IndexExpression> &expression) {
-    if (!expression) {
-        return column;
+    return encodeIndexDefinitionColumns({column}, expression);
+}
+
+std::string encodeIndexDefinitionColumns(const std::vector<std::string> &columns,
+                                         const std::optional<IndexExpression> &expression) {
+    if (expression) {
+        if (columns.size() != 1) {
+            throw std::runtime_error("expression indexes must be single-column");
+        }
+        return std::string{kExpressionIndexPrefix} + indexExpressionToString(*expression);
     }
-    return std::string{kExpressionIndexPrefix} + indexExpressionToString(*expression);
+    if (columns.empty()) {
+        throw std::runtime_error("index definition requires at least one column");
+    }
+    if (columns.size() == 1) {
+        return columns.front();
+    }
+    std::string encoded{kCompositeIndexPrefix};
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (i != 0) {
+            encoded.push_back(',');
+        }
+        encoded += columns[i];
+    }
+    return encoded;
 }
 
 std::pair<std::string, std::optional<IndexExpression>>
 decodeIndexDefinitionColumn(std::string_view encoded) {
+    auto decoded = decodeIndexDefinitionColumns(encoded);
+    if (decoded.first.empty()) {
+        throw std::runtime_error("invalid index metadata");
+    }
+    return {decoded.first.front(), std::move(decoded.second)};
+}
+
+std::pair<std::vector<std::string>, std::optional<IndexExpression>>
+decodeIndexDefinitionColumns(std::string_view encoded) {
     if (encoded.substr(0, kExpressionIndexPrefix.size()) == kExpressionIndexPrefix) {
         const auto text = encoded.substr(kExpressionIndexPrefix.size());
         auto expression = parseIndexExpressionString(text);
         if (!expression) {
             throw std::runtime_error("invalid expression index metadata");
         }
-        return {expression->column, std::move(expression)};
+        return {{expression->column}, std::move(expression)};
     }
-    return {std::string{encoded}, std::nullopt};
+    if (encoded.substr(0, kCompositeIndexPrefix.size()) == kCompositeIndexPrefix) {
+        const auto text = encoded.substr(kCompositeIndexPrefix.size());
+        std::vector<std::string> columns;
+        std::size_t start = 0;
+        while (start <= text.size()) {
+            const auto comma = text.find(',', start);
+            const auto end = comma == std::string_view::npos ? text.size() : comma;
+            const auto part = text.substr(start, end - start);
+            if (part.empty()) {
+                throw std::runtime_error("invalid composite index metadata");
+            }
+            columns.emplace_back(part);
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
+        if (columns.size() < 2) {
+            throw std::runtime_error("invalid composite index metadata");
+        }
+        return {std::move(columns), std::nullopt};
+    }
+    return {{std::string{encoded}}, std::nullopt};
 }
 
 } // namespace VertexDB

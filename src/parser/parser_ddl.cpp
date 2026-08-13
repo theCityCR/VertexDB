@@ -89,7 +89,23 @@ CreateTable Parser::parseCreateTable() {
     std::vector<Column> columns;
     std::vector<Predicate> checkConstraints;
     std::vector<ForeignKeyConstraint> foreignKeys;
+    std::vector<UniqueConstraint> uniqueConstraints;
     bool sawPrimaryKey = false;
+
+    auto parseColumnList = [this]() {
+        expect(TokenType::LeftParen);
+        std::vector<std::string> names;
+        do {
+            const auto column = advance();
+            if (column.type != TokenType::Identifier) {
+                throw std::runtime_error("expected column name");
+            }
+            names.push_back(column.lexeme);
+        } while (match(TokenType::Comma));
+        expect(TokenType::RightParen);
+        return names;
+    };
+
     do {
         if (match(TokenType::Identifier, "CHECK")) {
             checkConstraints.push_back(parseCheckConstraintBody());
@@ -107,6 +123,27 @@ CreateTable Parser::parseCreateTable() {
             auto fk = parseReferencesClause(childColumn.lexeme);
             parseForeignKeyActions(fk);
             foreignKeys.push_back(std::move(fk));
+            continue;
+        }
+        if (match(TokenType::Identifier, "PRIMARY")) {
+            expect(TokenType::Identifier, "KEY");
+            if (sawPrimaryKey) {
+                throw std::runtime_error("multiple PRIMARY KEY constraints are not supported");
+            }
+            auto names = parseColumnList();
+            if (names.empty()) {
+                throw std::runtime_error("PRIMARY KEY requires at least one column");
+            }
+            sawPrimaryKey = true;
+            uniqueConstraints.push_back(UniqueConstraint{std::move(names), true});
+            continue;
+        }
+        if (match(TokenType::Identifier, "UNIQUE")) {
+            auto names = parseColumnList();
+            if (names.empty()) {
+                throw std::runtime_error("UNIQUE requires at least one column");
+            }
+            uniqueConstraints.push_back(UniqueConstraint{std::move(names), false});
             continue;
         }
         const auto columnName = advance();
@@ -173,7 +210,7 @@ CreateTable Parser::parseCreateTable() {
         }
         if (primaryKey) {
             if (sawPrimaryKey) {
-                throw std::runtime_error("multiple PRIMARY KEY columns are not supported");
+                throw std::runtime_error("multiple PRIMARY KEY constraints are not supported");
             }
             sawPrimaryKey = true;
             nullable = false;
@@ -182,6 +219,52 @@ CreateTable Parser::parseCreateTable() {
     } while (match(TokenType::Comma));
 
     expect(TokenType::RightParen);
+    for (auto &constraint : uniqueConstraints) {
+        if (constraint.columns.size() == 1) {
+            // Normalize single-column table-level constraints onto column flags.
+            bool found = false;
+            for (auto &column : columns) {
+                if (column.name != constraint.columns.front()) {
+                    continue;
+                }
+                found = true;
+                column.unique = true;
+                if (constraint.primaryKey) {
+                    if (column.nullable) {
+                        throw std::runtime_error("PRIMARY KEY column cannot be NULL");
+                    }
+                    column.primaryKey = true;
+                    column.nullable = false;
+                }
+            }
+            if (!found) {
+                throw std::runtime_error("unknown UNIQUE / PRIMARY KEY column: " +
+                                         constraint.columns.front());
+            }
+            continue;
+        }
+        for (const auto &name : constraint.columns) {
+            bool found = false;
+            for (auto &column : columns) {
+                if (column.name != name) {
+                    continue;
+                }
+                found = true;
+                if (constraint.primaryKey) {
+                    if (column.nullable) {
+                        throw std::runtime_error("PRIMARY KEY column cannot be NULL");
+                    }
+                    column.nullable = false;
+                }
+            }
+            if (!found) {
+                throw std::runtime_error("unknown UNIQUE / PRIMARY KEY column: " + name);
+            }
+        }
+    }
+    // Drop single-column table-level entries; column flags own them.
+    std::erase_if(uniqueConstraints,
+                  [](const UniqueConstraint &c) { return c.columns.size() == 1; });
     for (const auto &check : checkConstraints) {
         validateCheckColumns(check, columns);
     }
@@ -197,7 +280,8 @@ CreateTable Parser::parseCreateTable() {
             throw std::runtime_error("FOREIGN KEY child column not found: " + fk.childColumn);
         }
     }
-    return {table.lexeme, std::move(columns), std::move(checkConstraints), std::move(foreignKeys)};
+    return {table.lexeme, std::move(columns), std::move(checkConstraints), std::move(foreignKeys),
+            std::move(uniqueConstraints)};
 }
 
 ForeignKeyConstraint Parser::parseReferencesClause(std::string childColumn) {
@@ -289,14 +373,22 @@ CreateIndex Parser::parseCreateIndex() {
         auto expression = parseIndexExpression();
         expect(TokenType::RightParen);
         expect(TokenType::RightParen);
-        return CreateIndex{index.lexeme, table.lexeme, expression.column, std::move(expression)};
+        return CreateIndex{index.lexeme, table.lexeme, expression.column, {expression.column},
+                           std::move(expression)};
     }
-    const auto column = advance();
-    if (column.type != TokenType::Identifier) {
+    std::vector<std::string> columns;
+    do {
+        const auto column = advance();
+        if (column.type != TokenType::Identifier) {
+            throw std::runtime_error("expected indexed column name");
+        }
+        columns.push_back(column.lexeme);
+    } while (match(TokenType::Comma));
+    expect(TokenType::RightParen);
+    if (columns.empty()) {
         throw std::runtime_error("expected indexed column name");
     }
-    expect(TokenType::RightParen);
-    return {index.lexeme, table.lexeme, column.lexeme, std::nullopt};
+    return {index.lexeme, table.lexeme, columns.front(), std::move(columns), std::nullopt};
 }
 
 } // namespace VertexDB

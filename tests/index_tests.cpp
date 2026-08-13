@@ -24,6 +24,35 @@ TEST(IndexTests, FindsInsertedRowIds) {
     EXPECT_EQ(rowIds[1], 8U);
 }
 
+TEST(IndexTests, CompositeValueKeysHashAndCompare) {
+    HashIndex index;
+    const auto key = Value::composite({Value{1}, Value{std::string{"a"}}});
+    const auto same = Value::composite({Value{1}, Value{std::string{"a"}}});
+    const auto other = Value::composite({Value{1}, Value{std::string{"b"}}});
+    index.insert(key, 9);
+    EXPECT_EQ(index.find(same).size(), 1U);
+    EXPECT_TRUE(index.find(other).empty());
+    EXPECT_TRUE(key == same);
+    EXPECT_TRUE(key < other);
+
+    BTreeIndex ordered{4};
+    ordered.insert(key, 9);
+    ordered.insert(other, 10);
+    EXPECT_EQ(ordered.find(same).size(), 1U);
+    EXPECT_EQ(ordered.greaterThan(key).size(), 1U);
+}
+
+TEST(IndexTests, CompositeIndexDefinitionEncodingRoundTrips) {
+    const auto encoded = encodeIndexDefinitionColumns({"a", "b"}, std::nullopt);
+    EXPECT_EQ(encoded, "cols:a,b");
+    const auto decoded = decodeIndexDefinitionColumns(encoded);
+    ASSERT_EQ(decoded.first.size(), 2U);
+    EXPECT_EQ(decoded.first[0], "a");
+    EXPECT_EQ(decoded.first[1], "b");
+    EXPECT_FALSE(decoded.second.has_value());
+}
+
+
 TEST(IndexTests, IncrementalBTreeSplitMergeMaintainsStructuralInvariants) {
     constexpr std::size_t fanout = 2;
     BTreeIndex index{fanout};

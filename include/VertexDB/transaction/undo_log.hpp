@@ -40,6 +40,7 @@ struct UndoRecord {
     std::string indexName;
     // Populated for UndoKind::DropIndex so ROLLBACK can recreate the index.
     std::string indexColumn;
+    std::vector<std::string> indexColumns;
     std::optional<IndexExpression> indexExpression;
     // Populated for UndoKind::DropTable so ROLLBACK can reattach the table.
     std::shared_ptr<Table> retainedTable;

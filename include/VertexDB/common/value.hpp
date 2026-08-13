@@ -1,14 +1,16 @@
 #pragma once
 
-// Typed SQL values (INT / STRING / DOUBLE / NULL / parameter slots).
+// Typed SQL values (INT / STRING / DOUBLE / NULL / parameter slots / composite index keys).
 // Implementation: src/common/value.cpp.
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace VertexDB {
 
@@ -27,7 +29,11 @@ struct ParameterSlot {
     }
 };
 
-using ValueData = std::variant<std::monostate, std::int64_t, double, std::string, ParameterSlot>;
+struct CompositeParts;
+
+using ValueData =
+    std::variant<std::monostate, std::int64_t, double, std::string, ParameterSlot,
+                 std::shared_ptr<const CompositeParts>>;
 
 class Value {
   public:
@@ -38,19 +44,30 @@ class Value {
     Value(std::string value);
 
     [[nodiscard]] static Value parameter(std::size_t index);
+    [[nodiscard]] static Value composite(std::vector<Value> parts);
 
     [[nodiscard]] ColumnType type() const;
     [[nodiscard]] bool isNull() const noexcept;
     [[nodiscard]] bool isParameter() const noexcept;
+    [[nodiscard]] bool isComposite() const noexcept;
     [[nodiscard]] std::size_t parameterIndex() const;
+    [[nodiscard]] const std::vector<Value> &compositeParts() const;
+    [[nodiscard]] bool hasNullCompositePart() const noexcept;
     [[nodiscard]] const ValueData &data() const noexcept;
     [[nodiscard]] std::string toString() const;
 
-    friend bool operator==(const Value &lhs, const Value &rhs) = default;
+    friend bool operator==(const Value &lhs, const Value &rhs);
     friend bool operator<(const Value &lhs, const Value &rhs);
 
   private:
     ValueData data_{std::monostate{}};
+};
+
+struct CompositeParts {
+    std::vector<Value> parts;
+
+    friend bool operator==(const CompositeParts &lhs, const CompositeParts &rhs);
+    friend bool operator<(const CompositeParts &lhs, const CompositeParts &rhs);
 };
 
 struct Column {

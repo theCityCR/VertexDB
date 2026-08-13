@@ -5,6 +5,7 @@
 #include "VertexDB/parser/parser.hpp"
 #include "VertexDB/storage/check_eval.hpp"
 #include "VertexDB/storage/foreign_key.hpp"
+#include "VertexDB/storage/unique_constraint.hpp"
 #include "tcrdb_detail.hpp"
 
 #include <cstdint>
@@ -70,11 +71,20 @@ void writeTcrdbSnapshot(std::ostream &out, const Database &database) {
             writePodDb(out, static_cast<std::uint8_t>(fk.onUpdate));
         }
 
+        writePodDb(out, static_cast<std::uint64_t>(table->uniqueConstraints().size()));
+        for (const auto &constraint : table->uniqueConstraints()) {
+            writePodDb(out, static_cast<std::uint8_t>(constraint.primaryKey ? 1 : 0));
+            writePodDb(out, static_cast<std::uint64_t>(constraint.columns.size()));
+            for (const auto &column : constraint.columns) {
+                writeString(out, column);
+            }
+        }
+
         const auto indexes = table->indexDefinitions();
         writePodDb(out, static_cast<std::uint64_t>(indexes.size()));
         for (const auto &definition : indexes) {
             writeString(out, definition.name);
-            writeString(out, encodeIndexDefinitionColumn(definition.column, definition.expression));
+            writeString(out, encodeIndexDefinitionColumns(definition.columns, definition.expression));
         }
 
         writePagePayloadRows(out, *table);
@@ -92,9 +102,9 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         throw std::runtime_error("invalid database file magic");
     }
     const auto version = readPodDb<std::uint32_t>(in);
-    if (version != kVersion && version != kVersionV6 && version != kVersionV5 &&
-        version != kVersionV4 && version != kVersionV3 && version != kVersionV2 &&
-        version != kVersionV1) {
+    if (version != kVersion && version != kVersionV7 && version != kVersionV6 &&
+        version != kVersionV5 && version != kVersionV4 && version != kVersionV3 &&
+        version != kVersionV2 && version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
@@ -130,7 +140,7 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         }
 
         std::vector<ForeignKeyConstraint> foreignKeys;
-        if (version >= kVersion) {
+        if (version >= kVersionV7) {
             const auto fkCount = readPodDb<std::uint64_t>(in);
             foreignKeys.reserve(static_cast<std::size_t>(fkCount));
             for (std::uint64_t fkIndex = 0; fkIndex < fkCount; ++fkIndex) {
@@ -144,9 +154,26 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
             }
         }
 
+        std::vector<UniqueConstraint> uniqueConstraints;
+        if (version >= kVersion) {
+            const auto uniqueCount = readPodDb<std::uint64_t>(in);
+            uniqueConstraints.reserve(static_cast<std::size_t>(uniqueCount));
+            for (std::uint64_t uniqueIndex = 0; uniqueIndex < uniqueCount; ++uniqueIndex) {
+                UniqueConstraint constraint;
+                constraint.primaryKey = readPodDb<std::uint8_t>(in) != 0;
+                const auto columnCount = readPodDb<std::uint64_t>(in);
+                constraint.columns.reserve(static_cast<std::size_t>(columnCount));
+                for (std::uint64_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+                    constraint.columns.push_back(readString(in));
+                }
+                uniqueConstraints.push_back(std::move(constraint));
+            }
+        }
+
         const bool created = database->createTable(tableName, std::move(schema),
                                                    std::move(checkConstraints),
-                                                   std::move(foreignKeys));
+                                                   std::move(foreignKeys),
+                                                   std::move(uniqueConstraints));
         if (!created) {
             throw std::runtime_error("duplicate table in database file");
         }
@@ -164,15 +191,16 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         const bool restoreIndexPages = version >= kVersionV4;
         for (const auto &definition : indexDefinitions) {
             const auto &indexName = definition.first;
-            const auto decoded = decodeIndexDefinitionColumn(definition.second);
+            const auto decoded = decodeIndexDefinitionColumns(definition.second);
             const bool ok = [&]() {
                 if (decoded.second) {
                     return restoreIndexPages
                                ? table->createIndexWithoutRebuild(indexName, *decoded.second)
                                : table->createIndex(indexName, *decoded.second);
                 }
-                return restoreIndexPages ? table->createIndexWithoutRebuild(indexName, decoded.first)
-                                         : table->createIndex(indexName, decoded.first);
+                return restoreIndexPages
+                           ? table->createIndexWithoutRebuild(indexName, decoded.first)
+                           : table->createIndex(indexName, decoded.first);
             }();
             if (!ok) {
                 throw std::runtime_error("failed to restore index '" + indexName +

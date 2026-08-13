@@ -22,7 +22,10 @@ namespace VertexDB {
 
 struct IndexDefinition {
     std::string name;
+    // First column (expression base column, or columns.front() for column indexes).
     std::string column;
+    // Full ordered column list for column indexes (size 1 for single-column).
+    std::vector<std::string> columns;
     std::optional<IndexExpression> expression;
 };
 
@@ -37,6 +40,9 @@ class IndexManager {
     indexedLookup(std::string_view column, const Value &value,
                   std::span<const Column> schema) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
+    indexedLookup(std::span<const std::string> columns, const Value &key,
+                  std::span<const Column> schema) const;
+    [[nodiscard]] std::optional<std::vector<RowId>>
     indexedLookup(const IndexExpression &expression, const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
     orderedLookup(std::string_view column, ComparisonOperator op, const Value &value,
@@ -46,6 +52,8 @@ class IndexManager {
                   const Value &value) const;
 
     [[nodiscard]] bool hasIndex(std::string_view column, std::span<const Column> schema) const;
+    [[nodiscard]] bool hasIndex(std::span<const std::string> columns,
+                                std::span<const Column> schema) const;
     [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
     [[nodiscard]] std::vector<IndexDefinition>
@@ -53,6 +61,9 @@ class IndexManager {
     [[nodiscard]] std::optional<std::vector<BTreeNode>>
     orderedIndexNodesSnapshot(std::string_view indexName) const;
 
+    bool registerIndex(std::string name, std::vector<std::size_t> columnIndexes,
+                       std::optional<IndexExpression> expression, bool rebuild,
+                       const RowStore &rowStore, std::span<const Column> schema);
     bool registerIndex(std::string name, std::size_t columnIndex,
                        std::optional<IndexExpression> expression, bool rebuild,
                        const RowStore &rowStore, std::span<const Column> schema);
@@ -62,8 +73,9 @@ class IndexManager {
                          std::span<const Column> schema);
     void rebuildIndexes(const RowStore &rowStore, std::span<const Column> schema);
 
-    [[nodiscard]] const std::map<std::string, std::size_t> &indexColumns() const noexcept;
-    [[nodiscard]] std::map<std::string, std::size_t> &indexColumns() noexcept;
+    [[nodiscard]] const std::map<std::string, std::vector<std::size_t>> &
+    indexColumns() const noexcept;
+    [[nodiscard]] std::map<std::string, std::vector<std::size_t>> &indexColumns() noexcept;
     [[nodiscard]] const std::map<std::string, IndexExpression> &indexExpressions() const noexcept;
     [[nodiscard]] std::map<std::string, IndexExpression> &indexExpressions() noexcept;
     [[nodiscard]] const std::map<std::string, HashIndex> &hashIndexes() const noexcept;
@@ -75,7 +87,7 @@ class IndexManager {
     [[nodiscard]] Value indexKeyForRow(const std::string &indexName, const Row &row,
                                        std::span<const Column> schema) const;
 
-    std::map<std::string, std::size_t> indexColumns_;
+    std::map<std::string, std::vector<std::size_t>> indexColumns_;
     std::map<std::string, IndexExpression> indexExpressions_;
     std::map<std::string, HashIndex> indexes_;
     std::map<std::string, BTreeIndex> orderedIndexes_;

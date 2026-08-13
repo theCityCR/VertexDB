@@ -15,6 +15,7 @@
 #include "VertexDB/storage/row_store.hpp"
 #include "VertexDB/storage/table_snapshot_io.hpp"
 #include "VertexDB/storage/table_statistics.hpp"
+#include "VertexDB/storage/unique_constraint.hpp"
 #include "VertexDB/transaction/mvcc_row_store.hpp"
 
 #include <memory>
@@ -31,7 +32,8 @@ class Table : public RelationStats, public IndexCatalogView {
   public:
     Table(std::string name, std::vector<Column> schema,
           std::vector<Predicate> checkConstraints = {},
-          std::vector<ForeignKeyConstraint> foreignKeys = {});
+          std::vector<ForeignKeyConstraint> foreignKeys = {},
+          std::vector<UniqueConstraint> uniqueConstraints = {});
 
     // --- Identity / schema ---
     [[nodiscard]] const std::string &name() const noexcept;
@@ -39,11 +41,14 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::span<const Column> schema() const noexcept;
     [[nodiscard]] std::span<const Predicate> checkConstraints() const noexcept;
     [[nodiscard]] std::span<const ForeignKeyConstraint> foreignKeys() const noexcept;
+    [[nodiscard]] std::span<const UniqueConstraint> uniqueConstraints() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     void validateRow(const Row &row) const;
-    // Reject duplicate values on UNIQUE / PRIMARY KEY columns (NULLs skipped for UNIQUE).
+    // Reject duplicate values on UNIQUE / PRIMARY KEY (NULLs skipped for UNIQUE).
     void assertUniqueRow(const Row &row, std::optional<RowId> excludeRowId = std::nullopt) const;
-    // Register reserved `__pk_` / `__uq_` column indexes when missing (CREATE TABLE / restore).
+    // True when two rows conflict on any UNIQUE / PRIMARY KEY constraint.
+    [[nodiscard]] bool rowsConflictOnUnique(const Row &left, const Row &right) const;
+    // Register reserved `__pk_` / `__uq_` indexes when missing (CREATE TABLE / restore).
     void ensureConstraintIndexes();
 
     // --- MVCC / visibility reads ---
@@ -107,21 +112,26 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::optional<std::vector<RowId>> indexedLookup(std::string_view column,
                                                                   const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
+    indexedLookup(std::span<const std::string> columns, const Value &key) const;
+    [[nodiscard]] std::optional<std::vector<RowId>>
     indexedLookup(const IndexExpression &expression, const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
     orderedLookup(std::string_view column, ComparisonOperator op, const Value &value) const;
     [[nodiscard]] std::optional<std::vector<RowId>>
     orderedLookup(const IndexExpression &expression, ComparisonOperator op,
                   const Value &value) const;
-    // True when the column has a maintained column index (hash equality + ordered range).
+    // True when the column has a maintained single-column index (hash equality + ordered range).
     [[nodiscard]] bool hasIndex(std::string_view column) const override;
+    [[nodiscard]] bool hasIndex(std::span<const std::string> columns) const;
     [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const override;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
     [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;
     bool createIndex(std::string name, std::string column);
+    bool createIndex(std::string name, std::vector<std::string> columns);
     bool createIndex(std::string name, IndexExpression expression);
     // Register index metadata without rebuilding (snapshot v4+ restore path).
     bool createIndexWithoutRebuild(std::string name, std::string column);
+    bool createIndexWithoutRebuild(std::string name, std::vector<std::string> columns);
     bool createIndexWithoutRebuild(std::string name, IndexExpression expression);
     // Drop a named index (public DROP INDEX SQL and txn undo of CREATE INDEX).
     bool dropIndex(std::string_view name);
@@ -145,16 +155,25 @@ class Table : public RelationStats, public IndexCatalogView {
   private:
     void addRowToIndexes(RowId rowId);
     void rebuildIndexes();
+    bool registerIndex(std::string name, std::vector<std::size_t> columnIndexes,
+                       std::optional<IndexExpression> expression, bool rebuild);
     bool registerIndex(std::string name, std::size_t columnIndex,
                        std::optional<IndexExpression> expression, bool rebuild);
     void enforceUniqueConstraintsUnlocked(const Row &row,
                                           std::optional<RowId> excludeRowId) const;
     void enforceCheckConstraints(const Row &row) const;
+    [[nodiscard]] std::vector<UniqueConstraint> allUniqueConstraints() const;
+    [[nodiscard]] static std::string constraintIndexName(const UniqueConstraint &constraint);
+    [[nodiscard]] static std::string formatUniqueColumns(const UniqueConstraint &constraint);
+    [[nodiscard]] Value uniqueKeyForRow(const UniqueConstraint &constraint, const Row &row) const;
+    [[nodiscard]] bool uniqueRowsEqual(const UniqueConstraint &constraint, const Row &left,
+                                       const Row &right) const;
 
     std::string name_;
     std::vector<Column> schema_;
     std::vector<Predicate> checkConstraints_;
     std::vector<ForeignKeyConstraint> foreignKeys_;
+    std::vector<UniqueConstraint> uniqueConstraints_;
     std::unique_ptr<RowStore> rowStore_;
     IndexManager indexManager_;
     TableStatistics statistics_;

@@ -98,7 +98,7 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   `btree_index_{lookup,mutate,snapshot}.cpp`.
 - `persistence`: `StorageManager` orchestrates snapshot paths with durable publish (shared
   `durable_sync` file/directory helpers also used by `WriteAheadLog`); the slim `tcrdb_codec`
-  orchestrates `.tcrdb` v1–v7 encode/decode across focused value, table, and index codec translation
+  orchestrates `.tcrdb` v1–v8 encode/decode across focused value, table, and index codec translation
   units. WAL recovery uses page-image redo plus legacy physical/logical records.
   `WriteAheadLog::append` and `reset` flush+fsync for durable COMMIT / autocommit; `SAVE` fsyncs the
   temp snapshot before rename and syncs the storage directory on POSIX.
@@ -115,7 +115,7 @@ see `AGENTS.md` for the agent-oriented layout map.
 
 ## Architectural Boundaries
 
-`Table` owns schema validation (including `NOT NULL`, single-column `PRIMARY KEY` / `UNIQUE`, and
+`Table` owns schema validation (including `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`, and
 simple `CHECK` enforcement) and stores `FOREIGN KEY` metadata;
 `CatalogEngine` / `DmlEngine` enforce referential integrity with SI-visible parent lookups.
 `Table` owns
@@ -129,9 +129,10 @@ an in-memory page directory are the source of truth, and the LRU `BufferPool` is
 (fill-on-miss). Reads deserialize live row slots from those page bytes. Each page holds a fixed
 number of row slots; serialized page byte lengths vary with row content. Both row-store
 implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
-inserts reuse freed IDs before growing capacity. Snapshots (format v7; v6–v1 still loadable) persist
+inserts reuse freed IDs before growing capacity. Snapshots (format v8; v7–v1 still loadable) persist
 `rowsPerPage`, capacity, free-list order, serialized page-directory payloads, index pages (B+ tree
-nodes and hash buckets), per-column uniqueness / primary-key flags, `CHECK` predicate text, and
+nodes and hash buckets), per-column uniqueness / primary-key flags, table-level composite unique
+constraints, `CHECK` predicate text, and
 `FOREIGN KEY` metadata so
 IDs, page bytes, indexes,
 and constraints survive save/load. Per-column equi-height histograms from `ANALYZE` are persisted

@@ -8,6 +8,14 @@ std::size_t HashIndex::ValueHash::operator()(const Value &value) const {
     if (value.isNull()) {
         return 0x9e3779b97f4a7c15ULL;
     }
+    if (value.isComposite()) {
+        std::size_t seed = 0x9e3779b97f4a7c15ULL;
+        ValueHash hasher;
+        for (const auto &part : value.compositeParts()) {
+            seed ^= hasher(part) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
     switch (value.type()) {
     case ColumnType::Int:
         return std::hash<std::int64_t>{}(std::get<std::int64_t>(value.data()));
