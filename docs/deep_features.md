@@ -35,7 +35,8 @@ autocommit WAL writes are durable before the API returns. Autocommit DML and DDL
 immediately. Startup recovery loads the latest saved snapshot, then replays WAL records after the
 last save checkpoint. `readAll` returns only complete records and ignores a truncated trailing write
 (crash mid-append). If no saved snapshot exists, recovery replays the WAL from the beginning.
-Successful saves are written through a temporary snapshot file and then checkpoint the WAL. Legacy
+Successful saves are written through a temporary snapshot file that is durable-synced before rename
+(and the storage directory is synced on POSIX afterward), then checkpoint the WAL. Legacy
 `PhysicalRedo` row after-images and logical `Insert`/`Update`/`Delete` SQL records remain replayable
 for older WAL files.
 

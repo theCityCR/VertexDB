@@ -109,7 +109,7 @@ Or feed an example script:
 
 ## Testing And Quality
 
-- 301 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
+- 302 GoogleTest cases across parser, storage, indexes, execution, nested SQL (CTE / correlation /
   subquery / recursive), set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
   `EXCEPT` / `EXCEPT ALL`), planner behavior (access / intersect-union / explain / mutation /
   join-stats), transactions, persistence/WAL, aggregates/prepared statements, constraints
@@ -138,7 +138,8 @@ Or feed an example script:
   row after-images remain replayable. Every successful WAL append/`reset` flush+fsyncs (and syncs
   the parent directory on create on POSIX; Windows uses `FlushFileBuffers` on the WAL file only)
   so `COMMIT` / autocommit durability is not left in the OS page cache. Trailing torn WAL records
-  are ignored so recovery replays the durable prefix
+  are ignored so recovery replays the durable prefix. `SAVE DATABASE` durable-syncs the temp
+  `.tcrdb` before rename and syncs the storage directory on POSIX (Windows: file sync only)
 - Schema catalog changes (`CREATE DATABASE`/`TABLE`, `DROP`/`RENAME TABLE`, `CREATE`/`DROP INDEX`)
   and `DROP DATABASE` / `SAVE`/`LOAD` follow documented txn rules: most catalog DDL is allowed with
   undo + deferred WAL; `DROP DATABASE` is rejected while a transaction is active; `SAVE`/`LOAD`
@@ -183,7 +184,8 @@ CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` /
 `EXCEPT ALL`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
 complementary residual), multiple independent recursive CTEs, mutual recursion among
 `WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync),
-single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guarantees, and a dated
+single-column `PRIMARY KEY` / `UNIQUE`, first-class `NOT NULL` Consistency guarantees, durable
+`SAVE DATABASE` snapshot publish, and a dated
 absolute-time benchmark summary (last refreshed
 2026-08-10 from the CI `benchmark report` artifact).
 

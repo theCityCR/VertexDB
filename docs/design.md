@@ -37,7 +37,8 @@ WAL, MVCC, planner costs), see [deep_features.md](deep_features.md).
   `LIKE`, and hash trigram indexes for substring `LIKE`
 - Persistence: versioned binary snapshots (current page-payload + index-pages + column constraint
   flags v5; index-pages v4, page-payload v3, sparse v2, and dense v1 still readable) under `.tcrdb`
-  files, with `tcrdb_codec` owning the layout
+  files, with `tcrdb_codec` owning the layout; durable `SAVE` (fsync temp snapshot + parent
+  directory sync on POSIX, then rename)
 - WAL and recovery: append-only WAL with page-image redo for DML (legacy physical row-image redo
   still replayable), logical SQL for DDL, flush+fsync on every successful append/`reset` (durable
   `COMMIT` / autocommit), truncated-trailing-record tolerance, startup replay, save checkpoints,
@@ -111,12 +112,13 @@ for the recursive arm, row-level SSI commit aborts for write skew / write–writ
 insert-phantom SSI (predicate SIREAD vs insert/update images), `DROP DATABASE`, raised
 `WITH`/correlation caps (6 / 8), `EXPLAIN INSERT`, durable WAL `COMMIT` (flush+fsync on
 append/`reset`), single-column `PRIMARY KEY` / `UNIQUE` (snapshot v5 constraint flags), and
-first-class `NOT NULL` Consistency messaging/tests.
+first-class `NOT NULL` Consistency messaging/tests, and durable `SAVE DATABASE` snapshot publish
+(fsync temp + POSIX directory sync).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
-- **ACID alignment** — see [ACID Plan](#acid-plan) below (durable `SAVE`, then `CHECK`, optional FK /
-  I polish)
+- **ACID alignment** — see [ACID Plan](#acid-plan) below (`CHECK`, optional FK / I polish /
+  crash-injection)
 - Maintenance: re-refresh absolute times in [benchmarks.md](benchmarks.md) after planner/storage
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
@@ -145,7 +147,7 @@ with desired-behavior tests over vague “more ACID” churn.
 | **A** Atomicity | Strong | Undo-log `ROLLBACK`; deferred WAL dropped on abort; txn DML flushed as one batch on `COMMIT`; invalid multi-row insert refuses without partial WAL | Rare edge cases around catalog DDL + crash mid-`SAVE` publish remain educational |
 | **C** Consistency | Improving | Typed schema; `NOT NULL` (default) / `NULL`; single-column `PRIMARY KEY` / `UNIQUE` (auto indexes; DML reject) | No `CHECK` / `FOREIGN KEY` / multi-column uniqueness |
 | **I** Isolation | Strong (educational) | Commit-seq MVCC SI; SSI aborts for write skew, write–write, insert phantoms (predicate SIREAD); executor `LockManager` | One open SQL txn per executor; OR/LIKE/subquery use relation-membership SIREAD fallbacks; no next-key / gap locks |
-| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; torn trailing record ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); snapshot `.tcrdb` publish is rename-based without directory fsync; power-loss models are not exhaustive |
+| **D** Durability | Strong (educational) | WAL flush+fsync (`F_FULLFSYNC` on macOS when available) on append/`reset`; durable `SAVE` (fsync temp `.tcrdb` + POSIX directory sync around rename); torn trailing WAL ignored; startup replay | Parent-directory sync is POSIX-only (Windows: file `FlushFileBuffers`); power-loss models are not exhaustive |
 
 ### Principles
 
@@ -187,7 +189,7 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 | Slice | Scope | Notes |
 | --- | --- | --- |
-| **3a. Durable `SAVE DATABASE`** | fsync snapshot temp file + parent directory before/after rename (mirror WAL discipline) | Closes “checkpoint lost on crash” teaching hole |
+| **3a. Durable `SAVE DATABASE`** | fsync snapshot temp file + parent directory before/after rename (shared `durable_sync` with WAL) | **Done** — temp fsync before rename; POSIX dir sync after; `SaveDatabasePerformsDurablePublish` |
 | **3b. Group commit / sync policy** | Optional `WalDurability::{Sync,FlushOnly}` for benchmarks — default remains Sync | Only if bench noise from fsync becomes a problem; never silently weaken default |
 | **3c. Crash-injection tests** | Kill after WAL sync / before in-memory commit mark; assert recovery | Strengthens D without new features |
 
@@ -200,10 +202,9 @@ Durable `COMMIT` via WAL sync is shipped. Optional follow-ups:
 
 ### Suggested order of attack
 
-1. Phase **3a** durable snapshot publish — pairs well with the recent WAL fsync work.
-2. Phase **1c** simple `CHECK` if constraint teaching is still the focus.
-3. Phase **2a** / **3c** only when packaging a deeper concurrency or recovery story.
-4. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
+1. Phase **1c** simple `CHECK` if constraint teaching is still the focus.
+2. Phase **2a** / **3c** only when packaging a deeper concurrency or recovery story.
+3. Multi-column `UNIQUE` / `PRIMARY KEY` only after composite indexes exist.
 
 ### Explicit non-goals (for now)
 

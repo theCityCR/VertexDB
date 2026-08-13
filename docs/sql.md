@@ -247,7 +247,10 @@ re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
 page-payload + index-pages + column constraint flags format v5, extension `.tcrdb`) under the
-executor's storage root. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
+executor's storage root. `SAVE` writes a temporary snapshot, durable-syncs that file (flush+fsync /
+`F_FULLFSYNC` on macOS when available; `FlushFileBuffers` on Windows), renames it into place, then
+durable-syncs the storage directory on POSIX so the directory entry survives power loss — the same
+discipline as WAL `COMMIT`. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
 flags), index definitions (column or `expr:`-prefixed expression metadata), `rowsPerPage`, capacity,
 free-list order, serialized page-directory payloads, durable B+ tree / hash index pages, and
 optional per-column histogram blobs so sparse IDs, page bytes, indexes, constraints, and `ANALYZE`

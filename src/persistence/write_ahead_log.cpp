@@ -1,24 +1,12 @@
 #include "VertexDB/persistence/write_ahead_log.hpp"
 
 #include "VertexDB/common/binary_io.hpp"
+#include "VertexDB/persistence/durable_sync.hpp"
 
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <string>
-
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 namespace VertexDB {
 namespace {
@@ -27,96 +15,14 @@ constexpr std::uint32_t kWalMagic = 0x54435741; // TCWA
 constexpr std::uint32_t kWalVersion = 1;
 constexpr std::string_view kWalIoError = "failed to read WAL record";
 
-[[noreturn]] void throwSyncFailure(const std::filesystem::path &path, const char *what) {
-    throw std::runtime_error(std::string(what) + ": " + path.string());
-}
-
-#if defined(_WIN32)
-
-void syncFileContents(const std::filesystem::path &path) {
-    const HANDLE handle =
-        CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) {
-        throwSyncFailure(path, "failed to open WAL for durable sync");
-    }
-    const BOOL ok = FlushFileBuffers(handle);
-    CloseHandle(handle);
-    if (!ok) {
-        throwSyncFailure(path, "failed to durable-sync WAL");
-    }
-}
-
-void syncDirectory(const std::filesystem::path &dir) {
-    // Windows has no reliable FlushFileBuffers for ordinary directories (returns false on
-    // GitHub Actions runners). File FlushFileBuffers above is the durable COMMIT contract
-    // on Win32; POSIX still fsyncs the parent dir when the WAL file is newly created.
-    (void)dir;
-}
-
-#else
-
-void syncFileContents(const std::filesystem::path &path) {
-    const int fd = ::open(path.c_str(), O_RDWR);
-    if (fd < 0) {
-        throwSyncFailure(path, "failed to open WAL for durable sync");
-    }
-#if defined(F_FULLFSYNC)
-    // macOS: F_FULLFSYNC is the durable flush; fall back to fsync if unavailable.
-    if (::fcntl(fd, F_FULLFSYNC) == -1) {
-        if (::fsync(fd) != 0) {
-            ::close(fd);
-            throwSyncFailure(path, "failed to durable-sync WAL");
-        }
-    }
-#else
-    if (::fsync(fd) != 0) {
-        ::close(fd);
-        throwSyncFailure(path, "failed to durable-sync WAL");
-    }
-#endif
-    if (::close(fd) != 0) {
-        throwSyncFailure(path, "failed to close WAL after durable sync");
-    }
-}
-
-void syncDirectory(const std::filesystem::path &dir) {
-    if (dir.empty()) {
-        return;
-    }
-    const int fd = ::open(dir.c_str(), O_RDONLY);
-    if (fd < 0) {
-        throwSyncFailure(dir, "failed to open WAL directory for durable sync");
-    }
-#if defined(F_FULLFSYNC)
-    if (::fcntl(fd, F_FULLFSYNC) == -1) {
-        if (::fsync(fd) != 0) {
-            ::close(fd);
-            throwSyncFailure(dir, "failed to durable-sync WAL directory");
-        }
-    }
-#else
-    if (::fsync(fd) != 0) {
-        ::close(fd);
-        throwSyncFailure(dir, "failed to durable-sync WAL directory");
-    }
-#endif
-    if (::close(fd) != 0) {
-        throwSyncFailure(dir, "failed to close WAL directory after durable sync");
-    }
-}
-
-#endif
-
 } // namespace
 
 WriteAheadLog::WriteAheadLog(std::filesystem::path path) : path_(std::move(path)) {}
 
 void WriteAheadLog::durableSync(bool syncParentDirectory) {
-    syncFileContents(path_);
+    durableSyncFile(path_);
     if (syncParentDirectory) {
-        syncDirectory(path_.parent_path());
+        durableSyncDirectory(path_.parent_path());
     }
     ++durableSyncCount_;
 }

@@ -80,6 +80,7 @@ add_library(VertexDB
     src/planner/rewriter.cpp
     src/concurrency/lock_manager.cpp
     src/persistence/storage_manager.cpp
+    src/persistence/durable_sync.cpp
     src/persistence/tcrdb_codec.cpp
     src/persistence/tcrdb_value_codec.cpp
     src/persistence/tcrdb_table_codec.cpp

@@ -96,10 +96,12 @@ union), while estimates and residual filters live in the shared `PlanEstimates` 
   maintenance against a caller-provided schema and `RowStore`. `Table` retains mutex ownership and
   forwards its public index API while holding the appropriate lock. `BTreeIndex` is split across
   `btree_index_{lookup,mutate,snapshot}.cpp`.
-- `persistence`: `StorageManager` orchestrates snapshot paths; the slim `tcrdb_codec` orchestrates
-  `.tcrdb` v1–v4 encode/decode across focused value, table, and index codec translation units.
-  WAL recovery uses page-image redo plus legacy physical/logical records. `WriteAheadLog::append`
-  and `reset` flush+fsync for durable COMMIT / autocommit / SAVE checkpoints.
+- `persistence`: `StorageManager` orchestrates snapshot paths with durable publish (shared
+  `durable_sync` file/directory helpers also used by `WriteAheadLog`); the slim `tcrdb_codec`
+  orchestrates `.tcrdb` v1–v5 encode/decode across focused value, table, and index codec translation
+  units. WAL recovery uses page-image redo plus legacy physical/logical records.
+  `WriteAheadLog::append` and `reset` flush+fsync for durable COMMIT / autocommit; `SAVE` fsyncs the
+  temp snapshot before rename and syncs the storage directory on POSIX.
 - `concurrency`: executor-level reader/writer synchronization via `LockManager` (shared readers;
   exclusive writers). One `QueryExecutor` holds at most one open SQL transaction.
 - `transaction`: commit sequences, MVCC row versions, per-transaction undo-log rollback, and
@@ -159,9 +161,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
 
 - WAL recovery applies page-image redo for DML (DDL remains logical SQL); legacy `PhysicalRedo` and
   logical DML remain replayable. Trailing torn WAL records are skipped. Successful WAL
-  `append`/`reset` flush and `fsync` (plus parent-directory sync on create on POSIX; Windows uses
-  `FlushFileBuffers` on the WAL file only) so committed redo is
-  durable before `COMMIT` returns.
+  `append`/`reset` and snapshot `SAVE` share `durable_sync` (file flush+fsync / `F_FULLFSYNC` on
+  macOS; Windows `FlushFileBuffers` on the file). WAL also syncs its parent directory when the file
+  is newly created on POSIX; `SAVE` syncs the storage directory after rename on POSIX.
 - Transactions provide commit-aware MVCC snapshot isolation for reads plus undo-log rollback for
   DML and transactional catalog DDL (`CREATE`/`DROP`/`RENAME TABLE`, `CREATE DATABASE`,
   `CREATE`/`DROP INDEX`); DML WAL records are deferred until `COMMIT` (one atomic batch) and dropped

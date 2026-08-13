@@ -717,4 +717,31 @@ TEST(PersistenceBehaviorTests, WriteAheadLogResetPerformsDurableSync) {
     std::filesystem::remove_all(root);
 }
 
+// Desired: SAVE publishes only after temp snapshot fsync + directory sync (durable checkpoint).
+TEST(PersistenceBehaviorTests, SaveDatabasePerformsDurablePublish) {
+    const auto root = tempRoot("snapshot-durable-publish");
+    std::filesystem::remove_all(root);
+    StorageManager storage{root};
+
+    EXPECT_EQ(storage.durablePublishCount(), 0U);
+
+    Database database{"company"};
+    ASSERT_TRUE(database.createTable("Employees", {{"id", ColumnType::Int}}));
+    auto table = database.table("Employees");
+    (void)table->insert({Value{static_cast<std::int64_t>(1)}});
+
+    storage.saveDatabase(database);
+    EXPECT_EQ(storage.durablePublishCount(), 1U);
+    EXPECT_TRUE(storage.metadataExists("company"));
+    EXPECT_FALSE(std::filesystem::exists(root / "company.tcrdb.tmp"));
+
+    auto loaded = storage.loadDatabase("company");
+    ASSERT_NE(loaded->table("Employees"), nullptr);
+    EXPECT_EQ(loaded->table("Employees")->rowCount(), 1U);
+
+    storage.saveDatabase(*loaded);
+    EXPECT_EQ(storage.durablePublishCount(), 2U);
+    std::filesystem::remove_all(root);
+}
+
 } // namespace VertexDB
