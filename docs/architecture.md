@@ -159,6 +159,8 @@ instance (or restores a prior DB after `CREATE DATABASE`), and `COMMIT` discards
 durable sync before discarding the undo log. Crash-injection on `COMMIT` can kill after that WAL
 sync but before the in-memory commit mark (or before WAL sync) for durability tests.
 `SAVE DATABASE` may implicitly commit first; `LOAD DATABASE` may implicitly roll back first.
+They are not nested transactions — see the [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions)
+and the catalog+DML [atomicity matrix](design.md#phase-4--atomicity-edge-polish).
 
 On v4 `LOAD`, indexes are registered without rebuilding, heap page payloads are restored, then index
 pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered before rows so
