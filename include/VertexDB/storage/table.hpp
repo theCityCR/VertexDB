@@ -35,6 +35,10 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::span<const Column> schema() const noexcept;
     [[nodiscard]] std::optional<std::size_t> columnIndex(std::string_view column) const;
     void validateRow(const Row &row) const;
+    // Reject duplicate values on UNIQUE / PRIMARY KEY columns (NULLs skipped for UNIQUE).
+    void assertUniqueRow(const Row &row, std::optional<RowId> excludeRowId = std::nullopt) const;
+    // Register reserved `__pk_` / `__uq_` column indexes when missing (CREATE TABLE / restore).
+    void ensureConstraintIndexes();
 
     // --- MVCC / visibility reads ---
     [[nodiscard]] std::vector<Row> rowsSnapshot() const;
@@ -110,7 +114,7 @@ class Table : public RelationStats, public IndexCatalogView {
     [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;
     bool createIndex(std::string name, std::string column);
     bool createIndex(std::string name, IndexExpression expression);
-    // Register index metadata without rebuilding (snapshot v4 restore path).
+    // Register index metadata without rebuilding (snapshot v4/v5 restore path).
     bool createIndexWithoutRebuild(std::string name, std::string column);
     bool createIndexWithoutRebuild(std::string name, IndexExpression expression);
     // Drop a named index (public DROP INDEX SQL and txn undo of CREATE INDEX).
@@ -137,6 +141,8 @@ class Table : public RelationStats, public IndexCatalogView {
     void rebuildIndexes();
     bool registerIndex(std::string name, std::size_t columnIndex,
                        std::optional<IndexExpression> expression, bool rebuild);
+    void enforceUniqueConstraintsUnlocked(const Row &row,
+                                          std::optional<RowId> excludeRowId) const;
 
     std::string name_;
     std::vector<Column> schema_;

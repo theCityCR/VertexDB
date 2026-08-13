@@ -9,6 +9,7 @@ CREATE DATABASE company;
 DROP DATABASE company;
 CREATE TABLE Employees (id INT, name STRING, salary DOUBLE);
 CREATE TABLE People (id INT, nickname STRING NULL);
+CREATE TABLE Accounts (id INT PRIMARY KEY, email STRING UNIQUE);
 DROP TABLE Employees;
 RENAME TABLE Employees TO Staff;
 LIST TABLES;
@@ -174,12 +175,23 @@ result. Set-op CTE bodies are force-materialized (they are not inlined).
 `expr` is a column, unary `-column`, `column +/- literal`, or `trigram(column)` (hash-only trigram
 keys for substring `LIKE`). Predicates of the form `(expr) = const` or `(expr) >/< const` can use
 arithmetic expression indexes; `EXPLAIN` reports expression hash/ordered access. Expression
-metadata is stored with index definitions in snapshot v4 (`expr:…` encoding) so SAVE/LOAD restores
-expression indexes without losing keys. `DROP INDEX idx ON t` removes the named index.
+metadata is stored with index definitions in snapshot v4+ (`expr:…` encoding) so SAVE/LOAD restores
+expression indexes without losing keys. `DROP INDEX idx ON t` removes the named index; reserved
+constraint indexes (`__pk_*` / `__uq_*`) cannot be dropped.
+
+Column constraints on `CREATE TABLE`:
+
+- `col TYPE PRIMARY KEY` — implies `NOT NULL` and uniqueness; at most one primary-key column per
+  table (multi-column keys are out of scope until composite indexes exist). Rejects `NULL PRIMARY KEY`.
+- `col TYPE UNIQUE` — rejects duplicate non-NULL values on `INSERT`/`UPDATE`; multiple `NULL`s are
+  allowed when the column is also `NULL`.
+- VertexDB auto-creates a maintained column index (`__pk_<col>` / `__uq_<col>`) when no column index
+  already exists, so equality predicates on those columns use `HashEq` without a manual
+  `CREATE INDEX`.
 
 `ANALYZE` / `ANALYZE TABLE name` scans live rows and builds per-column equi-height histograms
 (default 32 buckets) plus distinct counts. Histograms feed range/`IN` selectivity in the planner.
-Histogram blobs are persisted in snapshot v4 after index pages (`VDBHIST1`); older v4 files without
+Histogram blobs are persisted in snapshot v4+ after index pages (`VDBHIST1`); older v4 files without
 the section load with empty stats until the next `ANALYZE`.
 
 `EXPLAIN` runs the same rewrite and planning path as `SELECT` and returns a textual plan describing
@@ -230,14 +242,15 @@ placeholders). `EXECUTE name VALUES (...)` binds parameters into a cloned AST an
 re-tokenizing or reparsing.
 
 `SAVE DATABASE` and `LOAD DATABASE` use a versioned binary format (magic `TCRDB001`, current
-page-payload + index-pages format v4, extension `.tcrdb`) under the executor's storage root. Current
-snapshots store schemas, index definitions (column or `expr:`-prefixed expression metadata),
-`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, durable B+ tree /
-hash index pages, and optional per-column histogram blobs so sparse IDs, page bytes, indexes, and
-`ANALYZE` stats survive checkpoints without an index rebuild.
-Older page-payload v3, sparse v2, and dense v1 snapshots remain readable (v1–v3 still rebuild indexes
-after rows). `LOAD DATABASE` without a name reloads the active database when one exists, otherwise it
-loads the first saved database file.
+page-payload + index-pages + column constraint flags format v5, extension `.tcrdb`) under the
+executor's storage root. Current snapshots store schemas (including `UNIQUE` / `PRIMARY KEY`
+flags), index definitions (column or `expr:`-prefixed expression metadata), `rowsPerPage`, capacity,
+free-list order, serialized page-directory payloads, durable B+ tree / hash index pages, and
+optional per-column histogram blobs so sparse IDs, page bytes, indexes, constraints, and `ANALYZE`
+stats survive checkpoints without an index rebuild.
+Older index-pages v4, page-payload v3, sparse v2, and dense v1 snapshots remain readable (v1–v3 still
+rebuild indexes after rows). `LOAD DATABASE` without a name reloads the active database when one
+exists, otherwise it loads the first saved database file.
 Query executors also recover automatically on startup by loading the latest saved snapshot and
 replaying WAL records after that checkpoint. DML redo uses page images (`PageImageRedo`); DDL uses
 logical SQL. Legacy `PhysicalRedo` row after-images remain replayable. Incomplete trailing WAL
@@ -276,10 +289,10 @@ implicitly `ROLLBACK`s then replaces the in-memory database from the snapshot.
 - `INT`: stored as signed 64-bit integer.
 - `DOUBLE`: stored as C++ `double`.
 - `STRING`: stored as `std::string`.
-- `NULL`: allowed only for columns declared nullable with `NULL`. Equality comparisons, equi-join
-  keys, correlated `IN`/`EXISTS` outer binds, and `GROUP BY` keys treat `NULL = NULL` as true
-  (VertexDB `Value` equality), unlike SQL's UNKNOWN. `LIKE` and `~` on a NULL column value do not
-  match.
+- `NULL`: allowed only for columns declared nullable with `NULL` (and never for `PRIMARY KEY`).
+  Equality comparisons, equi-join keys, correlated `IN`/`EXISTS` outer binds, and `GROUP BY` keys
+  treat `NULL = NULL` as true (VertexDB `Value` equality), unlike SQL's UNKNOWN. `LIKE` and `~` on a
+  NULL column value do not match. `UNIQUE` columns allow multiple NULLs.
 
 Tokenizer and core parser failures throw `ParseError` with 1-based `line`/`column` (message prefix
 `line L, column C: …`). The CLI prints `error: ` plus that message.

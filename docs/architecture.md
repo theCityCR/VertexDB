@@ -113,7 +113,8 @@ see `AGENTS.md` for the agent-oriented layout map.
 
 ## Architectural Boundaries
 
-`Table` owns schema validation and synchronization, composes `IndexManager`, `TableStatistics`, and
+`Table` owns schema validation (including single-column `PRIMARY KEY` / `UNIQUE` enforcement),
+synchronization, composes `IndexManager`, `TableStatistics`, and
 `TableSnapshotIO`, and delegates physical row storage to the `RowStore` interface. `TableSnapshotIO`
 owns the unlocked snapshot restore/export, dirty-page capture, and physical/page-image redo logic;
 `Table` keeps the public API and locks before forwarding Table-owned state. It implements the
@@ -123,10 +124,11 @@ an in-memory page directory are the source of truth, and the LRU `BufferPool` is
 (fill-on-miss). Reads deserialize live row slots from those page bytes. Each page holds a fixed
 number of row slots; serialized page byte lengths vary with row content. Both row-store
 implementations assign stable row IDs: deletes leave tombstones and push IDs onto a free list, and
-inserts reuse freed IDs before growing capacity. Snapshots (format v4) persist `rowsPerPage`,
-capacity, free-list order, serialized page-directory payloads, and index pages (B+ tree nodes and
-hash buckets) so IDs, page bytes, and indexes survive save/load. Per-column equi-height histograms
-from `ANALYZE` are persisted after index pages in v4 (optional `VDBHIST1` section). `VectorRowStore`
+inserts reuse freed IDs before growing capacity. Snapshots (format v5; v4 still loadable) persist
+`rowsPerPage`, capacity, free-list order, serialized page-directory payloads, index pages (B+ tree
+nodes and hash buckets), and per-column uniqueness / primary-key flags so IDs, page bytes, indexes,
+and constraints survive save/load. Per-column equi-height histograms from `ANALYZE` are persisted
+after index pages in v4+ (optional `VDBHIST1` section). `VectorRowStore`
 remains available as a simple in-memory implementation for focused tests or future comparisons.
 
 `BTreeIndex` keeps the existing ordered lookup API while maintaining `BTreeNode` layout metadata

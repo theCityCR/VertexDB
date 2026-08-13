@@ -49,6 +49,8 @@ QueryResult CatalogEngine::executeCreateTable(const CreateTable &command) {
     }
     const bool created = ctx_.database->createTable(command.name, command.columns);
     if (created) {
+        auto table = ctx_.database->table(command.name);
+        table->ensureConstraintIndexes();
         if (ctx_.session.transactionActive()) {
             UndoRecord undo;
             undo.tableName = command.name;
@@ -143,6 +145,9 @@ QueryResult CatalogEngine::executeDropIndex(const DropIndex &command) {
     }
     if (!definition) {
         return messageResult(false, "unknown index");
+    }
+    if (definition->name.starts_with("__pk_") || definition->name.starts_with("__uq_")) {
+        return messageResult(false, "cannot drop constraint index " + definition->name);
     }
     if (!table->dropIndex(command.name)) {
         return messageResult(false, "index drop failed");

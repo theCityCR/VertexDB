@@ -23,6 +23,7 @@ CreateTable Parser::parseCreateTable() {
     expect(TokenType::LeftParen);
 
     std::vector<Column> columns;
+    bool sawPrimaryKey = false;
     do {
         const auto columnName = advance();
         if (columnName.type != TokenType::Identifier) {
@@ -37,12 +38,53 @@ CreateTable Parser::parseCreateTable() {
             throw std::runtime_error("unsupported column type");
         }
         bool nullable = false;
-        if (match(TokenType::Identifier, "NOT")) {
-            expect(TokenType::Identifier, "NULL");
-        } else if (match(TokenType::Identifier, "NULL")) {
-            nullable = true;
+        bool unique = false;
+        bool primaryKey = false;
+        bool sawNullability = false;
+        while (true) {
+            if (match(TokenType::Identifier, "NOT")) {
+                expect(TokenType::Identifier, "NULL");
+                if (sawNullability) {
+                    throw std::runtime_error("conflicting NULL / NOT NULL");
+                }
+                nullable = false;
+                sawNullability = true;
+                continue;
+            }
+            if (match(TokenType::Identifier, "NULL")) {
+                if (sawNullability) {
+                    throw std::runtime_error("conflicting NULL / NOT NULL");
+                }
+                nullable = true;
+                sawNullability = true;
+                continue;
+            }
+            if (match(TokenType::Identifier, "PRIMARY")) {
+                expect(TokenType::Identifier, "KEY");
+                if (primaryKey) {
+                    throw std::runtime_error("duplicate PRIMARY KEY on column");
+                }
+                primaryKey = true;
+                unique = true;
+                continue;
+            }
+            if (match(TokenType::Identifier, "UNIQUE")) {
+                unique = true;
+                continue;
+            }
+            break;
         }
-        columns.push_back({columnName.lexeme, *type, nullable});
+        if (primaryKey && nullable) {
+            throw std::runtime_error("PRIMARY KEY column cannot be NULL");
+        }
+        if (primaryKey) {
+            if (sawPrimaryKey) {
+                throw std::runtime_error("multiple PRIMARY KEY columns are not supported");
+            }
+            sawPrimaryKey = true;
+            nullable = false;
+        }
+        columns.push_back({columnName.lexeme, *type, nullable, unique, primaryKey});
     } while (match(TokenType::Comma));
 
     expect(TokenType::RightParen);

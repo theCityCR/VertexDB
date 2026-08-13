@@ -108,6 +108,7 @@ std::shared_ptr<Database> Database::clone() const {
         }
         destinationTable->replaceSparse(sourceTable->capacity(), sourceTable->freeList(),
                                         sourceTable->liveEntries());
+        destinationTable->ensureConstraintIndexes();
     }
     return copy;
 }

@@ -17,6 +17,21 @@ Table::Table(std::string name, std::vector<Column> schema)
     if (schema_.empty()) {
         throw std::invalid_argument("table schema cannot be empty");
     }
+    bool sawPrimaryKey = false;
+    for (const auto &column : schema_) {
+        if (column.primaryKey) {
+            if (sawPrimaryKey) {
+                throw std::invalid_argument("multiple PRIMARY KEY columns are not supported");
+            }
+            if (column.nullable) {
+                throw std::invalid_argument("PRIMARY KEY column cannot be NULL");
+            }
+            if (!column.unique) {
+                throw std::invalid_argument("PRIMARY KEY column must be UNIQUE");
+            }
+            sawPrimaryKey = true;
+        }
+    }
 }
 
 const std::string &Table::name() const noexcept { return name_; }
@@ -129,6 +144,7 @@ std::size_t Table::versionCount(RowId rowId) const {
 RowId Table::insert(Row row, TransactionId writerId, TransactionManager *transactions) {
     validateRow(row);
     std::unique_lock lock{mutex_};
+    enforceUniqueConstraintsUnlocked(row, std::nullopt);
     const RowId rowId = rowStore_->append(std::move(row));
     const Row &stored = *rowStore_->get(rowId);
     versions_.write(rowId, stored, writerId);
@@ -178,6 +194,7 @@ bool Table::update(RowId rowId, std::size_t index, Value value, TransactionId wr
     }
     auto updated = *rowStore_->get(rowId);
     updated[index] = std::move(value);
+    enforceUniqueConstraintsUnlocked(updated, rowId);
     const bool updatedOk = rowStore_->update(rowId, updated);
     if (!updatedOk) {
         return false;
@@ -218,6 +235,7 @@ bool Table::replaceRow(RowId rowId, Row row) {
     if (rowStore_->get(rowId) == nullptr) {
         return false;
     }
+    enforceUniqueConstraintsUnlocked(row, rowId);
     if (!rowStore_->update(rowId, std::move(row))) {
         return false;
     }
@@ -229,6 +247,7 @@ bool Table::replaceRow(RowId rowId, Row row) {
 bool Table::revive(RowId rowId, Row row) {
     validateRow(row);
     std::unique_lock lock{mutex_};
+    enforceUniqueConstraintsUnlocked(row, rowId);
     if (!rowStore_->revive(rowId, std::move(row))) {
         return false;
     }
@@ -259,6 +278,63 @@ void Table::validateRow(const Row &row) const {
         }
         if (row[i].type() != schema_[i].type) {
             throw std::invalid_argument("row value does not match column type");
+        }
+    }
+}
+
+void Table::assertUniqueRow(const Row &row, std::optional<RowId> excludeRowId) const {
+    validateRow(row);
+    std::shared_lock lock{mutex_};
+    enforceUniqueConstraintsUnlocked(row, excludeRowId);
+}
+
+void Table::ensureConstraintIndexes() {
+    std::unique_lock lock{mutex_};
+    for (std::size_t i = 0; i < schema_.size(); ++i) {
+        const auto &column = schema_[i];
+        if (!column.unique && !column.primaryKey) {
+            continue;
+        }
+        if (indexManager_.hasIndex(column.name, schema_)) {
+            continue;
+        }
+        const std::string indexName =
+            (column.primaryKey ? "__pk_" : "__uq_") + column.name;
+        if (!registerIndex(indexName, i, std::nullopt, true)) {
+            throw std::runtime_error("failed to create constraint index " + indexName);
+        }
+    }
+}
+
+void Table::enforceUniqueConstraintsUnlocked(const Row &row,
+                                             std::optional<RowId> excludeRowId) const {
+    for (std::size_t i = 0; i < schema_.size(); ++i) {
+        if (!schema_[i].unique && !schema_[i].primaryKey) {
+            continue;
+        }
+        const Value &value = row[i];
+        if (value.isNull()) {
+            // UNIQUE allows multiple NULLs; PRIMARY KEY is non-nullable.
+            continue;
+        }
+        if (auto hits = indexManager_.indexedLookup(schema_[i].name, value, schema_)) {
+            for (const RowId hit : *hits) {
+                if (excludeRowId && hit == *excludeRowId) {
+                    continue;
+                }
+                throw std::invalid_argument("unique constraint violation on column " +
+                                            schema_[i].name);
+            }
+            continue;
+        }
+        for (const auto &[rowId, existing] : rowStore_->liveEntries()) {
+            if (excludeRowId && rowId == *excludeRowId) {
+                continue;
+            }
+            if (existing[i] == value) {
+                throw std::invalid_argument("unique constraint violation on column " +
+                                            schema_[i].name);
+            }
         }
     }
 }

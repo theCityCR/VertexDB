@@ -48,6 +48,8 @@ void writeTcrdbSnapshot(std::ostream &out, const Database &database) {
             writeString(out, column.name);
             writePodDb(out, static_cast<std::uint8_t>(column.type));
             writePodDb(out, static_cast<std::uint8_t>(column.nullable ? 1 : 0));
+            writePodDb(out, static_cast<std::uint8_t>(column.unique ? 1 : 0));
+            writePodDb(out, static_cast<std::uint8_t>(column.primaryKey ? 1 : 0));
         }
 
         const auto indexes = table->indexDefinitions();
@@ -72,8 +74,8 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
         throw std::runtime_error("invalid database file magic");
     }
     const auto version = readPodDb<std::uint32_t>(in);
-    if (version != kVersion && version != kVersionV3 && version != kVersionV2 &&
-        version != kVersionV1) {
+    if (version != kVersion && version != kVersionV4 && version != kVersionV3 &&
+        version != kVersionV2 && version != kVersionV1) {
         throw std::runtime_error("unsupported database file version");
     }
 
@@ -88,7 +90,13 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
             auto columnName = readString(in);
             const auto type = static_cast<ColumnType>(readPodDb<std::uint8_t>(in));
             const bool nullable = readPodDb<std::uint8_t>(in) != 0;
-            schema.push_back({std::move(columnName), type, nullable});
+            bool unique = false;
+            bool primaryKey = false;
+            if (version >= kVersion) {
+                unique = readPodDb<std::uint8_t>(in) != 0;
+                primaryKey = readPodDb<std::uint8_t>(in) != 0;
+            }
+            schema.push_back({std::move(columnName), type, nullable, unique, primaryKey});
         }
         const bool created = database->createTable(tableName, std::move(schema));
         if (!created) {
@@ -105,7 +113,7 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
             indexDefinitions.emplace_back(std::move(indexName), std::move(columnName));
         }
 
-        const bool restoreIndexPages = version == kVersion;
+        const bool restoreIndexPages = version == kVersion || version == kVersionV4;
         for (const auto &definition : indexDefinitions) {
             const auto &indexName = definition.first;
             const auto decoded = decodeIndexDefinitionColumn(definition.second);
@@ -136,6 +144,8 @@ std::shared_ptr<Database> readTcrdbSnapshot(std::istream &in) {
                 (void)tryLoadColumnHistograms(*table, in);
             }
         }
+        // After rows (and any restored index pages) so missing constraint indexes rebuild correctly.
+        table->ensureConstraintIndexes();
     }
 
     return database;
