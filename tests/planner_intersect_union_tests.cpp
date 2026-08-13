@@ -71,6 +71,139 @@ TEST(PlannerBehaviorTests, MultiIndexIntersectChosenWhenCheaperThanSingleIndexRe
     ASSERT_EQ(result.rows.size(), 3U);
 }
 
+// Desired: multi-equality AND on a composite index uses one HashEq probe (not a full scan).
+TEST(PlannerBehaviorTests, CompositeHashEqChosenForMultiEqualityAnd) {
+    Parser parser;
+    auto executor = makeExecutor("composite-hash-eq");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Enrollments (student_id INT, course_id INT, grade INT, "
+                        "PRIMARY KEY (student_id, course_id));"))
+                    .success);
+
+    for (int s = 1; s <= 20; ++s) {
+        for (int c = 1; c <= 5; ++c) {
+            ASSERT_TRUE(executor
+                            .execute(parser.parse(
+                                "INSERT INTO Enrollments VALUES (" + std::to_string(s) + ", " +
+                                std::to_string(c) + ", " + std::to_string(s + c) + ");"))
+                            .success);
+        }
+    }
+
+    auto explain = executor.execute(parser.parse(
+        "EXPLAIN SELECT grade FROM Enrollments WHERE student_id = 3 AND course_id = 2;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup on student_id, course_id"), std::string::npos);
+    EXPECT_EQ(text.find("multi-index intersect"), std::string::npos);
+    EXPECT_EQ(text.find("full table scan"), std::string::npos);
+
+    Select query{"Enrollments",
+                 {},
+                 {SelectExpr::makeColumn("grade")},
+                 makeAnd(makeComparison("student_id", ComparisonOperator::Equal, Value{3}),
+                         makeComparison("course_id", ComparisonOperator::Equal, Value{2})),
+                 {},
+                 {}};
+    const auto plan = QueryPlanner{}.planSelect(
+        query, *executor.currentDatabase()->table("Enrollments"));
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
+    const auto &hashEq = std::get<HashEqPlan>(plan.path);
+    ASSERT_EQ(hashEq.indexColumns.size(), 2U);
+    EXPECT_EQ(hashEq.indexColumns[0], "student_id");
+    EXPECT_EQ(hashEq.indexColumns[1], "course_id");
+    EXPECT_FALSE(plan.estimates.residual.has_value());
+
+    auto result = executor.execute(
+        parser.parse("SELECT grade FROM Enrollments WHERE student_id = 3 AND course_id = 2;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{5});
+}
+
+// Desired: when both a composite index and single-column indexes cover the AND, prefer
+// one composite HashEq probe over multi-index Intersect.
+TEST(PlannerBehaviorTests, CompositeHashEqPreferredOverMultiIndexIntersect) {
+    Parser parser;
+    auto executor = makeExecutor("composite-over-intersect");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_dept ON Employees(dept);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE INDEX idx_city ON Employees(city);")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_dept_city ON Employees(dept, city);"))
+            .success);
+
+    for (int i = 0; i < 100; ++i) {
+        const int dept = i % 10;
+        const int city = (i / 10) % 10;
+        ASSERT_TRUE(executor
+                        .execute(parser.parse("INSERT INTO Employees VALUES (" +
+                                              std::to_string(i) + ", " + std::to_string(dept) +
+                                              ", " + std::to_string(city) + ", \"n" +
+                                              std::to_string(i) + "\");"))
+                        .success);
+    }
+
+    auto explain = executor.execute(
+        parser.parse("EXPLAIN SELECT name FROM Employees WHERE dept = 1 AND city = 2;"));
+    ASSERT_TRUE(explain.success);
+    const auto text = explain.rows.front().front().toString();
+    EXPECT_NE(text.find("hash index equality lookup on dept, city"), std::string::npos);
+    EXPECT_EQ(text.find("multi-index intersect"), std::string::npos);
+
+    auto result = executor.execute(
+        parser.parse("SELECT name FROM Employees WHERE dept = 1 AND city = 2;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"n21"});
+}
+
+// Desired: composite HashEq absorbs only covered equalities; extra AND leaves stay residual.
+TEST(PlannerBehaviorTests, CompositeHashEqKeepsResidualForUncoveredConjunct) {
+    Parser parser;
+    auto executor = makeExecutor("composite-residual");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Employees (id INT, dept INT, city INT, name STRING);"))
+                    .success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE INDEX idx_dept_city ON Employees(dept, city);"))
+            .success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Employees VALUES (1, 1, 2, \"keep\"), (2, 1, 2, \"drop\");"))
+                    .success);
+
+    Select query{
+        "Employees",
+        {},
+        {SelectExpr::makeColumn("name")},
+        makeAnd(makeAnd(makeComparison("dept", ComparisonOperator::Equal, Value{1}),
+                        makeComparison("city", ComparisonOperator::Equal, Value{2})),
+                makeComparison("id", ComparisonOperator::Equal, Value{1})),
+        {},
+        {}};
+    const auto plan =
+        QueryPlanner{}.planSelect(query, *executor.currentDatabase()->table("Employees"));
+    EXPECT_EQ(plan.accessPath(), AccessPath::HashEq);
+    ASSERT_TRUE(plan.estimates.residual.has_value());
+    EXPECT_NE(plan.estimates.explanation.find("hash index equality lookup on dept, city"),
+              std::string::npos);
+
+    auto result = executor.execute(parser.parse(
+        "SELECT name FROM Employees WHERE dept = 1 AND city = 2 AND id = 1;"));
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.rows.size(), 1U);
+    EXPECT_EQ(result.rows[0][0], Value{"keep"});
+}
+
 TEST(PlannerBehaviorTests, MultiIndexIntersectIncludesExpressionEquality) {
     Table table{"Employees", {{"a", ColumnType::Int}, {"b", ColumnType::Int}, {"name", ColumnType::String}}};
     for (int i = 1; i <= 100; ++i) {

@@ -127,7 +127,8 @@ commit mark, plus before WAL sync), composite indexes plus multi-column `PRIMARY
 
 Shipped (Phase 4): catalog + DML [atomicity matrix](#phase-4--atomicity-edge-polish) with named
 test checklist; [ACID FAQ](sql.md#acid-faq-save--load-vs-transactions) for implicit `SAVE`/`LOAD`
-(not nested transactions).
+(not nested transactions). Shipped: planner composite-index `HashEq` for multi-equality `AND`
+(prefer one probe over Intersect of single-column indexes when the full key is covered).
 
 Forward-looking options (intentional gaps, pick by teaching value):
 
@@ -137,7 +138,6 @@ Forward-looking options (intentional gaps, pick by teaching value):
   changes that stale the 2026-08-10 table (include intersect benches); wedge **cost shape** already
   gates every push/PR via `scripts/run-benchmarks.sh --check-shape`
 - ALTER-style DDL (`ADD`/`DROP COLUMN`, etc.) — orthogonal to ACID; useful catalog teaching
-- Planner use of composite indexes for multi-equality `AND` (vs Intersect of single-column indexes)
 
 Demo wedges (done):
 
@@ -236,8 +236,7 @@ Crash cut points for DML `COMMIT`: after WAL sync / before in-memory commit mark
 
 ### Suggested order of attack
 
-1. Optional planner preference for composite indexes on multi-equality `AND`.
-2. Multi-column `FOREIGN KEY` only if teaching composite referential integrity is the focus.
+1. Multi-column `FOREIGN KEY` only if teaching composite referential integrity is the focus.
 
 ### Explicit non-goals (for now)
 

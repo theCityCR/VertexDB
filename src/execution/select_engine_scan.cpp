@@ -118,6 +118,15 @@ void recordSsiScanPredicates(TransactionManager &txns, TransactionId id, const T
             if constexpr (std::is_same_v<T, HashEqPlan>) {
                 if (path.indexExpression) {
                     txns.recordRelationRead(id, relation);
+                } else if (!path.indexColumns.empty()) {
+                    const auto &parts = path.indexValue.compositeParts();
+                    const std::size_t n =
+                        std::min(path.indexColumns.size(), parts.size());
+                    for (std::size_t i = 0; i < n; ++i) {
+                        txns.recordPredicateRead(
+                            id, SsiPredicate{std::string{relation}, path.indexColumns[i],
+                                             ComparisonOperator::Equal, parts[i]});
+                    }
                 } else {
                     txns.recordPredicateRead(
                         id, SsiPredicate{std::string{relation}, path.indexColumn,
@@ -269,7 +278,9 @@ SelectEngine::collectVisibleEntries(const Select &command, const Table &table,
             if constexpr (std::is_same_v<T, HashEqPlan>) {
                 auto rowIds = path.indexExpression
                                   ? table.indexedLookup(*path.indexExpression, path.indexValue)
-                                  : table.indexedLookup(path.indexColumn, path.indexValue);
+                              : !path.indexColumns.empty()
+                                    ? table.indexedLookup(path.indexColumns, path.indexValue)
+                                    : table.indexedLookup(path.indexColumn, path.indexValue);
                 return rowIds ? applyResidual(entriesByIdForRead(table, *rowIds))
                               : std::vector<std::pair<RowId, Row>>{};
             } else if constexpr (std::is_same_v<T, OrderedRangePlan>) {

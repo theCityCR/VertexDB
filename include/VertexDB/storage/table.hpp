@@ -122,7 +122,11 @@ class Table : public RelationStats, public IndexCatalogView {
                   const Value &value) const;
     // True when the column has a maintained single-column index (hash equality + ordered range).
     [[nodiscard]] bool hasIndex(std::string_view column) const override;
-    [[nodiscard]] bool hasIndex(std::span<const std::string> columns) const;
+    [[nodiscard]] bool hasIndex(std::span<const std::string> columns) const override;
+    [[nodiscard]] std::optional<std::size_t>
+    indexDistinctCount(std::span<const std::string> columns) const override;
+    [[nodiscard]] std::vector<std::vector<std::string>>
+    compositeIndexColumnLists() const override;
     [[nodiscard]] bool hasExpressionIndex(const IndexExpression &expression) const override;
     [[nodiscard]] std::vector<std::string> listIndexes() const;
     [[nodiscard]] std::vector<IndexDefinition> indexDefinitions() const;

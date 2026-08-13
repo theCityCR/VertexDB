@@ -175,7 +175,9 @@ result. Set-op CTE bodies are force-materialized (they are not inlined).
 
 `CREATE INDEX idx ON t(column)` builds maintained hash and ordered indexes on a column.
 `CREATE INDEX idx ON t(a, b, …)` builds a **composite** index keyed by the ordered column tuple
-(equality lookup on the full key; stored as a composite `Value` in hash/B+ structures).
+(equality lookup on the full key; stored as a composite `Value` in hash/B+ structures). Multi-
+equality `AND` predicates that cover every column of a composite index prefer one `HashEq` probe
+on that index over multi-index `Intersect` of single-column indexes when both would apply.
 `CREATE INDEX idx ON t((expr))` builds index structures on an evaluated expression key, where
 `expr` is a column, unary `-column`, `column +/- literal`, or `trigram(column)` (hash-only trigram
 keys for substring `LIKE`). Predicates of the form `(expr) = const` or `(expr) >/< const` can use

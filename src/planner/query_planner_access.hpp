@@ -29,6 +29,13 @@ struct BestConjunctChoice {
     const std::vector<const Predicate *> &conjuncts, const RelationStats &stats,
     const IndexCatalogView &indexes, double fullScanCost, std::size_t estimatedRows);
 
+// When a composite (multi-column) index covers multi-equality AND cheaper than bestCost,
+// fills plan and returns true. Prefers one composite HashEq probe over Intersect of singles.
+[[nodiscard]] bool tryPlanCompositeHashEq(const std::vector<const Predicate *> &conjuncts,
+                                          const RelationStats &stats,
+                                          const IndexCatalogView &indexes, double bestCost,
+                                          QueryPlan &plan);
+
 // When multi-index AND intersect wins, fills plan and returns true.
 [[nodiscard]] bool tryPlanAndIntersect(const std::vector<const Predicate *> &conjuncts,
                                        const RelationStats &stats, const IndexCatalogView &indexes,

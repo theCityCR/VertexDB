@@ -130,11 +130,15 @@ plus optional equi-height histograms from `ANALYZE` (`Table::columnHistogram`):
 - range ≈ histogram bucket selectivity when present, otherwise \(N / 3\)
 - `IN` ≈ histogram ndistinct when present, otherwise \(K \cdot (N / D)\)
 
-When ≥2 indexable equality conjuncts exist, the planner estimates intersection under independence
+When ≥2 indexable equality conjuncts exist, the planner first checks for a **composite**
+(multi-column) index whose ordered columns are all covered by those equalities. A matching
+composite uses one `HashEq` probe (`Value::composite` key; cost ≈ \(N / D_{\mathrm{composite}}\))
+when cheaper than the best single-conjunct path — preferred over multi-index `Intersect` of
+single-column indexes when both apply. Otherwise it estimates intersection under independence
 (\(N \cdot \prod 1/D_i\)) and chooses `Intersect` when that cost beats the best single
 index path. Tie-breaks still prefer any index over a full scan and equality over range/`IN` when
-costs match. For non-intersect `AND` plans the cheapest indexable conjunct drives the access path;
-remaining conjuncts become a residual filter. Top-level `OR` of equality index probes estimates
+costs match. For non-intersect / non-composite `AND` plans the cheapest indexable conjunct drives
+the access path; remaining conjuncts become a residual filter. Top-level `OR` of equality index probes estimates
 union under independence (\(N \cdot (1 - \prod(1 - 1/D_i))\)) over the indexable subset and chooses
 `Union` when that cost beats a full scan. Non-indexable disjuncts become a residual OR
 evaluated as a complementary scan after the index union (partial OR); `EXPLAIN` reports

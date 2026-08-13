@@ -55,7 +55,8 @@ CLI
 - `planner`: CTE/derived-table rewrite (inline, `AS MATERIALIZED`, force-materialize for outer
   `JOIN` targets and `WITH RECURSIVE`), correlated/`IN` prep, set operations, and cost-based access-path /
   join selection through the `RelationStats` and `IndexCatalogView` interfaces, including optional
-  `ANALYZE` histograms, multi-index AND intersect / OR union (including partial OR with residual
+  `ANALYZE` histograms, composite-index `HashEq` for multi-equality `AND`, multi-index AND intersect /
+  OR union (including partial OR with residual
   complementary scan and composite Intersect∪Union for nested OR under AND, including partial
   nested OR),
   prefix `LIKE` / trigram intersect, and residual filters. `EXPLAIN` /
@@ -198,8 +199,9 @@ pages are installed from the snapshot. On v1–v3 `LOAD`, indexes are registered
    subqueries and evaluates correlated `IN`/`EXISTS` per outer row with up to eight outer binding
    frames (including `FROM` / `JOIN` table aliases), routing joined subqueries through
    `executeJoinSelect`.
-5. `QueryPlanner` chooses an access path (column or expression index, multi-index AND intersect /
-   OR union / composite Intersect∪Union (incl. partial nested OR under AND), prefix `LIKE`,
+5. `QueryPlanner` chooses an access path (column, composite-column, or expression index, multi-index
+   AND intersect / OR union / composite Intersect∪Union (incl. partial nested OR under AND), prefix
+   `LIKE`,
    trigram intersect, residual filters) and
    per-join algorithms for
    left-deep `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` chains; `SelectEngine` runs filters/joins, then
