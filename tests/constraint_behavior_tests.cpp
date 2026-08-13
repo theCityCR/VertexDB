@@ -659,9 +659,17 @@ TEST(ConstraintBehaviorTests, ValidateForeignKeyDefinitionsRejectsUnsupportedAct
                                     {"customer_id", ColumnType::Int, true, false, false}};
     ForeignKeyConstraint fk{"customer_id", "Customers", "id"};
     // Force an unsupported action value past the parser.
-    fk.onDelete = static_cast<ForeignKeyAction>(1);
+    fk.onDelete = static_cast<ForeignKeyAction>(255);
     std::vector<ForeignKeyConstraint> badAction{fk};
     EXPECT_THROW(validateForeignKeyDefinitions(database, "Orders", childSchema, badAction),
+                 std::invalid_argument);
+
+    ForeignKeyConstraint setNullNotNull{"customer_id", "Customers", "id"};
+    setNullNotNull.onDelete = ForeignKeyAction::SetNull;
+    std::vector<Column> notNullChild{{"id", ColumnType::Int, false, true, true},
+                                     {"customer_id", ColumnType::Int, false, false, false}};
+    std::vector<ForeignKeyConstraint> badSetNull{setNullNotNull};
+    EXPECT_THROW(validateForeignKeyDefinitions(database, "Orders", notNullChild, badSetNull),
                  std::invalid_argument);
 
     ForeignKeyConstraint missingChild{"nope", "Customers", "id"};
@@ -922,6 +930,138 @@ TEST(ConstraintBehaviorTests, CreateIndexSupportsCompositeColumns) {
     EXPECT_EQ(index.columns[0], "a");
     EXPECT_EQ(index.columns[1], "b");
     EXPECT_EQ(index.column, "a");
+}
+
+TEST(ConstraintBehaviorTests, ParsesCascadeAndSetNullActions) {
+    Parser parser;
+    auto query = parser.parse(
+        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT NULL, "
+        "FOREIGN KEY (customer_id) REFERENCES Customers(id) "
+        "ON DELETE CASCADE ON UPDATE SET NULL);");
+    ASSERT_TRUE(std::holds_alternative<CreateTable>(query));
+    const auto &table = std::get<CreateTable>(query);
+    ASSERT_EQ(table.foreignKeys.size(), 1U);
+    EXPECT_EQ(table.foreignKeys[0].onDelete, ForeignKeyAction::Cascade);
+    EXPECT_EQ(table.foreignKeys[0].onUpdate, ForeignKeyAction::SetNull);
+    EXPECT_NE(createTableSql(table).find("ON DELETE CASCADE"), std::string::npos);
+    EXPECT_NE(createTableSql(table).find("ON UPDATE SET NULL"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyOnDeleteCascadeRemovesChildren) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-cascade-del");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT, "
+                        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON DELETE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1), (2);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "INSERT INTO Orders VALUES (10, 1), (11, 1), (20, 2);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")).success);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Orders ORDER BY id;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{20});
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyOnDeleteSetNullNullsChildren) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-setnull-del");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT NULL, "
+                        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON DELETE SET NULL);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")).success);
+    const auto rows = executor.execute(parser.parse("SELECT customer_id FROM Orders;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_TRUE(rows.rows[0][0].isNull());
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyOnUpdateCascadePropagatesNewKey) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-cascade-upd");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT, "
+                        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON UPDATE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("UPDATE Customers SET id = 7 WHERE id = 1;")).success);
+    const auto rows = executor.execute(parser.parse("SELECT customer_id FROM Orders;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_EQ(rows.rows[0][0], Value{7});
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyOnUpdateSetNullClearsChildren) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-setnull-upd");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT NULL, "
+                        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON UPDATE SET NULL);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("UPDATE Customers SET id = 7 WHERE id = 1;")).success);
+    const auto rows = executor.execute(parser.parse("SELECT customer_id FROM Orders;"));
+    ASSERT_TRUE(rows.success);
+    ASSERT_EQ(rows.rows.size(), 1U);
+    EXPECT_TRUE(rows.rows[0][0].isNull());
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeySetNullRejectedOnNotNullChild) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-setnull-nn");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    auto created = executor.execute(parser.parse(
+        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT, "
+        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON DELETE SET NULL);"));
+    EXPECT_FALSE(created.success);
+    EXPECT_NE(created.message.find("nullable"), std::string::npos);
+}
+
+TEST(ConstraintBehaviorTests, ForeignKeyCascadeDeleteSurvivesSaveLoad) {
+    Parser parser;
+    auto executor = makeTempExecutor("vertexdb-constraint-", "fk-cascade-save");
+    ASSERT_TRUE(executor.execute(parser.parse("CREATE DATABASE company;")).success);
+    ASSERT_TRUE(
+        executor.execute(parser.parse("CREATE TABLE Customers (id INT PRIMARY KEY);")).success);
+    ASSERT_TRUE(executor
+                    .execute(parser.parse(
+                        "CREATE TABLE Orders (id INT PRIMARY KEY, customer_id INT, "
+                        "FOREIGN KEY (customer_id) REFERENCES Customers(id) ON DELETE CASCADE);"))
+                    .success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Customers VALUES (1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("INSERT INTO Orders VALUES (10, 1);")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("SAVE DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("LOAD DATABASE;")).success);
+    ASSERT_TRUE(executor.execute(parser.parse("DELETE FROM Customers WHERE id = 1;")).success);
+    const auto rows = executor.execute(parser.parse("SELECT id FROM Orders;"));
+    ASSERT_TRUE(rows.success);
+    EXPECT_TRUE(rows.rows.empty());
 }
 
 } // namespace VertexDB

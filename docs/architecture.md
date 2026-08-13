@@ -117,7 +117,8 @@ see `AGENTS.md` for the agent-oriented layout map.
 
 `Table` owns schema validation (including `NOT NULL`, single- and multi-column `PRIMARY KEY` / `UNIQUE`, and
 simple `CHECK` enforcement) and stores `FOREIGN KEY` metadata;
-`CatalogEngine` / `DmlEngine` enforce referential integrity with SI-visible parent lookups.
+`CatalogEngine` / `DmlEngine` enforce referential integrity with SI-visible parent lookups and
+`ON DELETE`/`UPDATE` `NO ACTION` / `CASCADE` / `SET NULL`.
 `Table` owns
 synchronization, composes `IndexManager`, `TableStatistics`, and
 `TableSnapshotIO`, and delegates physical row storage to the `RowStore` interface. `TableSnapshotIO`

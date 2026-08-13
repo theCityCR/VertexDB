@@ -68,7 +68,7 @@ struct CreateTable {
     std::vector<Column> columns;
     // Simple CHECK predicates (column comparisons with AND/OR; no subqueries).
     std::vector<Predicate> checkConstraints;
-    // Single-column FOREIGN KEY constraints (NO ACTION).
+    // Single-column FOREIGN KEY constraints (NO ACTION / CASCADE / SET NULL).
     std::vector<ForeignKeyConstraint> foreignKeys;
     // Table-level UNIQUE / PRIMARY KEY (including multi-column composites).
     std::vector<UniqueConstraint> uniqueConstraints;
