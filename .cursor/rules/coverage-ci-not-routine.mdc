@@ -1,0 +1,36 @@
+---
+description: Rely on CI for the 85% coverage floor; do not run local coverage routinely
+alwaysApply: true
+---
+
+# Coverage Gate (CI, Not Routine Local)
+
+CI enforces ≥85% line coverage via `scripts/run-coverage.sh`. That job is slow (instrumented
+rebuild + full suite + gcov). Do **not** run it on every feature change or before every push.
+
+## Default local verify
+
+For normal work, prefer:
+
+1. Desired-behavior tests for the change
+2. `ctest --test-dir build --output-on-failure` (or the focused gtest filter)
+
+Do **not** routinely run `scripts/run-coverage.sh`.
+
+## When to run coverage locally
+
+Run `scripts/run-coverage.sh` only when:
+
+- The CI **coverage** job failed, or
+- The user explicitly asks for a coverage run / to clear the coverage floor
+
+Then add focused tests that exercise **missed lines in the new/changed code**. Do not pad
+unrelated modules just to raise the percentage. Update `docs/testing.md` / README coverage notes
+when the reported percentage changes.
+
+## Anti-pattern
+
+```text
+BAD:  Run full coverage after every small src/ edit (wastes minutes for little signal)
+GOOD: Ship with ctest + desired-behavior tests; fix coverage when CI reports a miss
+```
