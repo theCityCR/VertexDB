@@ -41,7 +41,7 @@ implements `SelectEngine`; `btree_index_mutate.cpp` is still `BTreeIndex`).
 ## Deeper reading
 
 - [docs/architecture.md](docs/architecture.md) — module responsibilities and data flow
-- [docs/design.md](docs/design.md) — status, limitations, definition of done
+- [docs/design.md](docs/design.md) — status, limitations, ACID plan, definition of done
 - [docs/testing.md](docs/testing.md) — test file ownership and coverage floor
 - [docs/sql.md](docs/sql.md) — SQL surface
 - Portfolio wedges: [cte_index_wedge.md](docs/cte_index_wedge.md),

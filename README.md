@@ -156,7 +156,8 @@ Or feed an example script:
 
 ## Roadmap
 
-Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps). Shipped milestones
+Forward-looking work lives in [docs/design.md](docs/design.md) (Next Steps and
+[ACID Plan](docs/design.md#acid-plan)). Shipped milestones
 include snapshot v4 + page-image WAL, correlated subqueries / expression indexes / materialized CTEs,
 aggregates and multi-join, histograms / multi-index AND and top-level OR union (including partial OR),
 `WITH` nesting depth up to 6 and correlation through eight outer frames, `INNER`/`LEFT`/`RIGHT`/`FULL`/`CROSS` joins with
@@ -172,8 +173,9 @@ Intersect∪Union for fully indexable nested
 CTE-body set operations (`UNION` / `UNION ALL` / `INTERSECT` / `INTERSECT ALL` / `EXCEPT` /
 `EXCEPT ALL`, recursive `UNION` dedup), partial nested `OR` under `AND` (indexable arms +
 complementary residual), multiple independent recursive CTEs, mutual recursion among
-`WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, and a dated absolute-time benchmark
-summary (last refreshed 2026-08-10 from the CI `benchmark report` artifact).
+`WITH RECURSIVE` CTEs, `AS ACCUMULATOR` recursive binding, durable WAL `COMMIT` (flush+fsync), and a
+dated absolute-time benchmark summary (last refreshed 2026-08-10 from the CI `benchmark report`
+artifact).
 
 Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 [materialize vs inline comparison](docs/cte_materialize_comparison.md),
@@ -184,7 +186,7 @@ Parallel product wedges: [CTE index wedge plan](docs/cte_index_wedge.md) /
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Design status](docs/design.md)
+- [Design status](docs/design.md) (includes [ACID Plan](docs/design.md#acid-plan))
 - [SQL reference](docs/sql.md)
 - [Testing](docs/testing.md)
 - [Benchmarks](docs/benchmarks.md)
